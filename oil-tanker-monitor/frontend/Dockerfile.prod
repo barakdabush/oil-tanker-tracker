@@ -1,0 +1,21 @@
+FROM node:20-slim AS base
+WORKDIR /app
+
+# Install dependencies based on the preferred package manager
+COPY package*.json ./
+RUN npm ci
+
+# Copy the rest of the application
+COPY . .
+
+# Set environment variables for production build
+ENV NODE_ENV=production
+
+# Build the Next.js application
+RUN npm run build
+
+# Expose the port Next.js runs on
+EXPOSE 3000
+
+# Start the application using Next.js production server
+CMD ["npm", "start"]
