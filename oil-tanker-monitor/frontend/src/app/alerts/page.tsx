@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { AISGap, STSEvent, Chokepoint } from "@/lib/types";
+import { getApiUrl } from "@/lib/config";
 
 function formatDuration(start: string, end?: string | null): string {
   const s = new Date(start).getTime();
@@ -27,7 +28,7 @@ export default function AlertsPage() {
   const [chokepoints, setChokepoints] = useState<Chokepoint[]>([]);
 
   useEffect(() => {
-    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const API = getApiUrl();
     Promise.all([
       fetch(`${API}/api/alerts/dark-fleet`).then((r) => r.json()).catch(() => null),
       fetch(`${API}/api/alerts/sts-events`).then((r) => r.json()).catch(() => null),

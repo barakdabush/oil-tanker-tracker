@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { DashboardStats, CargoEvent } from "@/lib/types";
+import { getApiUrl } from "@/lib/config";
 
 // Mock data for when backend is unavailable
 const ZERO_STATS: DashboardStats = {
@@ -47,7 +48,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const API = getApiUrl();
     fetch(`${API}/api/analytics/dashboard`, { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {

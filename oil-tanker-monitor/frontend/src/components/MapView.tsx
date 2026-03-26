@@ -16,6 +16,7 @@ import {
 } from "react-leaflet";
 
 import type { Vessel, Port, Chokepoint, STSEvent } from "@/lib/types";
+import { getApiUrl, getWsUrl } from "@/lib/config";
 
 /** Custom zoom controls rendered inside the MapContainer so useMap() works */
 function ZoomControls() {
@@ -358,8 +359,8 @@ export default function MapView() {
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});
   const [loadingTrail, setLoadingTrail] = useState(false);
-  const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const WS_API = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
+  const API = getApiUrl();
+  const WS_API = getWsUrl();
   
   // Keep track of the selected vessel in a ref for the WebSocket handler
   const selectedVesselRef = useRef(selectedVessel);

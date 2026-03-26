@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import type { VolumeOverTime, TopRoute, FleetStatus } from "@/lib/types";
 import IngestionChart from "@/components/IngestionChart";
+import { getApiUrl } from "@/lib/config";
 
 // Dynamically import Recharts components (they don't support SSR well)
 const AreaChart = dynamic(
@@ -71,7 +72,7 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     setMounted(true);
-    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const API = getApiUrl();
     Promise.all([
       fetch(`${API}/api/analytics/volume?days=30`).then((r) => r.json()).catch(() => null),
       fetch(`${API}/api/analytics/top-routes?limit=10`).then((r) => r.json()).catch(() => null),
