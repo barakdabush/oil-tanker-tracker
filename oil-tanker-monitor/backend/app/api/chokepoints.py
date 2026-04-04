@@ -15,7 +15,7 @@ router = APIRouter()
 
 @router.get("", response_model=List[ChokepointResponse])
 async def list_chokepoints(
-    hours: int = 24,
+    hours: int = 336,
     db: AsyncSession = Depends(get_db)
 ):
     """List all chokepoints and calculate their dynamic congestion status based on recent transits."""
@@ -25,17 +25,24 @@ async def list_chokepoints(
     chokepoints_result = await db.execute(chokepoints_stmt)
     chokepoints = chokepoints_result.all()
     
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-    
-    # Calculate transit counts in the selected time window natively
-    transit_counts_stmt = (
-        select(
-            ChokepointTransit.chokepoint_id,
-            func.count().label("transit_count")
+    if hours == 0:
+        transit_counts_stmt = (
+            select(
+                ChokepointTransit.chokepoint_id,
+                func.count().label("transit_count")
+            )
+            .group_by(ChokepointTransit.chokepoint_id)
         )
-        .where(ChokepointTransit.entry_time >= cutoff_time)
-        .group_by(ChokepointTransit.chokepoint_id)
-    )
+    else:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        transit_counts_stmt = (
+            select(
+                ChokepointTransit.chokepoint_id,
+                func.count().label("transit_count")
+            )
+            .where(ChokepointTransit.entry_time >= cutoff_time)
+            .group_by(ChokepointTransit.chokepoint_id)
+        )
     
     transit_counts_result = await db.execute(transit_counts_stmt)
     transit_counts = {row.chokepoint_id: row.transit_count for row in transit_counts_result}
@@ -47,15 +54,18 @@ async def list_chokepoints(
         count = transit_counts.get(cp.id, 0)
         
         # Calculate dynamic status
-        threshold_24h = cp.congestion_threshold or 20
-        scaled_threshold = threshold_24h * (hours / 24.0)
-        
-        if count > scaled_threshold * 1.5:
-            status = "congested"
-        elif count < scaled_threshold * 0.5:
-            status = "low"
+        if hours == 0:
+            status = "normal" # Can't meaningfully calculate congestion for 'all time' without full history span
         else:
-            status = "normal"
+            threshold_24h = cp.congestion_threshold or 20
+            scaled_threshold = threshold_24h * (hours / 24.0)
+            
+            if count > scaled_threshold * 1.5:
+                status = "congested"
+            elif count < scaled_threshold * 0.5:
+                status = "low"
+            else:
+                status = "normal"
             
         response.append(
             ChokepointResponse(

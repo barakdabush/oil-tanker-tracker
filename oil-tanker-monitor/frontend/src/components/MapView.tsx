@@ -34,7 +34,7 @@ export default function MapView() {
   const [showPorts, setShowPorts] = useState(true);
   const [showChokepoints, setShowChokepoints] = useState(true);
   const [showTrails, setShowTrails] = useState(true);
-  const [trailHours, setTrailHours] = useState(24);
+  const [trailHours, setTrailHours] = useState(336);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});

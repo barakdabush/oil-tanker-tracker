@@ -77,17 +77,25 @@ async def get_vessel(mmsi: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{mmsi}/trail", response_model=TrailResponse)
 async def get_vessel_trail(
     mmsi: int,
-    hours: int = Query(24, ge=1, le=720),
+    hours: int = Query(336, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
     """Get historical positions for a vessel."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    query = (
-        select(VesselPosition)
-        .where(and_(VesselPosition.mmsi == mmsi, VesselPosition.time > cutoff))
-        .order_by(VesselPosition.time.asc())
-        .limit(5000)
-    )
+    if hours == 0:
+        query = (
+            select(VesselPosition)
+            .where(VesselPosition.mmsi == mmsi)
+            .order_by(VesselPosition.time.asc())
+            .limit(50000)
+        )
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        query = (
+            select(VesselPosition)
+            .where(and_(VesselPosition.mmsi == mmsi, VesselPosition.time > cutoff))
+            .order_by(VesselPosition.time.asc())
+            .limit(5000)
+        )
     result = await db.execute(query)
     positions = result.scalars().all()
 
