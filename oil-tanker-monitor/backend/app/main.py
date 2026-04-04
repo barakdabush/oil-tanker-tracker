@@ -1,53 +1,30 @@
 """FastAPI application entrypoint with lifespan management."""
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import engine, init_db
+from app.database import engine
 from app.api import vessels, ports, alerts, analytics, chokepoints
-from app.seed.ports import seed_ports
-from app.seed.chokepoints import seed_chokepoints
 
-# Ensure all models are registered with Base.metadata before init_db runs
+# Ensure all models are registered with Base.metadata
 import app.models  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-async def run_seed_data():
-    """Seed ports and chokepoints data."""
-    try:
-        await seed_ports()
-        await seed_chokepoints()
-        logger.info("Seed data loaded successfully")
-    except Exception as e:
-        logger.warning(f"Seed data: {e}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: init DB, seed data, start background services."""
+    """Application lifespan: start background services."""
     logger.info("🚢 Oil Tanker Monitor starting up...")
-
-    # Initialize database
-    await init_db()
-    await run_seed_data()
 
     # Start background services
     # WebSocket and AIS ingestion moved to websocket_app.py
     logger.info("🟢 API server background services started")
 
     yield
-
-    try:
-        pass
-    except asyncio.CancelledError:
-        pass
 
     await engine.dispose()
     logger.info("👋 Shutdown complete")

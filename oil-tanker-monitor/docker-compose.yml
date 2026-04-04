@@ -9,6 +9,7 @@ services:
       POSTGRES_PASSWORD: secret
     volumes:
       - pgdata:/home/postgres/pgdata/data
+      - ./data/01_seed_init.sql:/docker-entrypoint-initdb.d/01_seed_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d oil_monitor"]
       interval: 5s
@@ -87,6 +88,8 @@ services:
   adminer:
     image: adminer
     restart: always
+    ports:
+      - "8080:8080"
     depends_on:
       db:
         condition: service_healthy

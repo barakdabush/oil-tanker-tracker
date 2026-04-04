@@ -1,0 +1,53 @@
+# 🤖 Oil Tanker Monitor - Development Rules
+
+## 🧩 1. Code Architecture & Style
+- **Simple Functions**: Keep functions short, focused, and single-purpose.
+- **Naming**: Use highly descriptive, meaningful names for variables, functions, files and folders. Avoid generic names like `data`, `item`, `utils2`.
+- **Modular Files**: Do not let single files grow too large. Separate logic into components (frontend) or functional modules (backend).
+- **Organization**: Maintain a clear folder hierarchy (e.g., specific folders for `api`, `services`, `models`, and `tests`).
+- **No Dead Code**: Remove unused imports, stale comments, and leftover boilerplate. Keep files lean.
+
+## 🏗️ 2. Architecture Boundaries
+- **Backend = API only**: The FastAPI backend (`app/main.py`) MUST NOT contain database schema creation, extension setup, seeding, or migration logic. It only serves API requests.
+- **Database = Docker layer**: All database initialization (extensions, schema, hypertables, compression policies, seed data) is handled by SQL files in the `/data` folder, mounted into `/docker-entrypoint-initdb.d/` via `docker-compose.yml`.
+- **Separation of Concerns**: Frontend handles UI, backend handles API logic, Docker handles infrastructure.
+
+## 🧪 3. Testing Strategy
+
+### Structure
+- **Backend tests** live in `backend/tests/`, organized by service:
+  - `tests/api/vessels/` — tests for `/api/vessels` routes
+  - `tests/api/chokepoints/` — tests for `/api/chokepoints` routes
+  - `tests/api/ports/` — tests for `/api/ports` routes
+  - `tests/api/alerts/` — tests for `/api/alerts` routes
+  - `tests/api/analytics/` — tests for `/api/analytics` routes
+  - `tests/ais/` — tests for external AIS stream communication
+- **Frontend E2E tests** live in `frontend/e2e/`, split by environment:
+  - `e2e/mocked/` — fast UI tests with mocked API (no backend needed, runs local dev server on port 3333)
+  - `e2e/live/` — full-stack integration tests against `docker-compose.test.yml` (port 3002)
+
+### Rules
+- **Critical Path Testing**: For every new feature or bug fix, add the relevant tests:
+  - **Backend**: Add a test in the matching `tests/api/<route>/` folder.
+  - **Frontend (mocked)**: Add a mocked test in `e2e/mocked/` for fast UI feedback.
+  - **Fullstack (live)**: Add an integration test in `e2e/live/` to verify the end-to-end flow.
+- **Only important tests**: Don't add generic connectivity or echo tests. Every test must verify a real feature.
+- **File naming**: All Python test files MUST start with `test_` for pytest discovery. Playwright files use `.spec.ts`.
+
+### Test Data
+- **`data/01_seed_init.sql`**: Full database snapshot (schema + ports + chokepoints). Used by both dev and test Docker environments.
+- **`data/02_seed_test.sql`**: Test-specific vessel data (e.g., `SEEDED_TEST_VESSEL` MMSI 999999999). Only mounted in `docker-compose.test.yml`.
+- To re-seed, clear Docker volumes: `docker compose down -v && docker compose up`.
+
+## 🚀 4. Efficiency & Hygiene
+- **Git Hygiene**: Never commit `__pycache__`, `.env` files, `node_modules`, or binary artifacts. Always check `git status` before finishing a task.
+- **Clean Up**: After refactoring, always remove empty folders, stale `__init__.py` files, and orphaned `__pycache__` directories.
+- **Modern UI**: All UI components must look premium — vibrant colors, dark mode, smooth transitions, fully responsive.
+- **DRY**: Extract common logic into `utils` or shared hooks. Don't duplicate code across files.
+- **Self-Documentation**: Write clear docstrings and maintain READMEs for non-obvious modules.
+
+## 🐳 5. Docker & Environment
+- **Dev environment**: `docker-compose.yml` — runs on standard ports (8000, 3000, 8080 for Adminer).
+- **Test environment**: `docker-compose.test.yml` — runs on offset ports (8002, 3002, 5433).
+- **Adminer**: Available at `http://localhost:8080` for local DB inspection (server: `db`, user: `admin`, password: `secret`).
+- **Playwright config**: `frontend/playwright.config.ts` uses `TEST_ENV=live` env var to switch between mocked (port 3333) and live (port 3002) base URLs.
