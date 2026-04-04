@@ -77,7 +77,7 @@ async def get_vessel(mmsi: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{mmsi}/trail", response_model=TrailResponse)
 async def get_vessel_trail(
     mmsi: int,
-    hours: int = Query(336, ge=0),
+    hours: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
     """Get historical positions for a vessel."""

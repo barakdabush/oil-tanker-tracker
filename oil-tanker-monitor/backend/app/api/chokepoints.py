@@ -15,7 +15,7 @@ router = APIRouter()
 
 @router.get("", response_model=List[ChokepointResponse])
 async def list_chokepoints(
-    hours: int = 336,
+    hours: int = 0,
     db: AsyncSession = Depends(get_db)
 ):
     """List all chokepoints and calculate their dynamic congestion status based on recent transits."""
