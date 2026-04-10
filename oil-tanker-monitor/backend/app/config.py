@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://admin:secret@localhost:5432/oil_monitor"
     DATABASE_URL_SYNC: str = "postgresql://admin:secret@localhost:5432/oil_monitor"
     AIS_API_KEY: str = "your_aisstream_api_key_here"
+    EIA_API_KEY: str = "your_eia_api_key_here"
 
     # AIS ingestion settings
     AIS_WS_URL: str = "wss://stream.aisstream.io/v0/stream"

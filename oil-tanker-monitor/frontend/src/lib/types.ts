@@ -187,3 +187,26 @@ export interface IngestionDataPoint {
   cargo_events: number;
 }
 
+// ─── Global Oil Market / ML Feature Types ───────────────────────────────────
+
+export interface MarketSnapshotResponse {
+  snapshot_date: string;
+  total_active_vessels: number;
+  vessels_in_transit: number;
+  vessels_at_port: number;
+  avg_fleet_speed: number;
+  vessels_idle_gt_48h: number;
+  dark_vessels_count: number;
+  new_ais_gaps_24h: number;
+  resolved_gaps_24h: number;
+  avg_gap_duration_hours: number;
+  sts_events_24h: number;
+  sts_confirmed_24h: number;
+  chokepoint_transits_24h: number;
+  strait_of_hormuz_transits: number;
+  cargo_events_24h: number;
+  estimated_volume_barrels_24h: number;
+  brent_close_usd: number | null;
+  wti_close_usd: number | null;
+}
+

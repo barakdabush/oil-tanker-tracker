@@ -9,6 +9,7 @@ from app.models.port import Port  # noqa: F401
 from app.models.cargo import CargoEvent, VoyageLeg  # noqa: F401
 from app.models.alert import AISGap, STSEvent  # noqa: F401
 from app.models.chokepoint import Chokepoint, ChokepointTransit  # noqa: F401
+from app.models.global_oil_features import OilMarketSnapshot, OilPrice  # noqa: F401
 
 __all__ = [
     "Vessel",
@@ -20,4 +21,6 @@ __all__ = [
     "STSEvent",
     "Chokepoint",
     "ChokepointTransit",
+    "OilMarketSnapshot",
+    "OilPrice",
 ]

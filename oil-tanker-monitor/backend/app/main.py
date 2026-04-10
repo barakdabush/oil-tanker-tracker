@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine
-from app.api import vessels, ports, alerts, analytics, chokepoints
+from app.api import vessels, ports, alerts, analytics, chokepoints, global_oil_features
 
 # Ensure all models are registered with Base.metadata
 import app.models  # noqa: F401
@@ -52,6 +52,7 @@ app.include_router(ports.router, prefix="/api/ports", tags=["Ports"])
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Alerts"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
 app.include_router(chokepoints.router, prefix="/api/chokepoints", tags=["Chokepoints"])
+app.include_router(global_oil_features.router, prefix="/api/global-oil-features", tags=["Global Oil Features"])
 
 
 @app.get("/api/health")
