@@ -15,13 +15,13 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-build/
+# build/ (Removed generic build/ to allow frontend build artifacts if needed)
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# lib/ (Removed generic lib/ to allow frontend/src/lib)
 lib64/
 parts/
 sdist/
