@@ -17,6 +17,8 @@ from app.services.cargo_detector import CargoDetector
 from app.services.dark_fleet_detector import DarkFleetDetector
 from app.services.sts_detector import STSDetector
 from app.services.chokepoint_monitor import ChokepointMonitor
+from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
+from app.services.oil_price_fetcher import OilPriceFetcher
 from app.database import engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -29,19 +31,24 @@ async def run_workers():
     dark_fleet_detector = DarkFleetDetector()
     sts_detector = STSDetector()
     chokepoint_monitor = ChokepointMonitor()
+    global_oil_feature_builder = GlobalOilFeatureBuilder()
+    oil_price_fetcher = OilPriceFetcher()
 
     # Create background tasks for the heavy jobs
     detector_task = asyncio.create_task(cargo_detector.run_periodic())
     dark_fleet_task = asyncio.create_task(dark_fleet_detector.run_periodic())
     sts_task = asyncio.create_task(sts_detector.run_periodic())
     chokepoint_task = asyncio.create_task(chokepoint_monitor.run_periodic())
+    feature_task = asyncio.create_task(global_oil_feature_builder.run_periodic())
+    oil_price_task = asyncio.create_task(oil_price_fetcher.run_periodic())
 
     logger.info("🟢 All detection services started. Awaiting events...")
 
     try:
         # Wait for all tasks to complete (they loop forever)
         await asyncio.gather(
-            detector_task, dark_fleet_task, sts_task, chokepoint_task
+            detector_task, dark_fleet_task, sts_task, chokepoint_task,
+            feature_task, oil_price_task,
         )
     except asyncio.CancelledError:
         logger.info("Worker tasks cancelled.")

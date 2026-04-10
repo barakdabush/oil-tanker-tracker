@@ -10,18 +10,32 @@ services:
     volumes:
       - pgdata:/home/postgres/pgdata/data
       - ./data/01_seed_init.sql:/docker-entrypoint-initdb.d/01_seed_init.sql:ro
+      - ./data/03_analytics_tables.sql:/docker-entrypoint-initdb.d/03_analytics_tables.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d oil_monitor"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  migrate:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
+      DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
+    volumes:
+      - ./backend:/app
+    command: alembic upgrade head
+    restart: "no"
+
   backend:
     build: ./backend
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
@@ -41,14 +55,15 @@ services:
     build: ./backend
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
+      EIA_API_KEY: ${EIA_API_KEY:-your_eia_api_key_here}
     volumes:
       - ./backend:/app
     command: python worker.py
@@ -57,8 +72,8 @@ services:
     build: ./backend
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
     environment:

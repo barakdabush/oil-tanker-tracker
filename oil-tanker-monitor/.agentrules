@@ -9,8 +9,20 @@
 
 ## 🏗️ 2. Architecture Boundaries
 - **Backend = API only**: The FastAPI backend (`app/main.py`) MUST NOT contain database schema creation, extension setup, seeding, or migration logic. It only serves API requests.
-- **Database = Docker layer**: All database initialization (extensions, schema, hypertables, compression policies, seed data) is handled by SQL files in the `/data` folder, mounted into `/docker-entrypoint-initdb.d/` via `docker-compose.yml`.
-- **Separation of Concerns**: Frontend handles UI, backend handles API logic, Docker handles infrastructure.
+- **Database Migrations = Alembic**: All schema changes (new tables, indexes, column additions/removals) MUST be done through Alembic migrations in `backend/migrations/versions/`. Never manually edit the database or rely solely on raw SQL files.
+- **Database Seeding = Docker layer**: Initial seed data (ports, chokepoints, test vessels) is handled by SQL files in `/data`, mounted into `/docker-entrypoint-initdb.d/` via `docker-compose.yml`.
+- **Migration Service**: The `migrate` service in `docker-compose.yml` runs `alembic upgrade head` as a one-shot container before any app services start. This ensures the schema is always up-to-date.
+- **Separation of Concerns**: Frontend handles UI, backend handles API logic, Alembic handles schema, Docker handles infrastructure.
+
+## 🗄️ 2b. Database Migration Workflow (Alembic)
+- **All schema changes** (new tables, new indexes, column changes) MUST go through Alembic:
+  1. Update or create the SQLAlchemy model in `backend/app/models/`.
+  2. Generate a migration: `alembic revision --autogenerate -m "description of change"`
+  3. Review the generated file in `backend/migrations/versions/` — verify the `upgrade()` and `downgrade()` functions.
+  4. Apply locally: `docker compose restart migrate` (or `docker compose up`).
+- **Never create raw SQL files** in `/data` for schema changes. The `/data` folder is only for seed data.
+- **Migration files are committed to Git** — they are the source of truth for the database schema.
+- **Idempotent migrations**: Use `CREATE TABLE IF NOT EXISTS` / `DROP TABLE IF EXISTS` patterns in migration scripts when possible.
 
 ## 🧪 3. Testing Strategy
 
