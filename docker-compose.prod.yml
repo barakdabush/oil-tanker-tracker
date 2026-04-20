@@ -15,12 +15,25 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    image: ghcr.io/${USER_REPO_LOWERCASE}-backend:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
+      DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
+    command: alembic upgrade head
+    restart: "no"
+
   backend:
     image: ghcr.io/${USER_REPO_LOWERCASE}-backend:latest
     restart: always
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
@@ -40,6 +53,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
     environment:
@@ -54,6 +69,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
     environment:
