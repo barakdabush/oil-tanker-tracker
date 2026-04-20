@@ -58,7 +58,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd ~/app
+            cd ~/oil-tanker-tracker
             git pull origin main
             echo "${{ secrets.GH_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose -f docker-compose.prod.yml pull
