@@ -94,13 +94,5 @@ services:
       NEXT_PUBLIC_API_URL: http://${SERVER_IP}:8000
       NEXT_PUBLIC_WS_URL: ws://${SERVER_IP}:8001
 
-  watchtower:
-    image: containrrr/watchtower
-    restart: always
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json
-    command: --interval 60 --cleanup --debug
-
 volumes:
   pgdata:
