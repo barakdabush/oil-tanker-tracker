@@ -29,7 +29,11 @@ async def list_dark_fleet(
     query = select(AISGap)
 
     if status:
-        query = query.where(AISGap.status == status)
+        status_list = status.split(",")
+        if len(status_list) > 1:
+            query = query.where(AISGap.status.in_(status_list))
+        else:
+            query = query.where(AISGap.status == status)
     else:
         query = query.where(AISGap.status != "resolved")
 
@@ -71,7 +75,11 @@ async def list_sts_events(
     query = select(STSEvent).where(STSEvent.start_time > cutoff)
 
     if status:
-        query = query.where(STSEvent.status == status)
+        status_list = status.split(",")
+        if len(status_list) > 1:
+            query = query.where(STSEvent.status.in_(status_list))
+        else:
+            query = query.where(STSEvent.status == status)
 
     query = query.order_by(desc(STSEvent.start_time)).limit(limit)
     result = await db.execute(query)
