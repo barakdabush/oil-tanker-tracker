@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from typing import TypedDict, Optional
 
 import websockets
 from sqlalchemy import text, func, select
@@ -17,6 +18,9 @@ from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
+
+from app.types.ais import AISPositionReport, AISShipDimension, AISEta, AISShipStaticData, AISMetaData, AISMessage
+
 # AIS tanker ship type codes
 TANKER_TYPES = set(range(80, 90))
 
@@ -29,6 +33,9 @@ _known_tankers = set()  # Strict whitelist: MMSIs confirmed to be tankers
 _vessel_batch = {}
 _position_batch = []
 _batch_lock = asyncio.Lock()
+
+# One-time structure logging
+_logged_structures = set()
 
 
 async def start_ais_ingestion():
@@ -116,9 +123,14 @@ async def _connect_and_consume():
                 logger.error(f"Error processing AIS message: {e}")
 
 
-async def _process_message(msg: dict):
+async def _process_message(msg: AISMessage):
     """Process an incoming AIS message."""
     msg_type = msg.get("MessageType")
+
+    # Log full structure once per message type so we can see all available fields
+    if msg_type and msg_type not in _logged_structures:
+        _logged_structures.add(msg_type)
+        logger.info(f"\n{'='*60}\nFIRST {msg_type} structure:\n{json.dumps(msg, indent=2, default=str)}\n{'='*60}")
 
     if msg_type == "PositionReport":
         await _handle_position_report(msg)
@@ -126,10 +138,10 @@ async def _process_message(msg: dict):
         await _handle_static_data(msg)
 
 
-async def _handle_position_report(msg: dict):
+async def _handle_position_report(msg: AISMessage):
     """Handle an AIS position report — insert position and update vessel."""
-    meta = msg.get("MetaData", {})
-    position = msg.get("Message", {}).get("PositionReport", {})
+    meta: Optional[AISMetaData] = msg.get("MetaData")
+    position: Optional[AISPositionReport] = msg.get("Message", {}).get("PositionReport")
     if not position or not meta:
         return
 
@@ -200,7 +212,7 @@ async def _handle_position_report(msg: dict):
         dist_km = haversine_km(last_saved["lat"], last_saved["lon"], lat, lon)
 
         # Save if moved more than 10km or more than 30 minutes have passed
-        if dist_km > 10.0 or time_diff > 1.0 or time_diff < 0: # time_diff < 0 handles clock skew/resets
+        if dist_km > 10.0 or time_diff > 30.0 or time_diff < 0: # time_diff < 0 handles clock skew/resets
             save_position = True
 
     if save_position:
@@ -214,7 +226,8 @@ async def _handle_position_report(msg: dict):
                 "course": course,
                 "heading": heading,
                 "nav_status": nav_status,
-                "position": f"ST_SetSRID(ST_MakePoint({lon}, {lat}), 4326)::geography",
+                "draft": v_data.get("draft"),
+                "position": func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326),
             })
         _last_saved_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
 
@@ -243,10 +256,10 @@ async def _handle_position_report(msg: dict):
         "update_ui_trail": update_ui_trail
     })
 
-async def _handle_static_data(msg: dict):
+async def _handle_static_data(msg: AISMessage):
     """Handle AIS static/voyage data — update vessel registry."""
-    meta = msg.get("MetaData", {})
-    static = msg.get("Message", {}).get("ShipStaticData", {})
+    meta: Optional[AISMetaData] = msg.get("MetaData")
+    static: Optional[AISShipStaticData] = msg.get("Message", {}).get("ShipStaticData")
     if not static or not meta:
         return
 
@@ -374,15 +387,18 @@ async def flush_batch():
                         
                 upsert_stmt = v_stmt.on_conflict_do_update(
                     index_elements=["mmsi"],
-                    set_=set_clause
+                    set_=set_clause,
+                    # Only update if the incoming data is newer or existing has no last_seen
+                    where=(
+                        (v_stmt.excluded.last_seen == None) | 
+                        (Vessel.last_seen == None) | 
+                        (v_stmt.excluded.last_seen >= Vessel.last_seen)
+                    )
                 )
                 await session.execute(upsert_stmt)
                 
             # 2. Bulk Insert Positions
             if current_positions:
-                for p in current_positions:
-                    p["position"] = text(p["position"])
-                
                 p_stmt = pg_insert(VesselPosition).values(current_positions)
                 p_upsert_stmt = p_stmt.on_conflict_do_nothing()
                 await session.execute(p_upsert_stmt)

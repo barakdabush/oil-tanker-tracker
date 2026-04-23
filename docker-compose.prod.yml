@@ -61,6 +61,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
+      EIA_API_KEY: ${EIA_API_KEY}
     command: python worker.py
 
   websocket:
