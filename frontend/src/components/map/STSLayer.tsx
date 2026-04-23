@@ -163,8 +163,8 @@ export const STSLayer = React.memo(function STSLayer({
       
       // Zoom to fit the trails
       const allPoints = [
-        ...vA.positions.map(p => [p.latitude, p.longitude] as [number, number]),
-        ...vB.positions.map(p => [p.latitude, p.longitude] as [number, number])
+        ...vA.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
+        ...vB.positions.map((p: any) => [p.latitude, p.longitude] as [number, number])
       ];
       if (allPoints.length > 0) {
         map.fitBounds(allPoints, { padding: [50, 50] });
@@ -302,11 +302,11 @@ export const STSLayer = React.memo(function STSLayer({
           </button>
           
           <Polyline 
-            positions={investigation.vesselA.positions.map(p => [p.latitude, p.longitude])}
+            positions={investigation.vesselA.positions.map((p: any) => [p.latitude, p.longitude])}
             pathOptions={{ color: "#3b82f6", weight: 4, opacity: 0.8, dashArray: "10, 10" }}
           />
           <Polyline 
-            positions={investigation.vesselB.positions.map(p => [p.latitude, p.longitude])}
+            positions={investigation.vesselB.positions.map((p: any) => [p.latitude, p.longitude])}
             pathOptions={{ color: "#10b981", weight: 4, opacity: 0.8, dashArray: "10, 10" }}
           />
           
