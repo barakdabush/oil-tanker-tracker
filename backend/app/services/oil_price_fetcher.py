@@ -67,7 +67,7 @@ class OilPriceFetcher:
             )).scalar() or 0
 
         if days is None:
-            days = BACKFILL_DAYS if row_count == 0 else 7
+            days = 30  # Always look back 30 days to ensure no gaps during long EIA lags
 
         start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -75,6 +75,8 @@ class OilPriceFetcher:
         if not settings.EIA_API_KEY or settings.EIA_API_KEY == "your_eia_api_key_here":
             logger.warning("EIA_API_KEY not configured — skipping oil price fetch")
             return
+
+        logger.info(f"Fetching oil prices from EIA for range: {start_date} to {end_date}")
 
         # Fetch both Brent and WTI in one request
         params = {
@@ -96,7 +98,7 @@ class OilPriceFetcher:
 
         records = data.get("response", {}).get("data", [])
         if not records:
-            logger.info("No oil price records returned from EIA")
+            logger.info(f"No oil price records returned from EIA for {start_date} to {end_date}")
             return
 
         # Group prices by date
@@ -151,7 +153,8 @@ class OilPriceFetcher:
             await session.commit()
 
         duration = time.time() - start_time
+        latest_date = max(prices_by_date.keys()) if prices_by_date else "N/A"
         logger.info(
             f"Oil price fetch complete in {duration:.1f}s — "
-            f"{upserted} price records upserted (backfill={row_count == 0})"
+            f"{upserted} records upserted. Latest data date: {latest_date}"
         )
