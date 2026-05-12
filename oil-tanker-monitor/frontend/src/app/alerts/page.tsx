@@ -78,6 +78,7 @@ export default function AlertsPage() {
               <tr>
                 <th>MMSI</th>
                 <th>Status</th>
+                <th>Date</th>
                 <th>Duration</th>
                 <th>Last Position</th>
                 <th>Distance Jumped</th>
@@ -97,6 +98,9 @@ export default function AlertsPage() {
                     }`}>
                       {gap.status.replace("_", " ")}
                     </span>
+                  </td>
+                  <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {new Date(gap.gap_start).toLocaleDateString()}
                   </td>
                   <td>{formatDuration(gap.gap_start, gap.gap_end)}</td>
                   <td style={{ fontFamily: "monospace", fontSize: 12 }}>
@@ -131,6 +135,7 @@ export default function AlertsPage() {
               <thead>
                 <tr>
                   <th>Status</th>
+                  <th>Date</th>
                   <th>Vessels</th>
                   <th>Duration</th>
                   <th>Confidence</th>
@@ -143,6 +148,9 @@ export default function AlertsPage() {
                       <span className={`badge badge-${evt.status}`}>
                         {evt.status}
                       </span>
+                    </td>
+                    <td style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                      {new Date(evt.start_time).toLocaleDateString()}
                     </td>
                     <td style={{ fontFamily: "monospace", fontSize: 12 }}>
                       {evt.vessel_a_mmsi}<br/>{evt.vessel_b_mmsi}

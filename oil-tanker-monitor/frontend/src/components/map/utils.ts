@@ -11,16 +11,20 @@ export function getVesselColor(v: Vessel): string {
   const hoursSinceLastSeen = v.last_seen
     ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
     : 999;
-  if (hoursSinceLastSeen > 6) return "#1f2937";
-  if ((v.last_speed || 0) <= 1) return "#f59e0b";
-  if ((v.draft || 0) > 12) return "#ef4444";
-  return "#10b981";
+  
+  if (hoursSinceLastSeen > 24) return "#374151"; // Extended Dark (Slate 700)
+  if (hoursSinceLastSeen > 6) return "#4b5563";  // Dark (Grey 600)
+  if ((v.last_speed || 0) <= 1) return "#f59e0b"; // At Port (Amber)
+  if ((v.draft || 0) > 12) return "#ef4444";      // Loaded (Red)
+  return "#10b981";                               // Ballast/Moving (Green)
 }
 
 export function getVesselStatus(v: Vessel): string {
   const hoursSinceLastSeen = v.last_seen
     ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
     : 999;
+    
+  if (hoursSinceLastSeen > 24) return "EXTENDED DARK";
   if (hoursSinceLastSeen > 6) return "DARK";
   if ((v.last_speed || 0) <= 1) return "At Port";
   if ((v.draft || 0) > 12) return "Loaded";

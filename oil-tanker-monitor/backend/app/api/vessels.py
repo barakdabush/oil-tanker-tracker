@@ -20,6 +20,7 @@ async def list_vessels(
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="Filter: in_transit, at_port, dark"),
+    seen_within_hours: Optional[float] = Query(1, ge=0, description="Only show vessels seen within this many hours. 0 = no filter."),
     lat_min: Optional[float] = Query(None, description="Viewport south bound"),
     lon_min: Optional[float] = Query(None, description="Viewport west bound"),
     lat_max: Optional[float] = Query(None, description="Viewport north bound"),
@@ -28,6 +29,11 @@ async def list_vessels(
 ):
     """List tracked tankers with latest positions. Supports spatial bbox filtering."""
     query = select(Vessel).where(Vessel.last_lat.isnot(None), Vessel.last_lon.isnot(None))
+
+    # Filter by recency (default: last 1 hour)
+    if seen_within_hours and seen_within_hours > 0:
+        recency_cutoff = datetime.now(timezone.utc) - timedelta(hours=seen_within_hours)
+        query = query.where(Vessel.last_seen >= recency_cutoff)
 
     if search:
         query = query.where(
@@ -78,24 +84,28 @@ async def get_vessel(mmsi: int, db: AsyncSession = Depends(get_db)):
 async def get_vessel_trail(
     mmsi: int,
     hours: int = Query(0, ge=0),
+    start_time: Optional[datetime] = Query(None),
+    end_time: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get historical positions for a vessel."""
-    if hours == 0:
-        query = (
-            select(VesselPosition)
-            .where(VesselPosition.mmsi == mmsi)
-            .order_by(VesselPosition.time.asc())
-            .limit(50000)
-        )
-    else:
+    """Get historical positions for a vessel with time filtering."""
+    query = select(VesselPosition).where(VesselPosition.mmsi == mmsi)
+
+    if start_time and end_time:
+        query = query.where(VesselPosition.time.between(start_time, end_time))
+    elif hours > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        query = (
-            select(VesselPosition)
-            .where(and_(VesselPosition.mmsi == mmsi, VesselPosition.time > cutoff))
-            .order_by(VesselPosition.time.asc())
-            .limit(5000)
-        )
+        query = query.where(VesselPosition.time > cutoff)
+
+    query = query.order_by(VesselPosition.time.asc()).limit(10000)
+    
+    result = await db.execute(query)
+    positions = result.scalars().all()
+
+    return TrailResponse(
+        mmsi=mmsi,
+        positions=[PositionResponse.model_validate(p) for p in positions],
+    )
     result = await db.execute(query)
     positions = result.scalars().all()
 

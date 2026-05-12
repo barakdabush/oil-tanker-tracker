@@ -9,12 +9,14 @@ import type { Vessel, Port, Chokepoint } from "@/lib/types";
 import { getApiUrl, getWsUrl } from "@/lib/config";
 
 // Sub-components
-import { ZoomControls, MapUpdater } from "./map/MapControls";
+import { NavigationControls, KeyboardNavigation, MapUpdater } from "./map/MapControls";
 import { VesselLayer, AnimatedTrail } from "./map/VesselLayer";
 import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
 import { getCongestionColor, geojsonToLeaflet, timeLabelMap, getVesselColor } from "./map/utils";
+import { STSLayer } from "./map/STSLayer";
+import type { STSEvent } from "@/lib/types";
 
 interface TrailPoint {
   time: string;
@@ -38,6 +40,7 @@ export default function MapView() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});
+  const [stsEvents, setStsEvents] = useState<STSEvent[]>([]);
   const [loadingTrail, setLoadingTrail] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   
@@ -98,6 +101,13 @@ export default function MapView() {
       .then(data => { if (Array.isArray(data)) setDynamicChokepoints(data); })
       .catch(() => {});
   }, [API, trailHours]);
+
+  useEffect(() => {
+    fetch(`${API}/api/alerts/sts-events?status=detected,ongoing,confirmed`)
+      .then(r => r.json())
+      .then(data => { if (data?.length > 0) setStsEvents(data); })
+      .catch(() => {});
+  }, [API]);
 
   useEffect(() => {
     const ws = new WebSocket(WS_API + "/api/ws/vessels");
@@ -172,7 +182,8 @@ export default function MapView() {
       />
 
       <MapContainer center={[25, 45]} zoom={3} style={{ width: "100%", height: "100%" }} zoomControl={false}>
-        <ZoomControls />
+        <NavigationControls />
+        <KeyboardNavigation />
         <MapUpdater selectedVessel={selectedVessel} />
         <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
         <TileLayer attribution='&copy; <a href="https://carto.com">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
@@ -214,6 +225,7 @@ export default function MapView() {
         ))}
 
         {showTrails && selectedVessel && trailLatLngs.length > 1 && <AnimatedTrail trailLatLngs={trailLatLngs} totalPts={trailLatLngs.length} vesselMmsi={selectedVessel.mmsi} />}
+        <STSLayer events={stsEvents} />
         <VesselLayer vessels={vessels} selectedVessel={selectedVessel} handleVesselClick={handleVesselClick} />
       </MapContainer>
 

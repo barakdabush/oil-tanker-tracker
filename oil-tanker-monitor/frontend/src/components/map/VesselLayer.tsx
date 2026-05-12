@@ -34,10 +34,14 @@ export const VesselLayer = React.memo(function VesselLayer({
       let marker = markersRef.current.get(v.mmsi);
       const isSelected = selectedVessel?.mmsi === v.mmsi;
       
+      const hoursSinceLastSeen = v.last_seen
+        ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
+        : 999;
+      
       const style = {
         color: isSelected ? "#ffffff" : getVesselColor(v),
         fillColor: getVesselColor(v),
-        fillOpacity: 0.9,
+        fillOpacity: hoursSinceLastSeen > 24 ? 0.3 : (hoursSinceLastSeen > 6 ? 0.5 : 0.9),
         weight: isSelected ? 3 : 2,
         radius: isSelected ? 10 : 7,
       };

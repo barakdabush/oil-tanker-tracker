@@ -2,6 +2,16 @@ import React from "react";
 import type { Vessel } from "@/lib/types";
 import { getVesselStatus, timeLabelMap } from "./utils";
 
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 interface TrailPoint {
   latitude: number;
   longitude: number;
@@ -52,12 +62,26 @@ export function VesselDetailPanel({
             <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Status</div>
             <div>
               <span className={`badge ${
+                status === "EXTENDED DARK" ? "badge-dark" :
                 status === "DARK" ? "badge-dark" : 
                 status === "At Port" ? "badge-loading" : 
                 status === "Loaded" ? "badge-unloading" : "badge-normal"
               }`}>
                 {status}
               </span>
+            </div>
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Last Seen</div>
+            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+              {selectedVessel.last_seen ? (
+                <>
+                  <span>{new Date(selectedVessel.last_seen).toLocaleString()}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 400 }}>
+                    ({timeAgo(selectedVessel.last_seen)})
+                  </span>
+                </>
+              ) : "—"}
             </div>
           </div>
           <div>
