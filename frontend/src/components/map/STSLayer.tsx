@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { Marker, Popup, Tooltip, useMap, Polyline } from "react-leaflet";
 import L from "leaflet";
-import type { STSEvent, TrailResponse } from "@/lib/types";
+import type { STSEvent, TrailResponse, Vessel } from "@/lib/types";
 import { getApiUrl } from "@/lib/config";
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
@@ -134,8 +134,12 @@ const STS_STYLES = `
 
 export const STSLayer = React.memo(function STSLayer({
   events,
+  onHighlightVessels,
+  onEnsureVessels,
 }: {
   events: STSEvent[];
+  onHighlightVessels?: (mmsis: number[] | null) => void;
+  onEnsureVessels?: (vessels: Vessel[]) => void;
 }) {
   const map = useMap();
   const [investigation, setInvestigation] = React.useState<{
@@ -145,37 +149,65 @@ export const STSLayer = React.memo(function STSLayer({
   } | null>(null);
   const [loading, setLoading] = React.useState<string | null>(null);
 
+  const fetchVessel = async (mmsi: number): Promise<Vessel | null> => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/vessels/${mmsi}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
   const fetchTrail = async (mmsi: number, start: string, end: string | null) => {
     const API_URL = getApiUrl();
-    const endParam = end ? `&end_time=${encodeURIComponent(end)}` : `&end_time=${encodeURIComponent(new Date().toISOString())}`;
-    const res = await fetch(`${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(start)}${endParam}`);
+    const paddedStart = new Date(new Date(start).getTime() - 6 * 3600_000).toISOString();
+    const paddedEnd = end
+      ? new Date(new Date(end).getTime() + 1 * 3600_000).toISOString()
+      : new Date().toISOString();
+    const res = await fetch(
+      `${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(paddedStart)}&end_time=${encodeURIComponent(paddedEnd)}`
+    );
     if (!res.ok) throw new Error("Failed to fetch trail");
     return res.json();
   };
 
   const handleInvestigate = async (event: STSEvent) => {
     setLoading(event.id);
+    onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
     try {
-      const [vA, vB] = await Promise.all([
+      const [vA, vB, vesselAInfo, vesselBInfo] = await Promise.all([
         fetchTrail(event.vessel_a_mmsi, event.start_time, event.end_time),
-        fetchTrail(event.vessel_b_mmsi, event.start_time, event.end_time)
+        fetchTrail(event.vessel_b_mmsi, event.start_time, event.end_time),
+        fetchVessel(event.vessel_a_mmsi),
+        fetchVessel(event.vessel_b_mmsi),
       ]);
+      const loadedVessels = [vesselAInfo, vesselBInfo].filter((v): v is Vessel => v !== null);
+      if (loadedVessels.length > 0) {
+        onEnsureVessels?.(loadedVessels);
+      }
+
       setInvestigation({ id: event.id, vesselA: vA, vesselB: vB });
-      
-      // Zoom to fit the trails
-      const allPoints = [
+
+      const allPoints: [number, number][] = [
         ...vA.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
-        ...vB.positions.map((p: any) => [p.latitude, p.longitude] as [number, number])
+        ...vB.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
       ];
-      if (allPoints.length > 0) {
-        map.fitBounds(allPoints, { padding: [50, 50] });
+      if (allPoints.length > 1) {
+        map.fitBounds(allPoints, { padding: [60, 60], maxZoom: Math.max(map.getZoom(), 14) });
+      } else if (event.lat != null && event.lon != null) {
+        map.flyTo([event.lat, event.lon], Math.max(map.getZoom(), 13), { duration: 0.8 });
       }
     } catch (err) {
       console.error("Investigation failed", err);
-      alert("Failed to load vessel history for this period.");
     } finally {
       setLoading(null);
     }
+  };
+
+  const handleClear = () => {
+    setInvestigation(null);
+    onHighlightVessels?.(null);
   };
 
   // Memoize icons per event
@@ -208,7 +240,7 @@ export const STSLayer = React.memo(function STSLayer({
             icon={icon}
             eventHandlers={{
               click: () => {
-                map.flyTo([event.lat!, event.lon!], 15, { duration: 1.2 });
+                handleInvestigate(event);
               },
             }}
           >
@@ -298,8 +330,8 @@ export const STSLayer = React.memo(function STSLayer({
 
       {investigation && (
         <>
-          <button className="sts-clear-btn" onClick={() => setInvestigation(null)}>
-            ✕ Clear Investigation Trails
+          <button className="sts-clear-btn" onClick={handleClear}>
+            ✕ Clear STS Selection
           </button>
           
           <Polyline 

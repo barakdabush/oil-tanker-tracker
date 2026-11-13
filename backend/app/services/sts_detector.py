@@ -186,20 +186,52 @@ class STSDetector:
                 if confidence > 0.6:
                     stats["confirmed"] += 1
 
-                sts_event = STSEvent(
-                    vessel_a_mmsi=mmsi_a,
-                    vessel_b_mmsi=mmsi_b,
-                    start_time=encounter["start_time"],
-                    end_time=datetime.now(timezone.utc),
-                    lat=encounter["lat"],
-                    lon=encounter["lon"],
-                    distance_from_port_km=encounter["distance_from_port_km"],
-                    vessel_a_draft_change=va_draft_change,
-                    vessel_b_draft_change=vb_draft_change,
-                    status="confirmed" if confidence > 0.6 else "detected",
-                    confidence=round(confidence, 2),
+                # Merge with any recent STS event for the same pair (within 6h) to avoid duplicates
+                now_utc = datetime.now(timezone.utc)
+                dedup_cutoff = encounter["start_time"] - timedelta(hours=6)
+                existing_q = (
+                    select(STSEvent)
+                    .where(
+                        and_(
+                            or_(
+                                and_(STSEvent.vessel_a_mmsi == mmsi_a, STSEvent.vessel_b_mmsi == mmsi_b),
+                                and_(STSEvent.vessel_a_mmsi == mmsi_b, STSEvent.vessel_b_mmsi == mmsi_a),
+                            ),
+                            or_(
+                                STSEvent.end_time >= dedup_cutoff,
+                                STSEvent.start_time >= dedup_cutoff,
+                            ),
+                        )
+                    )
+                    .order_by(STSEvent.start_time.desc())
+                    .limit(1)
                 )
-                session.add(sts_event)
+                existing_sts = (await session.execute(existing_q)).scalar_one_or_none()
+
+                if existing_sts:
+                    existing_sts.end_time = now_utc
+                    existing_sts.confidence = round(max(existing_sts.confidence or 0.0, confidence), 2)
+                    if confidence > 0.6:
+                        existing_sts.status = "confirmed"
+                    if va_draft_change is not None:
+                        existing_sts.vessel_a_draft_change = va_draft_change
+                    if vb_draft_change is not None:
+                        existing_sts.vessel_b_draft_change = vb_draft_change
+                else:
+                    sts_event = STSEvent(
+                        vessel_a_mmsi=mmsi_a,
+                        vessel_b_mmsi=mmsi_b,
+                        start_time=encounter["start_time"],
+                        end_time=now_utc,
+                        lat=encounter["lat"],
+                        lon=encounter["lon"],
+                        distance_from_port_km=encounter["distance_from_port_km"],
+                        vessel_a_draft_change=va_draft_change,
+                        vessel_b_draft_change=vb_draft_change,
+                        status="confirmed" if confidence > 0.6 else "detected",
+                        confidence=round(confidence, 2),
+                    )
+                    session.add(sts_event)
 
                 logger.debug(
                     f"STS EVENT: vessels {mmsi_a} + {mmsi_b}, "
