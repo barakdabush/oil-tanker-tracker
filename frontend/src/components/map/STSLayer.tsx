@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { Marker, Popup, Tooltip, useMap, Polyline } from "react-leaflet";
 import L from "leaflet";
 import type { STSEvent, TrailResponse } from "@/lib/types";
+import { getApiUrl } from "@/lib/config";
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -145,9 +146,9 @@ export const STSLayer = React.memo(function STSLayer({
   const [loading, setLoading] = React.useState<string | null>(null);
 
   const fetchTrail = async (mmsi: number, start: string, end: string | null) => {
-    const API_URL = typeof window !== 'undefined' ? (window.location.origin.includes('localhost') ? 'http://localhost:8000/api' : '/api') : '/api';
+    const API_URL = getApiUrl();
     const endParam = end ? `&end_time=${encodeURIComponent(end)}` : `&end_time=${encodeURIComponent(new Date().toISOString())}`;
-    const res = await fetch(`${API_URL}/vessels/${mmsi}/trail?start_time=${encodeURIComponent(start)}${endParam}`);
+    const res = await fetch(`${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(start)}${endParam}`);
     if (!res.ok) throw new Error("Failed to fetch trail");
     return res.json();
   };
