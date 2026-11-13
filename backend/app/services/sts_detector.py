@@ -43,10 +43,11 @@ class STSDetector:
         start_time = time.time()
         stats = {"encounters": 0, "confirmed": 0}
         async with async_session() as session:
-            # Get all vessels with recent positions that are nearly stationary
+            # Get all tanker vessels with recent positions that are nearly stationary
             cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
             vessels_q = select(Vessel).where(
                 and_(
+                    Vessel.ship_type.in_(settings.AIS_TANKER_TYPES),
                     Vessel.last_seen > cutoff,
                     Vessel.last_lat.isnot(None),
                     Vessel.last_lon.isnot(None),

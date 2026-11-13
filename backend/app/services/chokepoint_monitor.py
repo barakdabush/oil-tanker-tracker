@@ -50,10 +50,11 @@ class ChokepointMonitor:
             if not chokepoints:
                 return
 
-            # Get vessels with recent positions
+            # Get tanker vessels with recent positions
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
             vessels_q = select(Vessel).where(
                 and_(
+                    Vessel.ship_type.in_(settings.AIS_TANKER_TYPES),
                     Vessel.last_seen > cutoff,
                     Vessel.last_lat.isnot(None),
                     Vessel.last_lon.isnot(None),

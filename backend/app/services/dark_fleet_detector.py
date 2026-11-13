@@ -44,8 +44,13 @@ class DarkFleetDetector:
         now = datetime.now(timezone.utc)
 
         async with async_session() as session:
-            # Get all known vessels
-            vessels_q = select(Vessel).where(Vessel.last_seen.isnot(None))
+            # Get all known tanker vessels
+            vessels_q = select(Vessel).where(
+                and_(
+                    Vessel.ship_type.in_(settings.AIS_TANKER_TYPES),
+                    Vessel.last_seen.isnot(None),
+                )
+            )
             result = await session.execute(vessels_q)
             vessels = result.scalars().all()
 

@@ -26,7 +26,9 @@ TANKER_TYPES = set(range(80, 90))
 
 # In-memory caches to avoid excessive DB writes and UI updates
 _last_saved_positions = {}
+_last_vessel_db_updates = {}
 _last_ui_updates = {}
+_known_drafts = {}
 _known_tankers = set()  # Strict whitelist: MMSIs confirmed to be tankers
 
 # In-memory batch accumulators
@@ -46,10 +48,12 @@ async def start_ais_ingestion():
     try:
         async with async_session() as session:
             result = await session.execute(
-                select(Vessel.mmsi).where(Vessel.ship_type.in_(TANKER_TYPES))
+                select(Vessel.mmsi, Vessel.draft).where(Vessel.ship_type.in_(TANKER_TYPES))
             )
             for row in result.all():
                 _known_tankers.add(row.mmsi)
+                if row.draft is not None:
+                    _known_drafts[row.mmsi] = row.draft
         logger.info(f"Loaded {len(_known_tankers)} known tankers into whitelist.")
     except Exception as e:
         logger.error(f"Failed to seed whitelist: {e}")
@@ -188,19 +192,6 @@ async def _handle_position_report(msg: AISMessage):
     else:
         timestamp = now
 
-    async with _batch_lock:
-        v_data = _vessel_batch.setdefault(mmsi, {"mmsi": mmsi})
-        v_data["last_seen"] = timestamp
-        v_data["last_lat"] = lat
-        v_data["last_lon"] = lon
-        v_data["last_speed"] = speed
-        v_data["last_course"] = course
-        name_val = meta.get("ShipName", "").strip()
-        if name_val:
-            v_data["name"] = name_val
-        if ship_type is not None:
-            v_data["ship_type"] = ship_type
-
     # ── Smart Position Save Logic ──
     last_saved = _last_saved_positions.get(mmsi)
     save_position = False
@@ -215,6 +206,30 @@ async def _handle_position_report(msg: AISMessage):
         if dist_km > 10.0 or time_diff > 30.0 or time_diff < 0: # time_diff < 0 handles clock skew/resets
             save_position = True
 
+    # Throttle DB updates to vessels table (update when position is saved or at least every 60s)
+    last_v_update = _last_vessel_db_updates.get(mmsi)
+    should_update_vessel_db = (
+        save_position
+        or not last_v_update
+        or (timestamp - last_v_update).total_seconds() >= 60.0
+        or (timestamp - last_v_update).total_seconds() < 0
+    )
+
+    if should_update_vessel_db:
+        async with _batch_lock:
+            v_data = _vessel_batch.setdefault(mmsi, {"mmsi": mmsi})
+            v_data["last_seen"] = timestamp
+            v_data["last_lat"] = lat
+            v_data["last_lon"] = lon
+            v_data["last_speed"] = speed
+            v_data["last_course"] = course
+            name_val = meta.get("ShipName", "").strip()
+            if name_val:
+                v_data["name"] = name_val
+            if ship_type is not None:
+                v_data["ship_type"] = ship_type
+        _last_vessel_db_updates[mmsi] = timestamp
+
     if save_position:
         async with _batch_lock:
             _position_batch.append({
@@ -226,8 +241,7 @@ async def _handle_position_report(msg: AISMessage):
                 "course": course,
                 "heading": heading,
                 "nav_status": nav_status,
-                "draft": v_data.get("draft"),
-                "position": func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326),
+                "draft": _known_drafts.get(mmsi),
             })
         _last_saved_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
 
@@ -269,17 +283,19 @@ async def _handle_static_data(msg: AISMessage):
 
     ship_type = static.get("Type", None)
 
-    # Only process tankers
-    if ship_type is not None and ship_type not in TANKER_TYPES:
-        if mmsi in _known_tankers:
-            _known_tankers.remove(mmsi)
-            logger.info(f"Removed MMSI {mmsi} from whitelist (static data confirmed type {ship_type})")
+    # Strictly process only tankers (types 80-89)
+    if ship_type is not None:
+        if ship_type not in TANKER_TYPES:
+            if mmsi in _known_tankers:
+                _known_tankers.discard(mmsi)
+                logger.info(f"Removed MMSI {mmsi} from whitelist (static data confirmed type {ship_type})")
+            return
+        if mmsi not in _known_tankers:
+            _known_tankers.add(mmsi)
+            logger.info(f"Added new tanker to whitelist from static data: MMSI {mmsi}")
+    elif mmsi not in _known_tankers:
+        # Static data has no ship_type and vessel is not a known tanker -> ignore
         return
-
-    # If it is a tanker, explicitly add it to the whitelist so we start tracking its positions
-    if ship_type is not None and ship_type in TANKER_TYPES and mmsi not in _known_tankers:
-        _known_tankers.add(mmsi)
-        logger.info(f"Added new tanker to whitelist from static data: MMSI {mmsi}")
 
     dimension = static.get("Dimension", {})
     length = None
@@ -330,7 +346,9 @@ async def _handle_static_data(msg: AISMessage):
         if flag: v_data["flag"] = flag
         if length is not None: v_data["length"] = length
         if beam is not None: v_data["beam"] = beam
-        if draft is not None: v_data["draft"] = draft
+        if draft is not None:
+            v_data["draft"] = draft
+            _known_drafts[mmsi] = draft
         if destination: v_data["destination"] = destination
         if eta is not None: v_data["eta"] = eta
 
