@@ -1,7 +1,7 @@
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -86,6 +86,16 @@ async def run_migrations_online() -> None:
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+
+    # Reclaim dead tuples and update planner statistics outside transaction block
+    try:
+        async with connectable.connect() as vacuum_conn:
+            autocommit_conn = await vacuum_conn.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit_conn.execute(
+                text("VACUUM (ANALYZE) vessels, ais_gaps, sts_events, cargo_events, voyage_legs")
+            )
+    except Exception:
+        pass
 
     await connectable.dispose()
 

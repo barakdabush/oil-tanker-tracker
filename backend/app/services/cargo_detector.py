@@ -47,9 +47,12 @@ class CargoDetector:
         start_time = time.time()
         stats = {"loading": 0, "unloading": 0}
         async with async_session() as session:
-            # Get all vessels with recent positions
+            # Get all tanker vessels with recent positions
             vessels_q = select(Vessel).where(
-                Vessel.last_seen > datetime.now(timezone.utc) - timedelta(hours=1)
+                and_(
+                    Vessel.ship_type.in_(settings.AIS_TANKER_TYPES),
+                    Vessel.last_seen > datetime.now(timezone.utc) - timedelta(hours=1),
+                )
             )
             result = await session.execute(vessels_q)
             vessels = result.scalars().all()

@@ -2,7 +2,6 @@
 
 from datetime import datetime
 
-from geoalchemy2 import Geography
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -59,11 +58,9 @@ class VesselPosition(Base):
     heading = Column(Float, nullable=True)  # True heading (degrees)
     draft = Column(Float, nullable=True)
     nav_status = Column(Integer, nullable=True)  # Navigation status code
-    position = Column(Geography("POINT", srid=4326, spatial_index=False), nullable=True)
 
     vessel = relationship("Vessel", back_populates="positions")
 
     __table_args__ = (
         Index("idx_vessel_positions_mmsi_time", "mmsi", "time"),
-        Index("idx_vessel_positions_position", "position", postgresql_using="gist"),
     )

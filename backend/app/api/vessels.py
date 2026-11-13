@@ -106,13 +106,6 @@ async def get_vessel_trail(
         mmsi=mmsi,
         positions=[PositionResponse.model_validate(p) for p in positions],
     )
-    result = await db.execute(query)
-    positions = result.scalars().all()
-
-    return TrailResponse(
-        mmsi=mmsi,
-        positions=[PositionResponse.model_validate(p) for p in positions],
-    )
 
 
 @router.get("/{mmsi}/cargo-events", response_model=list[CargoEventResponse])
