@@ -7,10 +7,12 @@ import { getVesselColor } from "./utils";
 export const VesselLayer = React.memo(function VesselLayer({
   vessels,
   selectedVessel,
+  highlightedMmsis,
   handleVesselClick,
 }: {
   vessels: Vessel[];
   selectedVessel: Vessel | null;
+  highlightedMmsis?: number[] | null;
   handleVesselClick: (v: Vessel) => void;
 }) {
   const map = useMap();
@@ -26,6 +28,7 @@ export const VesselLayer = React.memo(function VesselLayer({
 
   useEffect(() => {
     const currentMmsis = new Set<number>();
+    const hasHighlight = Boolean(highlightedMmsis && highlightedMmsis.length > 0);
 
     vessels.forEach(v => {
       if (v.last_lat == null || v.last_lon == null) return;
@@ -33,18 +36,45 @@ export const VesselLayer = React.memo(function VesselLayer({
 
       let marker = markersRef.current.get(v.mmsi);
       const isSelected = selectedVessel?.mmsi === v.mmsi;
-      
+      const highlightIdx = hasHighlight ? highlightedMmsis!.indexOf(v.mmsi) : -1;
+      const isHighlighted = highlightIdx !== -1;
+
       const hoursSinceLastSeen = v.last_seen
         ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
         : 999;
-      
-      const style = {
-        color: isSelected ? "#ffffff" : getVesselColor(v),
-        fillColor: getVesselColor(v),
-        fillOpacity: hoursSinceLastSeen > 24 ? 0.3 : (hoursSinceLastSeen > 6 ? 0.5 : 0.9),
-        weight: isSelected ? 3 : 2,
-        radius: isSelected ? 10 : 7,
-      };
+
+      let style: L.CircleMarkerOptions;
+      if (hasHighlight) {
+        if (isHighlighted) {
+          const highlightColor = highlightIdx === 0 ? "#3b82f6" : "#10b981";
+          style = {
+            color: "#ffffff",
+            fillColor: highlightColor,
+            opacity: 1,
+            fillOpacity: 1,
+            weight: 4,
+            radius: 11,
+          };
+        } else {
+          style = {
+            color: "#475569",
+            fillColor: "#334155",
+            opacity: 0.25,
+            fillOpacity: 0.15,
+            weight: 1,
+            radius: 4,
+          };
+        }
+      } else {
+        style = {
+          color: isSelected ? "#ffffff" : getVesselColor(v),
+          fillColor: getVesselColor(v),
+          opacity: 1,
+          fillOpacity: hoursSinceLastSeen > 24 ? 0.3 : (hoursSinceLastSeen > 6 ? 0.5 : 0.9),
+          weight: isSelected ? 3 : 2,
+          radius: isSelected ? 10 : 7,
+        };
+      }
 
       if (!marker) {
         marker = L.circleMarker([v.last_lat, v.last_lon], style).addTo(map);
@@ -55,7 +85,11 @@ export const VesselLayer = React.memo(function VesselLayer({
       } else {
         marker.setLatLng([v.last_lat, v.last_lon]);
         marker.setStyle(style);
-        marker.setRadius(style.radius);
+        if (style.radius != null) marker.setRadius(style.radius);
+      }
+
+      if (isHighlighted || isSelected) {
+        marker.bringToFront();
       }
     });
 
@@ -65,7 +99,7 @@ export const VesselLayer = React.memo(function VesselLayer({
         markersRef.current.delete(mmsi);
       }
     });
-  }, [vessels, selectedVessel, map, handleVesselClick]);
+  }, [vessels, selectedVessel, highlightedMmsis, map, handleVesselClick]);
 
   useEffect(() => {
     (window as any).__vesselMarkersMap = markersRef.current;
@@ -73,7 +107,11 @@ export const VesselLayer = React.memo(function VesselLayer({
 
   return null;
 }, (prevProps, nextProps) => {
-  return prevProps.vessels === nextProps.vessels && prevProps.selectedVessel?.mmsi === nextProps.selectedVessel?.mmsi;
+  return (
+    prevProps.vessels === nextProps.vessels &&
+    prevProps.selectedVessel?.mmsi === nextProps.selectedVessel?.mmsi &&
+    prevProps.highlightedMmsis === nextProps.highlightedMmsis
+  );
 });
 
 export const AnimatedTrail = React.memo(function AnimatedTrail({ trailLatLngs, totalPts, vesselMmsi }: { trailLatLngs: [number, number][], totalPts: number, vesselMmsi: number }) {
