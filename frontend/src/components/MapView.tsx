@@ -41,6 +41,7 @@ export default function MapView() {
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});
   const [stsEvents, setStsEvents] = useState<STSEvent[]>([]);
+  const [stsHighlightedMmsis, setStsHighlightedMmsis] = useState<number[] | null>(null);
   const [loadingTrail, setLoadingTrail] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   
@@ -48,6 +49,10 @@ export default function MapView() {
   const WS_API = getWsUrl();
 
   const selectedVesselRef = useRef(selectedVessel);
+  const stsHighlightedMmsisRef = useRef(stsHighlightedMmsis);
+  useEffect(() => {
+    stsHighlightedMmsisRef.current = stsHighlightedMmsis;
+  }, [stsHighlightedMmsis]);
   useEffect(() => {
     selectedVesselRef.current = selectedVessel;
     if (selectedVessel) allVesselsRef.current.set(selectedVessel.mmsi, selectedVessel);
@@ -126,8 +131,21 @@ export default function MapView() {
                 allVesselsRef.current.set(data.mmsi, updated);
                 const color = getVesselColor(updated);
                 const isSelected = selectedVesselRef.current?.mmsi === data.mmsi;
-                marker.setStyle({ color: isSelected ? "#ffffff" : color, fillColor: color, fillOpacity: 0.9, weight: isSelected ? 3 : 2 });
-                marker.setRadius(isSelected ? 10 : 7);
+                const activeHighlight = stsHighlightedMmsisRef.current;
+                if (activeHighlight && activeHighlight.length > 0) {
+                  const hIdx = activeHighlight.indexOf(data.mmsi);
+                  if (hIdx !== -1) {
+                    marker.setStyle({ color: "#ffffff", fillColor: hIdx === 0 ? "#3b82f6" : "#10b981", opacity: 1, fillOpacity: 1, weight: 4 });
+                    marker.setRadius(11);
+                    marker.bringToFront();
+                  } else {
+                    marker.setStyle({ color: "#475569", fillColor: "#334155", opacity: 0.25, fillOpacity: 0.15, weight: 1 });
+                    marker.setRadius(4);
+                  }
+                } else {
+                  marker.setStyle({ color: isSelected ? "#ffffff" : color, fillColor: color, opacity: 1, fillOpacity: 0.9, weight: isSelected ? 3 : 2 });
+                  marker.setRadius(isSelected ? 10 : 7);
+                }
               }
             }
           }
@@ -225,8 +243,17 @@ export default function MapView() {
         ))}
 
         {showTrails && selectedVessel && trailLatLngs.length > 1 && <AnimatedTrail trailLatLngs={trailLatLngs} totalPts={trailLatLngs.length} vesselMmsi={selectedVessel.mmsi} />}
-        <STSLayer events={stsEvents} />
-        <VesselLayer vessels={vessels} selectedVessel={selectedVessel} handleVesselClick={handleVesselClick} />
+        <STSLayer
+          events={stsEvents}
+          onHighlightVessels={setStsHighlightedMmsis}
+          onEnsureVessels={mergeVessels}
+        />
+        <VesselLayer
+          vessels={vessels}
+          selectedVessel={selectedVessel}
+          highlightedMmsis={stsHighlightedMmsis}
+          handleVesselClick={handleVesselClick}
+        />
       </MapContainer>
 
       <MapControlsAndLegend showPorts={showPorts} setShowPorts={setShowPorts} showChokepoints={showChokepoints} setShowChokepoints={setShowChokepoints} showTrails={showTrails} setShowTrails={setShowTrails} selectedVessel={selectedVessel} trailLatLngsCount={trailLatLngs.length} />

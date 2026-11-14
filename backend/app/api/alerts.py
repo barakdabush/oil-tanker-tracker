@@ -68,6 +68,7 @@ async def list_sts_events(
     status: Optional[str] = Query(None, description="detected, ongoing, confirmed, dismissed"),
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(50, ge=1, le=200),
+    deduplicate: bool = Query(True, description="Collapse repeated encounters between the same vessel pair within 24h"),
     db: AsyncSession = Depends(get_db),
 ):
     """List recent ship-to-ship transfer events."""
@@ -81,9 +82,25 @@ async def list_sts_events(
         else:
             query = query.where(STSEvent.status == status)
 
-    query = query.order_by(desc(STSEvent.start_time)).limit(limit)
+    fetch_limit = limit * 4 if deduplicate else limit
+    query = query.order_by(desc(STSEvent.start_time)).limit(fetch_limit)
     result = await db.execute(query)
     events = result.scalars().all()
+
+    if deduplicate:
+        seen_pairs: dict[frozenset[int], datetime] = {}
+        unique_events = []
+        for e in events:
+            pair = frozenset((e.vessel_a_mmsi, e.vessel_b_mmsi))
+            prev_time = seen_pairs.get(pair)
+            if prev_time and abs((prev_time - e.start_time).total_seconds()) < 86400:
+                continue
+            seen_pairs[pair] = e.start_time
+            unique_events.append(e)
+            if len(unique_events) >= limit:
+                break
+        events = unique_events
+
     return [STSEventResponse.model_validate(e) for e in events]
 
 
