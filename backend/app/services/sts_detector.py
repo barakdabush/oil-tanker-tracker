@@ -209,9 +209,12 @@ class STSDetector:
                 existing_sts = (await session.execute(existing_q)).scalar_one_or_none()
 
                 if existing_sts:
+                    total_duration = (now_utc - existing_sts.start_time).total_seconds() / 60
+                    if duration <= 120 < total_duration:
+                        confidence = min(confidence + 0.2, 1.0)
                     existing_sts.end_time = now_utc
                     existing_sts.confidence = round(max(existing_sts.confidence or 0.0, confidence), 2)
-                    if confidence > 0.6:
+                    if confidence > 0.6 and existing_sts.status != "dismissed":
                         existing_sts.status = "confirmed"
                     if va_draft_change is not None:
                         existing_sts.vessel_a_draft_change = va_draft_change

@@ -148,6 +148,7 @@ export const STSLayer = React.memo(function STSLayer({
     vesselB: TrailResponse;
   } | null>(null);
   const [loading, setLoading] = React.useState<string | null>(null);
+  const latestRequestRef = React.useRef<string | null>(null);
 
   const fetchVessel = async (mmsi: number): Promise<Vessel | null> => {
     try {
@@ -173,8 +174,8 @@ export const STSLayer = React.memo(function STSLayer({
   };
 
   const handleInvestigate = async (event: STSEvent) => {
+    latestRequestRef.current = event.id;
     setLoading(event.id);
-    onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
     try {
       const [vA, vB, vesselAInfo, vesselBInfo] = await Promise.all([
         fetchTrail(event.vessel_a_mmsi, event.start_time, event.end_time),
@@ -182,11 +183,14 @@ export const STSLayer = React.memo(function STSLayer({
         fetchVessel(event.vessel_a_mmsi),
         fetchVessel(event.vessel_b_mmsi),
       ]);
+      if (latestRequestRef.current !== event.id) return;
+
       const loadedVessels = [vesselAInfo, vesselBInfo].filter((v): v is Vessel => v !== null);
       if (loadedVessels.length > 0) {
         onEnsureVessels?.(loadedVessels);
       }
 
+      onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
       setInvestigation({ id: event.id, vesselA: vA, vesselB: vB });
 
       const allPoints: [number, number][] = [
@@ -201,11 +205,14 @@ export const STSLayer = React.memo(function STSLayer({
     } catch (err) {
       console.error("Investigation failed", err);
     } finally {
-      setLoading(null);
+      if (latestRequestRef.current === event.id) {
+        setLoading(null);
+      }
     }
   };
 
   const handleClear = () => {
+    latestRequestRef.current = null;
     setInvestigation(null);
     onHighlightVessels?.(null);
   };
