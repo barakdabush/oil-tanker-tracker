@@ -167,7 +167,7 @@ export const STSLayer = React.memo(function STSLayer({
       ? new Date(new Date(end).getTime() + 1 * 3600_000).toISOString()
       : new Date().toISOString();
     const res = await fetch(
-      `${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(paddedStart)}&end_time=${encodeURIComponent(paddedEnd)}`
+      `${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(paddedStart)}&end_time=${encodeURIComponent(paddedEnd)}&max_points=300`
     );
     if (!res.ok) throw new Error("Failed to fetch trail");
     return res.json();
@@ -176,34 +176,58 @@ export const STSLayer = React.memo(function STSLayer({
   const handleInvestigate = async (event: STSEvent) => {
     latestRequestRef.current = event.id;
     setLoading(event.id);
-    try {
-      const [vA, vB, vesselAInfo, vesselBInfo] = await Promise.all([
-        fetchTrail(event.vessel_a_mmsi, event.start_time, event.end_time),
-        fetchTrail(event.vessel_b_mmsi, event.start_time, event.end_time),
-        fetchVessel(event.vessel_a_mmsi),
-        fetchVessel(event.vessel_b_mmsi),
-      ]);
-      if (latestRequestRef.current !== event.id) return;
+    onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
 
+    if (event.lat != null && event.lon != null) {
+      map.flyTo([event.lat, event.lon], Math.max(map.getZoom(), 12), { duration: 0.5 });
+    }
+
+    const vesselsPromise = Promise.all([
+      fetchVessel(event.vessel_a_mmsi),
+      fetchVessel(event.vessel_b_mmsi),
+    ]).then(([vesselAInfo, vesselBInfo]) => {
+      if (latestRequestRef.current !== event.id) return [];
       const loadedVessels = [vesselAInfo, vesselBInfo].filter((v): v is Vessel => v !== null);
       if (loadedVessels.length > 0) {
         onEnsureVessels?.(loadedVessels);
+        const vesselCoords: [number, number][] = loadedVessels
+          .filter((v) => v.last_lat != null && v.last_lon != null)
+          .map((v) => [v.last_lat!, v.last_lon!]);
+        if (event.lat != null && event.lon != null) {
+          vesselCoords.push([event.lat, event.lon]);
+        }
+        if (vesselCoords.length > 1) {
+          map.fitBounds(vesselCoords, { padding: [80, 80], maxZoom: 13 });
+        }
       }
+      return loadedVessels;
+    });
 
-      onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
+    try {
+      const [vA, vB, loadedVessels] = await Promise.all([
+        fetchTrail(event.vessel_a_mmsi, event.start_time, event.end_time),
+        fetchTrail(event.vessel_b_mmsi, event.start_time, event.end_time),
+        vesselsPromise,
+      ]);
+      if (latestRequestRef.current !== event.id) return;
+
       setInvestigation({ id: event.id, vesselA: vA, vesselB: vB });
 
       const allPoints: [number, number][] = [
         ...vA.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
         ...vB.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
+        ...loadedVessels
+          .filter((v) => v.last_lat != null && v.last_lon != null)
+          .map((v) => [v.last_lat!, v.last_lon!] as [number, number]),
       ];
       if (allPoints.length > 1) {
-        map.fitBounds(allPoints, { padding: [60, 60], maxZoom: Math.max(map.getZoom(), 14) });
-      } else if (event.lat != null && event.lon != null) {
-        map.flyTo([event.lat, event.lon], Math.max(map.getZoom(), 13), { duration: 0.8 });
+        map.fitBounds(allPoints, { padding: [60, 60], maxZoom: 14 });
       }
     } catch (err) {
       console.error("Investigation failed", err);
+      if (latestRequestRef.current === event.id && !investigation) {
+        onHighlightVessels?.(null);
+      }
     } finally {
       if (latestRequestRef.current === event.id) {
         setLoading(null);
