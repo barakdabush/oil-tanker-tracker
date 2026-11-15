@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.global_oil_features import OilMarketSnapshot, OilPrice
 from app.schemas.global_oil_features import MarketSnapshotResponse
+from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
 
 router = APIRouter()
 
@@ -62,3 +63,29 @@ async def get_global_oil_snapshots(
         )
         for row in rows
     ]
+
+
+@router.post("/recalculate")
+async def recalculate_global_oil_snapshots(
+    days: int = Query(90, ge=1, le=365, description="Recalculate existing snapshots within the last N days"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recalculate market feature snapshots for existing dates within the last N days (plus yesterday)."""
+    now_utc = datetime.now(timezone.utc)
+    cutoff = (now_utc - timedelta(days=days)).date()
+    yesterday = (now_utc - timedelta(days=1)).date()
+
+    existing_dates = (
+        await db.execute(
+            select(OilMarketSnapshot.snapshot_date)
+            .where(OilMarketSnapshot.snapshot_date >= cutoff)
+            .order_by(OilMarketSnapshot.snapshot_date.asc())
+        )
+    ).scalars().all()
+
+    dates_to_recalc = sorted(set(existing_dates) | {yesterday})
+    builder = GlobalOilFeatureBuilder()
+    for target_date in dates_to_recalc:
+        await builder.aggregate(target_date=target_date)
+
+    return {"recalculated_days": len(dates_to_recalc)}
