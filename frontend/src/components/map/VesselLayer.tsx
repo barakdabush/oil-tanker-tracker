@@ -130,8 +130,66 @@ export const VesselLayer = React.memo(function VesselLayer({
   );
 });
 
-export const AnimatedTrail = React.memo(function AnimatedTrail({ trailLatLngs, totalPts, vesselMmsi }: { trailLatLngs: [number, number][], totalPts: number, vesselMmsi: number }) {
-  if (trailLatLngs.length < 2) return null;
+export interface TrailPointItem {
+  time: string;
+  latitude: number;
+  longitude: number;
+  speed?: number | null;
+}
+
+const TRAIL_COLOR_BUCKETS = 48;
+
+function getTrailAgeColor(t: number): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  const hue = Math.round(clamped * 130); // 0 = red (oldest), 65 = yellow, 130 = green (newest)
+  return `hsl(${hue}, 90%, 52%)`;
+}
+
+export const AnimatedTrail = React.memo(function AnimatedTrail({
+  trailPoints,
+  vesselMmsi,
+}: {
+  trailPoints: TrailPointItem[];
+  vesselMmsi: number;
+}) {
+  if (trailPoints.length < 2) return null;
+
+  const times = trailPoints.map((p) => {
+    const ms = Date.parse(p.time);
+    return Number.isFinite(ms) ? ms : 0;
+  });
+  const minTime = times[0];
+  const maxTime = times[times.length - 1];
+  const span = maxTime - minTime;
+
+  const getRatio = (idx: number) => {
+    if (span > 0) return Math.max(0, Math.min(1, (times[idx] - minTime) / span));
+    return trailPoints.length > 1 ? idx / (trailPoints.length - 1) : 1;
+  };
+
+  // Group consecutive segments into color buckets (max ~48 Polylines) for smooth gradient + fast rendering
+  const runs: { positions: [number, number][]; color: string }[] = [];
+  let currentBucket = -1;
+
+  for (let i = 0; i < trailPoints.length - 1; i++) {
+    const midRatio = (getRatio(i) + getRatio(i + 1)) / 2;
+    const bucket = Math.min(TRAIL_COLOR_BUCKETS - 1, Math.floor(midRatio * TRAIL_COLOR_BUCKETS));
+    const p1: [number, number] = [trailPoints[i].latitude, trailPoints[i].longitude];
+    const p2: [number, number] = [trailPoints[i + 1].latitude, trailPoints[i + 1].longitude];
+
+    if (bucket !== currentBucket || runs.length === 0) {
+      currentBucket = bucket;
+      runs.push({
+        positions: [p1, p2],
+        color: getTrailAgeColor((bucket + 0.5) / TRAIL_COLOR_BUCKETS),
+      });
+    } else {
+      runs[runs.length - 1].positions.push(p2);
+    }
+  }
+
+  const allLatLngs: [number, number][] = trailPoints.map((p) => [p.latitude, p.longitude]);
+  const dotStep = Math.max(1, Math.floor(trailPoints.length / 30));
 
   return (
     <div key={`trail-container-${vesselMmsi}`}>
@@ -146,37 +204,46 @@ export const AnimatedTrail = React.memo(function AnimatedTrail({ trailLatLngs, t
         }
       `}</style>
 
-      <Polyline
-        positions={trailLatLngs}
-        pathOptions={{
-          color: "#0284c7",
-          weight: 3,
-          opacity: 0.4,
-        }}
-      />
-      
-      {trailLatLngs
-        .filter((_, i) => i % Math.max(1, Math.floor(totalPts / 30)) === 0)
-        .map((pt, i) => (
+      {runs.map((run, idx) => (
+        <Polyline
+          key={`trail-seg-${vesselMmsi}-${idx}`}
+          positions={run.positions}
+          pathOptions={{
+            color: run.color,
+            weight: 3.5,
+            opacity: 0.9,
+          }}
+        />
+      ))}
+
+      {trailPoints
+        .map((pt, idx) => ({ pt, idx }))
+        .filter(({ idx }) => idx % dotStep === 0 || idx === trailPoints.length - 1)
+        .map(({ pt, idx }) => (
           <CircleMarker
-            key={`base-dot-${vesselMmsi}-${i}`}
-            center={pt}
-            radius={2}
-            pathOptions={{ color: "#38bdf8", fillColor: "#38bdf8", fillOpacity: 0.6, weight: 0 }}
+            key={`base-dot-${vesselMmsi}-${idx}`}
+            center={[pt.latitude, pt.longitude]}
+            radius={2.5}
+            pathOptions={{
+              color: getTrailAgeColor(getRatio(idx)),
+              fillColor: getTrailAgeColor(getRatio(idx)),
+              fillOpacity: 0.85,
+              weight: 0,
+            }}
           />
         ))}
 
       <Polyline
-        positions={trailLatLngs}
+        positions={allLatLngs}
         pathOptions={{
-          color: "#ffffff", 
-          weight: 3,
-          opacity: 0.9,
-          className: `animated-dash-line-${vesselMmsi}`
+          color: "#ffffff",
+          weight: 2,
+          opacity: 0.3,
+          className: `animated-dash-line-${vesselMmsi}`,
         }}
       />
     </div>
   );
 }, (prevProps, nextProps) => {
-  return prevProps.vesselMmsi === nextProps.vesselMmsi && prevProps.trailLatLngs === nextProps.trailLatLngs;
+  return prevProps.vesselMmsi === nextProps.vesselMmsi && prevProps.trailPoints === nextProps.trailPoints;
 });

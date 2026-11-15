@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
 import { useMap } from "react-leaflet";
+import L from "leaflet";
 import type { Vessel } from "@/lib/types";
 
 /** Keyboard navigation: arrows pan, +/- zoom. Auto-focuses the map container. */
@@ -124,12 +125,46 @@ export function NavigationControls() {
   );
 }
 
-export function MapUpdater({ selectedVessel }: { selectedVessel: Vessel | null }) {
+export function MapUpdater({ selectedVessel, trailLatLngs }: { selectedVessel: Vessel | null; trailLatLngs: [number, number][] }) {
   const map = useMap();
+  const focusedMmsiRef = React.useRef<number | null>(null);
+  const fittedTrailMmsiRef = React.useRef<number | null>(null);
+
   useEffect(() => {
-    if (selectedVessel && selectedVessel.last_lat != null && selectedVessel.last_lon != null) {
-      map.flyTo([selectedVessel.last_lat, selectedVessel.last_lon], 10, { duration: 1.5 });
+    if (!selectedVessel) {
+      focusedMmsiRef.current = null;
+      fittedTrailMmsiRef.current = null;
+      return;
+    }
+
+    if (focusedMmsiRef.current !== selectedVessel.mmsi) {
+      focusedMmsiRef.current = selectedVessel.mmsi;
+      fittedTrailMmsiRef.current = null;
+
+      if (selectedVessel.last_lat != null && selectedVessel.last_lon != null) {
+        const targetZoom = Math.max(map.getZoom(), 10);
+        map.flyTo([selectedVessel.last_lat, selectedVessel.last_lon], targetZoom, { duration: 1.0 });
+      }
     }
   }, [selectedVessel, map]);
+
+  useEffect(() => {
+    if (
+      selectedVessel &&
+      trailLatLngs.length >= 2 &&
+      fittedTrailMmsiRef.current !== selectedVessel.mmsi
+    ) {
+      fittedTrailMmsiRef.current = selectedVessel.mmsi;
+      const bounds = L.latLngBounds(trailLatLngs);
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, {
+          padding: [50, 50],
+          maxZoom: Math.max(map.getZoom(), 12),
+          animate: true,
+        });
+      }
+    }
+  }, [selectedVessel, trailLatLngs, map]);
+
   return null;
 }

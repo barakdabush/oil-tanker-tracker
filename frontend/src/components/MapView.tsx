@@ -206,9 +206,13 @@ export default function MapView() {
   }, [searchQuery, API]);
 
   const currentTrail = selectedVessel ? (vesselTrails[selectedVessel.mmsi] || []) : [];
-  const trailLatLngs: [number, number][] = useMemo(
-    () => currentTrail.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude]),
+  const validTrailPoints = useMemo(
+    () => currentTrail.filter(p => p.latitude && p.longitude),
     [currentTrail]
+  );
+  const trailLatLngs: [number, number][] = useMemo(
+    () => validTrailPoints.map(p => [p.latitude, p.longitude]),
+    [validTrailPoints]
   );
 
   const showVesselDock = activeDetail === "vessel" && selectedVessel !== null;
@@ -236,7 +240,7 @@ export default function MapView() {
           <MapResizeHandler hasBottomPanel={hasBottomPanel} />
           <NavigationControls />
           <KeyboardNavigation />
-          <MapUpdater selectedVessel={selectedVessel} />
+          <MapUpdater selectedVessel={selectedVessel} trailLatLngs={trailLatLngs} />
           <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
           <TileLayer
             attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
@@ -286,7 +290,7 @@ export default function MapView() {
             </CircleMarker>
           ))}
 
-          {showTrails && selectedVessel && trailLatLngs.length > 1 && <AnimatedTrail trailLatLngs={trailLatLngs} totalPts={trailLatLngs.length} vesselMmsi={selectedVessel.mmsi} />}
+          {showTrails && selectedVessel && validTrailPoints.length > 1 && <AnimatedTrail trailPoints={validTrailPoints} vesselMmsi={selectedVessel.mmsi} />}
           <STSLayer
             events={stsEvents}
             selectedStsEvent={selectedStsEvent}

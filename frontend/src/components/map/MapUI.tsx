@@ -74,8 +74,8 @@ export function MapControlsAndLegend({ showPorts, setShowPorts, showChokepoints,
         <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}><div className="legend-dot" style={{ background: "#3b82f6" }}></div>Oil Port / Terminal</div>
         {selectedVessel && trailLatLngsCount > 0 && (
           <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-            <div style={{ width: 16, height: 3, background: "linear-gradient(to right, #00ffff, #ffffff)", borderRadius: 2, marginRight: 6 }}></div>
-            Route ({trailLatLngsCount} pts)
+            <div style={{ width: 22, height: 4, background: "linear-gradient(to right, hsl(0, 90%, 52%), hsl(65, 90%, 52%), hsl(130, 90%, 52%))", borderRadius: 2, marginRight: 6 }}></div>
+            Route (Old → Now, {trailLatLngsCount} pts)
           </div>
         )}
       </div>
