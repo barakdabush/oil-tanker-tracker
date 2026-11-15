@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { getApiUrl } from "@/lib/config";
 import type { MarketSnapshotResponse } from "@/lib/types";
@@ -19,25 +19,45 @@ const ResponsiveContainer = dynamic(() => import("recharts").then((m) => m.Respo
 export default function MarketIntelligencePage() {
   const [data, setData] = useState<MarketSnapshotResponse[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [recalculating, setRecalculating] = useState<boolean>(false);
   const [selectedFeature, setSelectedFeature] = useState<keyof MarketSnapshotResponse>("total_active_vessels");
 
-  useEffect(() => {
+  const fetchSnapshots = useCallback(async () => {
     const API = getApiUrl();
-    fetch(`${API}/api/global-oil-features/snapshots?days=90`)
-      .then((r) => r.json())
-      .then((json: MarketSnapshotResponse[]) => {
-        // Reverse correctly so the oldest data is on the left of the chart
-        const sortedData = json.sort(
-          (a, b) => new Date(a.snapshot_date).getTime() - new Date(b.snapshot_date).getTime()
-        );
-        setData(sortedData);
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error("Failed to load market features", err);
-        setLoading(false);
-      });
+    try {
+      const r = await fetch(`${API}/api/global-oil-features/snapshots?days=90`);
+      const json: MarketSnapshotResponse[] = await r.json();
+      const sortedData = json.sort(
+        (a, b) => new Date(a.snapshot_date).getTime() - new Date(b.snapshot_date).getTime()
+      );
+      setData(sortedData);
+    } catch (err) {
+      console.error("Failed to load market features", err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchSnapshots();
+  }, [fetchSnapshots]);
+
+  const handleRecalculate = async () => {
+    setRecalculating(true);
+    const API = getApiUrl();
+    try {
+      const res = await fetch(`${API}/api/global-oil-features/recalculate?days=90`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        await fetchSnapshots();
+      }
+    } catch (err) {
+      console.error("Failed to recalculate market features", err);
+    } finally {
+      setRecalculating(false);
+    }
+  };
 
   if (loading) {
     return <div className="page-body"><div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Loading Market Intelligence data...</div></div>;
@@ -112,30 +132,51 @@ export default function MarketIntelligencePage() {
 
         {/* The Dual-Axis ML Correlation Chart */}
         <div className="panel animate-in" style={{ animationDelay: "0.1s", marginBottom: 24 }}>
-          <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h3>🔍 ML Feature Correlations</h3>
               <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Last 90 Days</span>
             </div>
-            
-            <select 
-              value={selectedFeature} 
-              onChange={(e) => setSelectedFeature(e.target.value as keyof MarketSnapshotResponse)}
-              style={{
-                background: "rgba(30, 41, 59, 0.8)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                fontSize: "14px",
-                outline: "none",
-                cursor: "pointer"
-              }}
-            >
-              {featureOptions.map(opt => (
-                <option key={opt.key} value={opt.key}>{opt.label}</option>
-              ))}
-            </select>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                onClick={handleRecalculate}
+                disabled={recalculating}
+                title="Recalculate historical market features from vessel data"
+                style={{
+                  background: recalculating ? "rgba(6, 182, 212, 0.12)" : "rgba(6, 182, 212, 0.2)",
+                  border: "1px solid rgba(6, 182, 212, 0.45)",
+                  color: "#22d3ee",
+                  padding: "8px 12px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: recalculating ? "not-allowed" : "pointer",
+                  opacity: recalculating ? 0.7 : 1,
+                }}
+              >
+                {recalculating ? "⏳ Recalculating..." : "🔄 Recalculate"}
+              </button>
+
+              <select 
+                value={selectedFeature} 
+                onChange={(e) => setSelectedFeature(e.target.value as keyof MarketSnapshotResponse)}
+                style={{
+                  background: "rgba(30, 41, 59, 0.8)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-primary)",
+                  padding: "8px 12px",
+                  borderRadius: "6px",
+                  fontSize: "14px",
+                  outline: "none",
+                  cursor: "pointer"
+                }}
+              >
+                {featureOptions.map(opt => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
           
           <div className="panel-body">
