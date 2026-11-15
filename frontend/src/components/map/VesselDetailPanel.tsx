@@ -39,16 +39,47 @@ export function VesselDetailPanel({
   const status = getVesselStatus(selectedVessel);
   
   return (
-    <div className="map-overlay-panel animate-slide">
-      <div className="panel-header" style={{ background: "var(--bg-secondary)" }}>
-        <h3>🚢 {selectedVessel.name || `MMSI ${selectedVessel.mmsi}`}</h3>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 18 }}>✕</button>
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+      <div
+        className="panel-header"
+        style={{
+          background: "var(--bg-card)",
+          padding: "10px 16px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            🚢 {selectedVessel.name || `MMSI ${selectedVessel.mmsi}`}
+          </h3>
+          <span className={`badge ${
+            status === "EXTENDED DARK" ? "badge-dark" :
+            status === "DARK" ? "badge-dark" :
+            status === "At Port" ? "badge-loading" :
+            status === "Loaded" ? "badge-unloading" : "badge-normal"
+          }`}>
+            {status}
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Close vessel details"
+          style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 18, lineHeight: 1 }}
+        >
+          ✕
+        </button>
       </div>
-      <div className="panel-body">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 13 }}>
+
+      <div style={{ padding: "12px 16px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "8px 14px", fontSize: 12 }}>
           <div>
             <div style={{ color: "var(--text-muted)", fontSize: 11 }}>MMSI</div>
-            <div style={{ fontWeight: 600 }}>{selectedVessel.mmsi}</div>
+            <div style={{ fontWeight: 600, fontFamily: "monospace" }}>{selectedVessel.mmsi}</div>
           </div>
           <div>
             <div style={{ color: "var(--text-muted)", fontSize: 11 }}>IMO</div>
@@ -59,34 +90,10 @@ export function VesselDetailPanel({
             <div style={{ fontWeight: 600 }}>{selectedVessel.flag || "—"}</div>
           </div>
           <div>
-            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Status</div>
-            <div>
-              <span className={`badge ${
-                status === "EXTENDED DARK" ? "badge-dark" :
-                status === "DARK" ? "badge-dark" : 
-                status === "At Port" ? "badge-loading" : 
-                status === "Loaded" ? "badge-unloading" : "badge-normal"
-              }`}>
-                {status}
-              </span>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Speed / Course</div>
+            <div style={{ fontWeight: 600 }}>
+              {selectedVessel.last_speed?.toFixed(1) || "—"} kn · {selectedVessel.last_course?.toFixed(0) || "—"}°
             </div>
-          </div>
-          <div style={{ gridColumn: "1 / -1" }}>
-            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Last Seen</div>
-            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-              {selectedVessel.last_seen ? (
-                <>
-                  <span>{new Date(selectedVessel.last_seen).toLocaleString()}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 400 }}>
-                    ({timeAgo(selectedVessel.last_seen)})
-                  </span>
-                </>
-              ) : "—"}
-            </div>
-          </div>
-          <div>
-            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Speed</div>
-            <div style={{ fontWeight: 600 }}>{selectedVessel.last_speed?.toFixed(1) || "—"} kn</div>
           </div>
           <div>
             <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Draft</div>
@@ -97,26 +104,31 @@ export function VesselDetailPanel({
             <div style={{ fontWeight: 600 }}>{selectedVessel.length || "—"} × {selectedVessel.beam || "—"} m</div>
           </div>
           <div>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>DWT</div>
+            <div style={{ fontWeight: 600 }}>{selectedVessel.dwt ? `${(selectedVessel.dwt / 1000).toFixed(0)}K t` : "—"}</div>
+          </div>
+          <div>
             <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Destination</div>
             <div style={{ fontWeight: 600 }}>{selectedVessel.destination || "—"}</div>
           </div>
+          <div>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Last Position</div>
+            <div style={{ fontFamily: "monospace", color: "var(--accent-cyan)", fontWeight: 600 }}>
+              {selectedVessel.last_lat?.toFixed(4)}°, {selectedVessel.last_lon?.toFixed(4)}°
+            </div>
+          </div>
+          <div>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Last Seen</div>
+            <div style={{ fontWeight: 600 }}>
+              {selectedVessel.last_seen ? `${timeAgo(selectedVessel.last_seen)}` : "—"}
+            </div>
+          </div>
         </div>
 
-        <div style={{ marginTop: 16, padding: "12px 14px", background: "var(--bg-secondary)", borderRadius: 8, fontSize: 12 }}>
-          <div style={{ color: "var(--text-muted)", marginBottom: 4 }}>Last Position</div>
-          <div style={{ fontFamily: "monospace", color: "var(--accent-cyan)" }}>
-            {selectedVessel.last_lat?.toFixed(4)}°, {selectedVessel.last_lon?.toFixed(4)}°
-          </div>
-          <div style={{ color: "var(--text-muted)", marginTop: 6, fontSize: 11 }}>
-            Course: {selectedVessel.last_course?.toFixed(0) || "—"}° · DWT{" "}
-            {selectedVessel.dwt ? `${(selectedVessel.dwt / 1000).toFixed(0)}K` : "—"} t
-          </div>
-        </div>
-
-        <div style={{ marginTop: 10, padding: "12px 14px", background: "rgba(6, 182, 212, 0.08)", borderRadius: 8, border: "1px solid rgba(6, 182, 212, 0.2)", fontSize: 12 }}>
-          <div style={{ color: "var(--accent-cyan)", fontWeight: 600, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ padding: "8px 12px", background: "rgba(6, 182, 212, 0.08)", borderRadius: 8, border: "1px solid rgba(6, 182, 212, 0.2)", fontSize: 12, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ color: "var(--accent-cyan)", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
             <span>🛤️ Route Trail</span>
-            <span style={{ fontSize: 10, opacity: 0.7 }}>
+            <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>
               {loadingTrail ? "Loading..." : `${trailPointsCount} points`}
             </span>
           </div>
@@ -145,11 +157,6 @@ export function VesselDetailPanel({
               </button>
             ))}
           </div>
-          {trailPointsCount === 0 && !loadingTrail && (
-            <div style={{ color: "var(--text-muted)", marginTop: 8, fontSize: 11 }}>
-              No position history available for this window.
-            </div>
-          )}
         </div>
       </div>
     </div>
