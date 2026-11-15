@@ -89,7 +89,11 @@ class STSDetector:
                             for vb in grid[adj_cell]:
                                 if va.mmsi >= vb.mmsi:
                                     continue  # Ensure we only check each combo once
-                                
+
+                                if va.last_seen and vb.last_seen:
+                                    if abs((va.last_seen - vb.last_seen).total_seconds()) > 900:
+                                        continue  # Positions too far apart in time
+
                                 dist_km = haversine_km(
                                     va.last_lat, va.last_lon,
                                     vb.last_lat, vb.last_lon,
