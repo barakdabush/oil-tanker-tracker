@@ -204,7 +204,17 @@ export default function MapView() {
         <KeyboardNavigation />
         <MapUpdater selectedVessel={selectedVessel} />
         <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
-        <TileLayer attribution='&copy; <a href="https://carto.com">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+        <TileLayer
+          attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+          maxNativeZoom={16}
+          maxZoom={19}
+        />
+        <TileLayer
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
+          maxNativeZoom={16}
+          maxZoom={19}
+        />
 
         {showChokepoints && dynamicChokepoints.map((cp) => {
           const pos = geojsonToLeaflet(cp.boundary_geojson);
