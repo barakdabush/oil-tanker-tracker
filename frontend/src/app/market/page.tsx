@@ -44,6 +44,8 @@ export default function MarketIntelligencePage() {
   }
 
   const latest = data.length > 0 ? data[data.length - 1] : null;
+  const latestBrent = [...data].reverse().find((d) => d.brent_close_usd != null) ?? null;
+  const latestWti = [...data].reverse().find((d) => d.wti_close_usd != null) ?? null;
 
   // Format the dataset so recharts handles null numbers (like missing weekend oil prices) gracefully
   const chartData = data.map((d) => ({
@@ -80,16 +82,16 @@ export default function MarketIntelligencePage() {
           <div className="stats-grid animate-in" style={{ marginBottom: 24, gridTemplateColumns: "repeat(4, 1fr)" }}>
             <div className="stat-card" style={{ "--card-accent": "var(--accent-amber)" } as React.CSSProperties}>
               <div className="stat-card-label">Brent Crude</div>
-              <div className="stat-card-value">{latest.brent_close_usd ? `$${latest.brent_close_usd.toFixed(2)}` : "—"}</div>
+              <div className="stat-card-value">{latestBrent?.brent_close_usd != null ? `$${latestBrent.brent_close_usd.toFixed(2)}` : "—"}</div>
               <div className="stat-card-icon">📈</div>
-              <div className="stat-card-sub">Current Global Benchmark</div>
+              <div className="stat-card-sub">{latestBrent ? `Futures close · ${latestBrent.snapshot_date}` : "Current Global Benchmark"}</div>
             </div>
 
             <div className="stat-card" style={{ "--card-accent": "var(--accent-cyan)" } as React.CSSProperties}>
               <div className="stat-card-label">WTI Crude</div>
-              <div className="stat-card-value">{latest.wti_close_usd ? `$${latest.wti_close_usd.toFixed(2)}` : "—"}</div>
+              <div className="stat-card-value">{latestWti?.wti_close_usd != null ? `$${latestWti.wti_close_usd.toFixed(2)}` : "—"}</div>
               <div className="stat-card-icon">🛢️</div>
-              <div className="stat-card-sub">US Benchmark</div>
+              <div className="stat-card-sub">{latestWti ? `Futures close · ${latestWti.snapshot_date}` : "US Benchmark"}</div>
             </div>
 
             <div className="stat-card" style={{ "--card-accent": "var(--accent-blue)" } as React.CSSProperties}>
