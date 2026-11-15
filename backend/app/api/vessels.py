@@ -86,10 +86,20 @@ async def get_vessel_trail(
     hours: int = Query(0, ge=0),
     start_time: Optional[datetime] = Query(None),
     end_time: Optional[datetime] = Query(None),
+    max_points: int = Query(0, ge=0, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
     """Get historical positions for a vessel with time filtering."""
-    query = select(VesselPosition).where(VesselPosition.mmsi == mmsi)
+    query = select(
+        VesselPosition.time,
+        VesselPosition.mmsi,
+        VesselPosition.latitude,
+        VesselPosition.longitude,
+        VesselPosition.speed,
+        VesselPosition.course,
+        VesselPosition.heading,
+        VesselPosition.draft,
+    ).where(VesselPosition.mmsi == mmsi)
 
     if start_time and end_time:
         query = query.where(VesselPosition.time.between(start_time, end_time))
@@ -98,13 +108,32 @@ async def get_vessel_trail(
         query = query.where(VesselPosition.time > cutoff)
 
     query = query.order_by(VesselPosition.time.asc()).limit(10000)
-    
+
     result = await db.execute(query)
-    positions = result.scalars().all()
+    rows = result.all()
+
+    if max_points > 0 and len(rows) > max_points:
+        step = max(1, len(rows) // max_points)
+        sampled = list(rows[::step])
+        if sampled[-1] != rows[-1]:
+            sampled.append(rows[-1])
+        rows = sampled
 
     return TrailResponse(
         mmsi=mmsi,
-        positions=[PositionResponse.model_validate(p) for p in positions],
+        positions=[
+            PositionResponse(
+                time=r.time,
+                mmsi=r.mmsi,
+                latitude=r.latitude,
+                longitude=r.longitude,
+                speed=r.speed,
+                course=r.course,
+                heading=r.heading,
+                draft=r.draft,
+            )
+            for r in rows
+        ],
     )
 
 
