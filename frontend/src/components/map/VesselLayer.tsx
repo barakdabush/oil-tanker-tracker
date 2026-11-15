@@ -17,6 +17,10 @@ export const VesselLayer = React.memo(function VesselLayer({
 }) {
   const map = useMap();
   const markersRef = useRef<Map<number, L.CircleMarker>>(new Map());
+  const handleVesselClickRef = useRef(handleVesselClick);
+  useEffect(() => {
+    handleVesselClickRef.current = handleVesselClick;
+  }, [handleVesselClick]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -27,6 +31,11 @@ export const VesselLayer = React.memo(function VesselLayer({
   }, []);
 
   useEffect(() => {
+    if (!map.getPane("vesselPane")) {
+      const pane = map.createPane("vesselPane");
+      pane.style.zIndex = "650";
+    }
+
     const currentMmsis = new Set<number>();
     const hasHighlight = Boolean(highlightedMmsis && highlightedMmsis.length > 0);
 
@@ -45,8 +54,10 @@ export const VesselLayer = React.memo(function VesselLayer({
 
       let style: L.CircleMarkerOptions;
       if (hasHighlight) {
-        if (isHighlighted) {
-          const highlightColor = highlightIdx === 0 ? "#3b82f6" : "#10b981";
+        if (isHighlighted || isSelected) {
+          const highlightColor = isHighlighted
+            ? (highlightIdx === 0 ? "#3b82f6" : "#10b981")
+            : getVesselColor(v);
           style = {
             color: "#ffffff",
             fillColor: highlightColor,
@@ -77,16 +88,21 @@ export const VesselLayer = React.memo(function VesselLayer({
       }
 
       if (!marker) {
-        marker = L.circleMarker([v.last_lat, v.last_lon], style).addTo(map);
+        marker = L.circleMarker([v.last_lat, v.last_lon], { ...style, pane: "vesselPane" }).addTo(map);
         const tooltipContent = `<span style="color: #111; font-size: 12px; font-family: sans-serif">${v.name || `MMSI ${v.mmsi}`}</span>`;
         marker.bindTooltip(tooltipContent, { direction: "top", offset: [0, -8] });
-        marker.on('click', () => handleVesselClick(v));
         markersRef.current.set(v.mmsi, marker);
       } else {
         marker.setLatLng([v.last_lat, v.last_lon]);
         marker.setStyle(style);
         if (style.radius != null) marker.setRadius(style.radius);
       }
+
+      marker.off("click");
+      marker.on("click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        handleVesselClickRef.current(v);
+      });
 
       if (isHighlighted || isSelected) {
         marker.bringToFront();
@@ -99,7 +115,7 @@ export const VesselLayer = React.memo(function VesselLayer({
         markersRef.current.delete(mmsi);
       }
     });
-  }, [vessels, selectedVessel, highlightedMmsis, map, handleVesselClick]);
+  }, [vessels, selectedVessel, highlightedMmsis, map]);
 
   useEffect(() => {
     (window as any).__vesselMarkersMap = markersRef.current;
