@@ -171,6 +171,8 @@ export const STSLayer = React.memo(function STSLayer({
     id: string;
     vesselA: TrailResponse;
     vesselB: TrailResponse;
+    windowStartMs: number;
+    windowEndMs: number;
   } | null>(null);
   const latestRequestRef = React.useRef<string | null>(null);
 
@@ -193,15 +195,9 @@ export const STSLayer = React.memo(function STSLayer({
     }
   };
 
-  const fetchTrail = async (mmsi: number, start: string, end: string | null) => {
+  const fetchFullTrail = async (mmsi: number): Promise<TrailResponse> => {
     const API_URL = getApiUrl();
-    const paddedStart = new Date(new Date(start).getTime() - 6 * 3600_000).toISOString();
-    const paddedEnd = end
-      ? new Date(new Date(end).getTime() + 1 * 3600_000).toISOString()
-      : new Date().toISOString();
-    const res = await fetch(
-      `${API_URL}/api/vessels/${mmsi}/trail?start_time=${encodeURIComponent(paddedStart)}&end_time=${encodeURIComponent(paddedEnd)}&max_points=300`
-    );
+    const res = await fetch(`${API_URL}/api/vessels/${mmsi}/trail?hours=0`);
     if (!res.ok) throw new Error("Failed to fetch trail");
     return res.json();
   };
@@ -215,6 +211,11 @@ export const STSLayer = React.memo(function STSLayer({
     if (event.lat != null && event.lon != null) {
       map.flyTo([event.lat, event.lon], Math.max(map.getZoom(), 12), { duration: 0.5 });
     }
+
+    const windowStartMs = new Date(event.start_time).getTime() - 6 * 3600_000;
+    const windowEndMs = event.end_time
+      ? new Date(event.end_time).getTime() + 1 * 3600_000
+      : Date.now();
 
     const vesselsPromise = Promise.all([
       fetchVessel(event.vessel_a_mmsi),
@@ -239,23 +240,32 @@ export const STSLayer = React.memo(function STSLayer({
 
     try {
       const [vA, vB, loadedVessels] = await Promise.all([
-        fetchTrail(event.vessel_a_mmsi, event.start_time, event.end_time),
-        fetchTrail(event.vessel_b_mmsi, event.start_time, event.end_time),
+        fetchFullTrail(event.vessel_a_mmsi),
+        fetchFullTrail(event.vessel_b_mmsi),
         vesselsPromise,
       ]);
       if (latestRequestRef.current !== event.id) return;
 
-      setInvestigation({ id: event.id, vesselA: vA, vesselB: vB });
+      setInvestigation({ id: event.id, vesselA: vA, vesselB: vB, windowStartMs, windowEndMs });
 
-      const allPoints: [number, number][] = [
-        ...vA.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
-        ...vB.positions.map((p: any) => [p.latitude, p.longitude] as [number, number]),
+      const inEncounterWindow = (p: any) => {
+        if (!p.latitude || !p.longitude) return false;
+        const ms = Date.parse(p.time);
+        return Number.isFinite(ms) && ms >= windowStartMs && ms <= windowEndMs;
+      };
+
+      const focusPoints: [number, number][] = [
+        ...vA.positions.filter(inEncounterWindow).map((p: any) => [p.latitude, p.longitude] as [number, number]),
+        ...vB.positions.filter(inEncounterWindow).map((p: any) => [p.latitude, p.longitude] as [number, number]),
         ...loadedVessels
           .filter((v) => v.last_lat != null && v.last_lon != null)
           .map((v) => [v.last_lat!, v.last_lon!] as [number, number]),
       ];
-      if (allPoints.length > 1) {
-        map.fitBounds(allPoints, { padding: [60, 60], maxZoom: 14 });
+      if (event.lat != null && event.lon != null) {
+        focusPoints.push([event.lat, event.lon]);
+      }
+      if (focusPoints.length > 1) {
+        map.fitBounds(focusPoints, { padding: [60, 60], maxZoom: 14 });
       }
     } catch (err) {
       console.error("Investigation failed", err);
@@ -310,30 +320,63 @@ export const STSLayer = React.memo(function STSLayer({
         );
       })}
 
-      {investigation && (
-        <>
-          <Polyline 
-            positions={investigation.vesselA.positions.map((p: any) => [p.latitude, p.longitude])}
-            pathOptions={{ color: "#3b82f6", weight: 4, opacity: 0.8, dashArray: "10, 10" }}
-          />
-          <Polyline 
-            positions={investigation.vesselB.positions.map((p: any) => [p.latitude, p.longitude])}
-            pathOptions={{ color: "#10b981", weight: 4, opacity: 0.8, dashArray: "10, 10" }}
-          />
-          
-          {/* Start/End Markers for Investigation */}
-          {investigation.vesselA.positions[0] && (
-            <Tooltip position={[investigation.vesselA.positions[0].latitude, investigation.vesselA.positions[0].longitude]} permanent direction="right">
-              <span style={{ color: "#3b82f6" }}>A Entry</span>
-            </Tooltip>
-          )}
-          {investigation.vesselB.positions[0] && (
-            <Tooltip position={[investigation.vesselB.positions[0].latitude, investigation.vesselB.positions[0].longitude]} permanent direction="left">
-              <span style={{ color: "#10b981" }}>B Entry</span>
-            </Tooltip>
-          )}
-        </>
-      )}
+      {investigation && (() => {
+        const isValid = (p: any) => Boolean(p.latitude && p.longitude);
+        const inWindow = (p: any) => {
+          if (!isValid(p)) return false;
+          const ms = Date.parse(p.time);
+          return Number.isFinite(ms) && ms >= investigation.windowStartMs && ms <= investigation.windowEndMs;
+        };
+
+        const fullA = investigation.vesselA.positions.filter(isValid).map((p: any) => [p.latitude, p.longitude] as [number, number]);
+        const fullB = investigation.vesselB.positions.filter(isValid).map((p: any) => [p.latitude, p.longitude] as [number, number]);
+        const encA = investigation.vesselA.positions.filter(inWindow).map((p: any) => [p.latitude, p.longitude] as [number, number]);
+        const encB = investigation.vesselB.positions.filter(inWindow).map((p: any) => [p.latitude, p.longitude] as [number, number]);
+
+        const entryA = encA[0] ?? fullA[0];
+        const entryB = encB[0] ?? fullB[0];
+
+        return (
+          <>
+            {fullA.length > 1 && (
+              <Polyline
+                positions={fullA}
+                pathOptions={{ color: "#3b82f6", weight: 2.5, opacity: 0.35, dashArray: "6, 8" }}
+              />
+            )}
+            {fullB.length > 1 && (
+              <Polyline
+                positions={fullB}
+                pathOptions={{ color: "#10b981", weight: 2.5, opacity: 0.35, dashArray: "6, 8" }}
+              />
+            )}
+
+            {encA.length > 1 && (
+              <Polyline
+                positions={encA}
+                pathOptions={{ color: "#3b82f6", weight: 4.5, opacity: 0.95 }}
+              />
+            )}
+            {encB.length > 1 && (
+              <Polyline
+                positions={encB}
+                pathOptions={{ color: "#10b981", weight: 4.5, opacity: 0.95 }}
+              />
+            )}
+
+            {entryA && (
+              <Tooltip position={entryA} permanent direction="right">
+                <span style={{ color: "#3b82f6" }}>A Entry</span>
+              </Tooltip>
+            )}
+            {entryB && (
+              <Tooltip position={entryB} permanent direction="left">
+                <span style={{ color: "#10b981" }}>B Entry</span>
+              </Tooltip>
+            )}
+          </>
+        );
+      })()}
     </>
   );
 });
