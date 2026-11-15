@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, Polygon, Rectangle, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -206,7 +206,10 @@ export default function MapView() {
   }, [searchQuery, API]);
 
   const currentTrail = selectedVessel ? (vesselTrails[selectedVessel.mmsi] || []) : [];
-  const trailLatLngs: [number, number][] = currentTrail.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude]);
+  const trailLatLngs: [number, number][] = useMemo(
+    () => currentTrail.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude]),
+    [currentTrail]
+  );
 
   const showVesselDock = activeDetail === "vessel" && selectedVessel !== null;
   const showStsDock = !showVesselDock && selectedStsEvent !== null;

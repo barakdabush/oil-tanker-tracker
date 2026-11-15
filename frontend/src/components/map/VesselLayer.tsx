@@ -178,5 +178,5 @@ export const AnimatedTrail = React.memo(function AnimatedTrail({ trailLatLngs, t
     </div>
   );
 }, (prevProps, nextProps) => {
-  return prevProps.vesselMmsi === nextProps.vesselMmsi && prevProps.trailLatLngs.length === nextProps.trailLatLngs.length;
+  return prevProps.vesselMmsi === nextProps.vesselMmsi && prevProps.trailLatLngs === nextProps.trailLatLngs;
 });
