@@ -107,10 +107,11 @@ async def get_vessel_trail(
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         query = query.where(VesselPosition.time > cutoff)
 
-    query = query.order_by(VesselPosition.time.asc()).limit(10000)
+    query = query.order_by(VesselPosition.time.desc()).limit(10000)
 
     result = await db.execute(query)
-    rows = result.all()
+    rows = list(result.all())
+    rows.reverse()
 
     if max_points > 0 and len(rows) > max_points:
         step = max(1, len(rows) // max_points)
