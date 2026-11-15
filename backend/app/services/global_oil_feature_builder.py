@@ -10,7 +10,7 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta, date
 
-from sqlalchemy import select, func, and_, text
+from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.database import async_session
@@ -56,59 +56,62 @@ class GlobalOilFeatureBuilder:
         # Define the 24h window for the target date
         day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
         day_end = day_start + timedelta(days=1)
-        idle_cutoff = day_start - timedelta(hours=48)
+        idle_cutoff = day_end - timedelta(hours=48)
 
         async with async_session() as session:
-            # --- Fleet Activity ---
-            total_active = (await session.execute(
-                select(func.count()).select_from(Vessel).where(
-                    Vessel.last_seen > day_start
-                )
-            )).scalar() or 0
+            # --- Fleet Activity (point-in-time from vessel_positions for [day_start, day_end)) ---
+            fleet_row = (await session.execute(
+                text("""
+                    WITH daily_vessels AS (
+                        SELECT DISTINCT ON (mmsi) mmsi, speed
+                        FROM vessel_positions
+                        WHERE time >= :day_start AND time < :day_end
+                        ORDER BY mmsi, time DESC
+                    )
+                    SELECT
+                        COUNT(*) AS total_active,
+                        COUNT(*) FILTER (WHERE speed > 3) AS in_transit,
+                        COUNT(*) FILTER (WHERE speed <= 1) AS at_port,
+                        AVG(speed) AS avg_speed
+                    FROM daily_vessels
+                """),
+                {"day_start": day_start, "day_end": day_end},
+            )).one()
 
-            vessels_in_transit = (await session.execute(
-                select(func.count()).select_from(Vessel).where(
-                    and_(Vessel.last_seen > day_start, Vessel.last_speed > 3)
-                )
-            )).scalar() or 0
-
-            vessels_at_port = (await session.execute(
-                select(func.count()).select_from(Vessel).where(
-                    and_(Vessel.last_seen > day_start, Vessel.last_speed <= 1)
-                )
-            )).scalar() or 0
-
-            avg_speed = (await session.execute(
-                select(func.avg(Vessel.last_speed)).where(
-                    Vessel.last_seen > day_start
-                )
-            )).scalar()
-            avg_fleet_speed = round(float(avg_speed), 2) if avg_speed is not None else None
+            total_active = int(fleet_row.total_active or 0)
+            vessels_in_transit = int(fleet_row.in_transit or 0)
+            vessels_at_port = int(fleet_row.at_port or 0)
+            avg_fleet_speed = round(float(fleet_row.avg_speed), 2) if fleet_row.avg_speed is not None else None
 
             vessels_idle = (await session.execute(
                 select(func.count()).select_from(Vessel).where(
                     and_(
                         Vessel.last_seen < idle_cutoff,
-                        Vessel.last_seen >= day_start - timedelta(days=30),
+                        Vessel.last_seen >= day_end - timedelta(days=30),
                         Vessel.last_speed <= 1,
                     )
                 )
             )).scalar() or 0
 
             # --- Dark Fleet / Sanctions Evasion ---
+            # Count distinct vessels with a true dark gap (>= 6h) overlapping [day_start, day_end)
             dark_count = (await session.execute(
-                select(func.count()).select_from(AISGap).where(
+                select(func.count(func.distinct(AISGap.mmsi))).where(
                     and_(
-                        AISGap.status.in_(["dark", "extended_dark"]),
-                        AISGap.gap_end.is_(None),
+                        or_(
+                            AISGap.status.in_(["dark", "extended_dark"]),
+                            and_(AISGap.status == "resolved", AISGap.gap_hours >= 6),
+                        ),
+                        AISGap.gap_start < day_end,
                         AISGap.gap_start >= day_start - timedelta(days=30),
+                        or_(AISGap.gap_end.is_(None), AISGap.gap_end >= day_start),
                     )
                 )
             )).scalar() or 0
 
             new_gaps = (await session.execute(
                 select(func.count()).select_from(AISGap).where(
-                    and_(AISGap.created_at >= day_start, AISGap.created_at < day_end)
+                    and_(AISGap.gap_start >= day_start, AISGap.gap_start < day_end)
                 )
             )).scalar() or 0
 
