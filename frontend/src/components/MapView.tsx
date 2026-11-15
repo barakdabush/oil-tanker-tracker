@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, Polygon, Rectangle, Tooltip } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Polygon, Rectangle, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -13,6 +13,7 @@ import { NavigationControls, KeyboardNavigation, MapUpdater } from "./map/MapCon
 import { VesselLayer, AnimatedTrail } from "./map/VesselLayer";
 import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
+import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
 import { getCongestionColor, geojsonToLeaflet, timeLabelMap, getVesselColor } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
@@ -25,6 +26,17 @@ interface TrailPoint {
   speed?: number | null;
 }
 
+function MapResizeHandler({ hasBottomPanel }: { hasBottomPanel: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    const id = setTimeout(() => {
+      map.invalidateSize();
+    }, 50);
+    return () => clearTimeout(id);
+  }, [map, hasBottomPanel]);
+  return null;
+}
+
 export default function MapView() {
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const vesselsRef = useRef<Map<number, any>>(new Map());
@@ -33,6 +45,9 @@ export default function MapView() {
   const [ports, setPorts] = useState<Port[]>([]);
   const [dynamicChokepoints, setDynamicChokepoints] = useState<Chokepoint[]>([]);
   const [selectedVessel, setSelectedVessel] = useState<Vessel | null>(null);
+  const [selectedStsEvent, setSelectedStsEvent] = useState<STSEvent | null>(null);
+  const [stsLoading, setStsLoading] = useState(false);
+  const [activeDetail, setActiveDetail] = useState<"vessel" | "sts" | null>(null);
   const [showPorts, setShowPorts] = useState(true);
   const [showChokepoints, setShowChokepoints] = useState(true);
   const [showTrails, setShowTrails] = useState(true);
@@ -166,8 +181,16 @@ export default function MapView() {
 
   const handleVesselClick = useCallback((v: Vessel) => {
     setSelectedVessel(v);
+    setActiveDetail("vessel");
     fetchTrail(v, trailHours);
   }, [fetchTrail, trailHours]);
+
+  const handleSelectSts = useCallback((event: STSEvent | null) => {
+    setSelectedStsEvent(event);
+    if (event) {
+      setActiveDetail("sts");
+    }
+  }, []);
 
   useEffect(() => {
     if (!searchQuery) { setSearchResults([]); setIsSearching(false); return; }
@@ -185,100 +208,127 @@ export default function MapView() {
   const currentTrail = selectedVessel ? (vesselTrails[selectedVessel.mmsi] || []) : [];
   const trailLatLngs: [number, number][] = currentTrail.filter(p => p.latitude && p.longitude).map(p => [p.latitude, p.longitude]);
 
+  const showVesselDock = activeDetail === "vessel" && selectedVessel !== null;
+  const showStsDock = !showVesselDock && selectedStsEvent !== null;
+  const hasBottomPanel = showVesselDock || showStsDock;
+
   return (
-    <div className="map-container">
-      <SearchBar 
-        searchQuery={searchQuery} 
-        setSearchQuery={setSearchQuery} 
-        searchResults={searchResults} 
-        isSearching={isSearching}
-        onSelectVessel={(v) => {
-          setSelectedVessel(v);
-          setVessels(prev => prev.find(e => e.mmsi === v.mmsi) ? prev : [...prev, v]);
-          fetchTrail(v, trailHours);
-          setSearchQuery("");
-        }}
-      />
-
-      <MapContainer center={[25, 45]} zoom={3} style={{ width: "100%", height: "100%" }} zoomControl={false}>
-        <NavigationControls />
-        <KeyboardNavigation />
-        <MapUpdater selectedVessel={selectedVessel} />
-        <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
-        <TileLayer
-          attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
-          url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-          maxNativeZoom={16}
-          maxZoom={19}
-        />
-        <TileLayer
-          url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
-          maxNativeZoom={16}
-          maxZoom={19}
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" }}>
+      <div className="map-container" style={{ flex: 1, minHeight: 0, height: "auto" }}>
+        <SearchBar 
+          searchQuery={searchQuery} 
+          setSearchQuery={setSearchQuery} 
+          searchResults={searchResults} 
+          isSearching={isSearching}
+          onSelectVessel={(v) => {
+            setSelectedVessel(v);
+            setActiveDetail("vessel");
+            setVessels(prev => prev.find(e => e.mmsi === v.mmsi) ? prev : [...prev, v]);
+            fetchTrail(v, trailHours);
+            setSearchQuery("");
+          }}
         />
 
-        {showChokepoints && dynamicChokepoints.map((cp) => {
-          const pos = geojsonToLeaflet(cp.boundary_geojson);
-          if (pos.length === 0) return null;
-          return (
-            <Polygon key={`cp-${cp.id}`} positions={pos} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
-              <Tooltip permanent direction="center" className="chokepoint-tooltip">
-                <div style={{ textAlign: "center", fontSize: 11 }}>
-                  <strong>{cp.name}</strong><br />
-                  <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / ${timeLabelMap[trailHours] || `${trailHours}h`}`}</span>
-                </div>
-              </Tooltip>
-            </Polygon>
-          );
-        })}
+        <MapContainer center={[25, 45]} zoom={3} style={{ width: "100%", height: "100%" }} zoomControl={false}>
+          <MapResizeHandler hasBottomPanel={hasBottomPanel} />
+          <NavigationControls />
+          <KeyboardNavigation />
+          <MapUpdater selectedVessel={selectedVessel} />
+          <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
+          <TileLayer
+            attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+            maxNativeZoom={16}
+            maxZoom={19}
+          />
+          <TileLayer
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
+            maxNativeZoom={16}
+            maxZoom={19}
+          />
 
-        {[
-          { name: "Strait of Hormuz",          bounds: [[27.5, 54.0], [22.0, 60.5]] },
-          { name: "Strait of Malacca",         bounds: [[7.0, 98.0], [0.5, 105.5]] },
-          { name: "Suez Canal",                bounds: [[32.0, 31.5], [27.0, 34.0]] },
-          { name: "Bab el-Mandeb",             bounds: [[14.0, 41.0], [10.5, 46.5]] },
-          { name: "Turkish Straits (Bosporus)",bounds: [[42.0, 27.5], [40.0, 30.5]] },
-          { name: "Danish Straits",            bounds: [[57.5, 9.5], [54.0, 14.5]] },
-          { name: "Cape of Good Hope",         bounds: [[-32.0, 16.5], [-37.0, 21.5]] },
-          { name: "Panama Canal",              bounds: [[10.5, -80.5], [7.5, -77.5]] },
-        ].map((zone) => (
-          <Rectangle key={zone.name} bounds={zone.bounds as any} pathOptions={{ color: "#06b6d4", weight: 2, dashArray: "6 4", fillColor: "#06b6d4", fillOpacity: 0.08 }}>
-            <Tooltip sticky><div style={{ fontSize: 12 }}><strong>📡 {zone.name}</strong><br /><span style={{ fontSize: 10, color: "#888" }}>AIS Monitoring Zone</span></div></Tooltip>
-          </Rectangle>
-        ))}
+          {showChokepoints && dynamicChokepoints.map((cp) => {
+            const pos = geojsonToLeaflet(cp.boundary_geojson);
+            if (pos.length === 0) return null;
+            return (
+              <Polygon key={`cp-${cp.id}`} positions={pos} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
+                <Tooltip permanent direction="center" className="chokepoint-tooltip">
+                  <div style={{ textAlign: "center", fontSize: 11 }}>
+                    <strong>{cp.name}</strong><br />
+                    <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / ${timeLabelMap[trailHours] || `${trailHours}h`}`}</span>
+                  </div>
+                </Tooltip>
+              </Polygon>
+            );
+          })}
 
-        {showPorts && ports.map((port) => (
-          <CircleMarker key={`port-${port.id}`} center={[port.latitude, port.longitude]} radius={5} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.6, weight: 1 }}>
-            <Popup><div style={{ color: "#111", minWidth: 160 }}><strong>⚓ {port.name}</strong><br /><span style={{ fontSize: 12 }}>{port.country} · {port.region}</span><br /><span style={{ fontSize: 11, color: "#666" }}>{port.port_type}</span></div></Popup>
-          </CircleMarker>
-        ))}
+          {[
+            { name: "Strait of Hormuz",          bounds: [[27.5, 54.0], [22.0, 60.5]] },
+            { name: "Strait of Malacca",         bounds: [[7.0, 98.0], [0.5, 105.5]] },
+            { name: "Suez Canal",                bounds: [[32.0, 31.5], [27.0, 34.0]] },
+            { name: "Bab el-Mandeb",             bounds: [[14.0, 41.0], [10.5, 46.5]] },
+            { name: "Turkish Straits (Bosporus)",bounds: [[42.0, 27.5], [40.0, 30.5]] },
+            { name: "Danish Straits",            bounds: [[57.5, 9.5], [54.0, 14.5]] },
+            { name: "Cape of Good Hope",         bounds: [[-32.0, 16.5], [-37.0, 21.5]] },
+            { name: "Panama Canal",              bounds: [[10.5, -80.5], [7.5, -77.5]] },
+          ].map((zone) => (
+            <Rectangle key={zone.name} bounds={zone.bounds as any} pathOptions={{ color: "#06b6d4", weight: 2, dashArray: "6 4", fillColor: "#06b6d4", fillOpacity: 0.08 }}>
+              <Tooltip sticky><div style={{ fontSize: 12 }}><strong>📡 {zone.name}</strong><br /><span style={{ fontSize: 10, color: "#888" }}>AIS Monitoring Zone</span></div></Tooltip>
+            </Rectangle>
+          ))}
 
-        {showTrails && selectedVessel && trailLatLngs.length > 1 && <AnimatedTrail trailLatLngs={trailLatLngs} totalPts={trailLatLngs.length} vesselMmsi={selectedVessel.mmsi} />}
-        <STSLayer
-          events={stsEvents}
-          onHighlightVessels={setStsHighlightedMmsis}
-          onEnsureVessels={mergeVessels}
-        />
-        <VesselLayer
-          vessels={vessels}
-          selectedVessel={selectedVessel}
-          highlightedMmsis={stsHighlightedMmsis}
-          handleVesselClick={handleVesselClick}
-        />
-      </MapContainer>
+          {showPorts && ports.map((port) => (
+            <CircleMarker key={`port-${port.id}`} center={[port.latitude, port.longitude]} radius={5} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.6, weight: 1 }}>
+              <Popup><div style={{ color: "#111", minWidth: 160 }}><strong>⚓ {port.name}</strong><br /><span style={{ fontSize: 12 }}>{port.country} · {port.region}</span><br /><span style={{ fontSize: 11, color: "#666" }}>{port.port_type}</span></div></Popup>
+            </CircleMarker>
+          ))}
 
-      <MapControlsAndLegend showPorts={showPorts} setShowPorts={setShowPorts} showChokepoints={showChokepoints} setShowChokepoints={setShowChokepoints} showTrails={showTrails} setShowTrails={setShowTrails} selectedVessel={selectedVessel} trailLatLngsCount={trailLatLngs.length} />
+          {showTrails && selectedVessel && trailLatLngs.length > 1 && <AnimatedTrail trailLatLngs={trailLatLngs} totalPts={trailLatLngs.length} vesselMmsi={selectedVessel.mmsi} />}
+          <STSLayer
+            events={stsEvents}
+            selectedStsEvent={selectedStsEvent}
+            onSelectSts={handleSelectSts}
+            onLoadingChange={setStsLoading}
+            onHighlightVessels={setStsHighlightedMmsis}
+            onEnsureVessels={mergeVessels}
+          />
+          <VesselLayer
+            vessels={vessels}
+            selectedVessel={selectedVessel}
+            highlightedMmsis={stsHighlightedMmsis}
+            handleVesselClick={handleVesselClick}
+          />
+        </MapContainer>
 
-      {selectedVessel && (
-        <VesselDetailPanel 
-          selectedVessel={selectedVessel} 
-          onClose={() => setSelectedVessel(null)} 
-          trailHours={trailHours} 
-          setTrailHours={setTrailHours} 
-          loadingTrail={loadingTrail} 
-          trailPointsCount={trailLatLngs.length}
-          onFetchTrail={fetchTrail}
-        />
+        <MapControlsAndLegend showPorts={showPorts} setShowPorts={setShowPorts} showChokepoints={showChokepoints} setShowChokepoints={setShowChokepoints} showTrails={showTrails} setShowTrails={setShowTrails} selectedVessel={selectedVessel} trailLatLngsCount={trailLatLngs.length} />
+      </div>
+
+      {hasBottomPanel && (
+        <div className="bottom-detail-dock">
+          {showVesselDock && selectedVessel ? (
+            <VesselDetailPanel 
+              selectedVessel={selectedVessel} 
+              onClose={() => {
+                setSelectedVessel(null);
+                setActiveDetail(selectedStsEvent ? "sts" : null);
+              }} 
+              trailHours={trailHours} 
+              setTrailHours={setTrailHours} 
+              loadingTrail={loadingTrail} 
+              trailPointsCount={trailLatLngs.length}
+              onFetchTrail={fetchTrail}
+            />
+          ) : showStsDock && selectedStsEvent ? (
+            <STSDetailPanel
+              event={selectedStsEvent}
+              loading={stsLoading}
+              onClose={() => {
+                setSelectedStsEvent(null);
+                setActiveDetail(selectedVessel ? "vessel" : null);
+              }}
+            />
+          ) : null}
+        </div>
       )}
     </div>
   );
