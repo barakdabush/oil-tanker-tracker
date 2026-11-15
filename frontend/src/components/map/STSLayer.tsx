@@ -126,6 +126,25 @@ const STS_STYLES = `
   font-weight: 600; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer;
   display: flex; align-items: center; gap: 8px;
 }
+.sts-mobile-sheet {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 124px;
+  max-height: 38vh;
+  overflow-y: auto;
+  z-index: 1001;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 12px;
+  color: #f8fafc;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.65);
+  font-size: 12px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+.sts-mobile-sheet .sts-popup-header { padding: 8px 12px; }
+.sts-mobile-sheet .sts-popup-grid { padding: 8px 12px; gap: 4px 10px; }
 .sts-popup-duration { grid-column: 1 / -1; margin: 4px 0; padding: 6px 10px; border-radius: 8px; background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.15); display: flex; align-items: center; gap: 8px; }
 .sts-popup-duration .dur-value { color: #fbbf24; font-weight: 700; font-size: 13px; }
 `;
@@ -148,7 +167,17 @@ export const STSLayer = React.memo(function STSLayer({
     vesselB: TrailResponse;
   } | null>(null);
   const [loading, setLoading] = React.useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = React.useState<STSEvent | null>(null);
+  const [isMobile, setIsMobile] = React.useState(false);
   const latestRequestRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
 
   const fetchVessel = async (mmsi: number): Promise<Vessel | null> => {
     try {
@@ -175,6 +204,7 @@ export const STSLayer = React.memo(function STSLayer({
 
   const handleInvestigate = async (event: STSEvent) => {
     latestRequestRef.current = event.id;
+    setSelectedEvent(event);
     setLoading(event.id);
     onHighlightVessels?.([event.vessel_a_mmsi, event.vessel_b_mmsi]);
 
@@ -237,6 +267,7 @@ export const STSLayer = React.memo(function STSLayer({
 
   const handleClear = () => {
     latestRequestRef.current = null;
+    setSelectedEvent(null);
     setInvestigation(null);
     onHighlightVessels?.(null);
   };
@@ -252,6 +283,102 @@ export const STSLayer = React.memo(function STSLayer({
     });
     return iconMap;
   }, [events]);
+
+  const renderEventDetails = (event: STSEvent, compactMobile: boolean) => {
+    const isOngoing = event.status === "ongoing" || event.status === "detected";
+    return (
+      <div className={compactMobile ? "" : "sts-popup-inner"}>
+        <div className="sts-popup-header">
+          <div className="sts-popup-header-icon">⚓</div>
+          <div style={{ flex: 1, minWidth: 0 }}><h4>Ship-to-Ship Transfer</h4></div>
+          <span className={`sts-status-pill ${isOngoing ? "sts-status-pill--active" : "sts-status-pill--resolved"}`}>
+            {event.status}
+          </span>
+          {compactMobile && (
+            <button
+              onClick={handleClear}
+              aria-label="Close STS details"
+              style={{
+                background: "none",
+                border: "none",
+                color: "#94a3b8",
+                cursor: "pointer",
+                fontSize: 16,
+                padding: "0 2px",
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        <div style={{ padding: compactMobile ? "6px 12px 0" : "8px 14px 0" }}>
+          <div className="sts-popup-duration">
+            <span style={{ fontSize: 14 }}>⏱️</span>
+            <div>
+              <div style={{ color: "#94a3b8", fontSize: 10 }}>Duration</div>
+              <div className="dur-value">
+                {formatDuration(event.start_time, event.end_time)}
+                {!event.end_time && " (ongoing)"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="sts-popup-grid">
+          <span className="label">Vessel A</span>
+          <span className="value value--mono" style={{ color: "#60a5fa" }}>{event.vessel_a_mmsi}</span>
+
+          <span className="label">Vessel B</span>
+          <span className="value value--mono" style={{ color: "#34d399" }}>{event.vessel_b_mmsi}</span>
+
+          <span className="label">Started</span>
+          <span className="value">{new Date(event.start_time).toLocaleString()}</span>
+
+          {!compactMobile && event.end_time && (
+            <>
+              <span className="label">Ended</span>
+              <span className="value">{new Date(event.end_time).toLocaleString()}</span>
+            </>
+          )}
+
+          <span className="label">Location</span>
+          <span className="value value--mono">
+            {event.lat?.toFixed(4)}°, {event.lon?.toFixed(4)}°
+          </span>
+
+          {event.distance_from_port_km != null && (
+            <>
+              <span className="label">From port</span>
+              <span className="value">{event.distance_from_port_km.toFixed(1)} km</span>
+            </>
+          )}
+
+          {event.confidence != null && (
+            <>
+              <span className="label">Confidence</span>
+              <span className="value" style={{ color: confidenceColor(event.confidence), fontWeight: 700 }}>
+                {(event.confidence * 100).toFixed(0)}%
+              </span>
+            </>
+          )}
+        </div>
+
+        {!compactMobile && (
+          <div style={{ padding: "0 14px 14px" }}>
+            <button
+              className="sts-investigate-btn"
+              onClick={() => handleInvestigate(event)}
+              disabled={loading === event.id}
+            >
+              {loading === event.id ? "⌛ Fetching..." : "🔍 Show Meeting Trails"}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -282,88 +409,28 @@ export const STSLayer = React.memo(function STSLayer({
               </div>
             </Tooltip>
 
-            <Popup className="sts-popup" closeButton={false}>
-              <div className="sts-popup-inner">
-                <div className="sts-popup-header">
-                  <div className="sts-popup-header-icon">⚓</div>
-                  <div><h4>Ship-to-Ship Transfer</h4></div>
-                  <span className={`sts-status-pill ${isOngoing ? "sts-status-pill--active" : "sts-status-pill--resolved"}`}>
-                    {event.status}
-                  </span>
-                </div>
-
-                <div style={{ padding: "8px 14px 0" }}>
-                  <div className="sts-popup-duration">
-                    <span style={{ fontSize: 14 }}>⏱️</span>
-                    <div>
-                      <div style={{ color: "#94a3b8", fontSize: 10 }}>Duration</div>
-                      <div className="dur-value">
-                        {formatDuration(event.start_time, event.end_time)}
-                        {!event.end_time && " (ongoing)"}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="sts-popup-grid">
-                  <span className="label">Vessel A</span>
-                  <span className="value value--mono">{event.vessel_a_mmsi}</span>
-
-                  <span className="label">Vessel B</span>
-                  <span className="value value--mono">{event.vessel_b_mmsi}</span>
-
-                  <span className="label">Started</span>
-                  <span className="value">{new Date(event.start_time).toLocaleString()}</span>
-
-                  {event.end_time && (
-                    <>
-                      <span className="label">Ended</span>
-                      <span className="value">{new Date(event.end_time).toLocaleString()}</span>
-                    </>
-                  )}
-
-                  <span className="label">Location</span>
-                  <span className="value value--mono">
-                    {event.lat?.toFixed(4)}°, {event.lon?.toFixed(4)}°
-                  </span>
-
-                  {event.distance_from_port_km != null && (
-                    <>
-                      <span className="label">From port</span>
-                      <span className="value">{event.distance_from_port_km.toFixed(1)} km</span>
-                    </>
-                  )}
-
-                  {event.confidence != null && (
-                    <>
-                      <span className="label">Confidence</span>
-                      <span className="value" style={{ color: confidenceColor(event.confidence), fontWeight: 700 }}>
-                        {(event.confidence * 100).toFixed(0)}%
-                      </span>
-                    </>
-                  )}
-                </div>
-
-                <div style={{ padding: "0 14px 14px" }}>
-                  <button 
-                    className="sts-investigate-btn"
-                    onClick={() => handleInvestigate(event)}
-                    disabled={loading === event.id}
-                  >
-                    {loading === event.id ? "⌛ Fetching..." : "🔍 Show Meeting Trails"}
-                  </button>
-                </div>
-              </div>
-            </Popup>
+            {!isMobile && (
+              <Popup className="sts-popup" closeButton={false} closeOnClick={false}>
+                {renderEventDetails(event, false)}
+              </Popup>
+            )}
           </Marker>
         );
       })}
 
+      {isMobile && selectedEvent && (
+        <div className="sts-mobile-sheet" onClick={(e) => e.stopPropagation()}>
+          {renderEventDetails(selectedEvent, true)}
+        </div>
+      )}
+
       {investigation && (
         <>
-          <button className="sts-clear-btn" onClick={handleClear}>
-            ✕ Clear STS Selection
-          </button>
+          {!isMobile && (
+            <button className="sts-clear-btn" onClick={handleClear}>
+              ✕ Clear STS Selection
+            </button>
+          )}
           
           <Polyline 
             positions={investigation.vesselA.positions.map((p: any) => [p.latitude, p.longitude])}

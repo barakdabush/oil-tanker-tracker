@@ -66,7 +66,7 @@ export default function MapView() {
     setLoadingTrail(true);
     try {
       const hours = h !== undefined ? h : trailHours;
-      const res = await fetch(`${API}/api/vessels/${vessel.mmsi}/trail?hours=${hours}`);
+      const res = await fetch(`${API}/api/vessels/${vessel.mmsi}/trail?hours=${hours}&max_points=500`);
       if (res.ok) {
         const data = await res.json();
         const pts: TrailPoint[] = (data.positions || []).map((p: any) => ({
@@ -134,8 +134,9 @@ export default function MapView() {
                 const activeHighlight = stsHighlightedMmsisRef.current;
                 if (activeHighlight && activeHighlight.length > 0) {
                   const hIdx = activeHighlight.indexOf(data.mmsi);
-                  if (hIdx !== -1) {
-                    marker.setStyle({ color: "#ffffff", fillColor: hIdx === 0 ? "#3b82f6" : "#10b981", opacity: 1, fillOpacity: 1, weight: 4 });
+                  if (hIdx !== -1 || isSelected) {
+                    const fill = hIdx !== -1 ? (hIdx === 0 ? "#3b82f6" : "#10b981") : color;
+                    marker.setStyle({ color: "#ffffff", fillColor: fill, opacity: 1, fillOpacity: 1, weight: 4 });
                     marker.setRadius(11);
                     marker.bringToFront();
                   } else {
@@ -163,10 +164,10 @@ export default function MapView() {
     return () => ws.close();
   }, [WS_API]);
 
-  const handleVesselClick = (v: Vessel) => {
+  const handleVesselClick = useCallback((v: Vessel) => {
     setSelectedVessel(v);
     fetchTrail(v, trailHours);
-  };
+  }, [fetchTrail, trailHours]);
 
   useEffect(() => {
     if (!searchQuery) { setSearchResults([]); setIsSearching(false); return; }
