@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, timeLabelMap, getVesselColor } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, getVesselColor } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import type { STSEvent } from "@/lib/types";
 
@@ -180,6 +180,8 @@ export default function MapView() {
   }, [WS_API]);
 
   const handleVesselClick = useCallback((v: Vessel) => {
+    setSelectedStsEvent(null);
+    setStsHighlightedMmsis(null);
     setSelectedVessel(v);
     setActiveDetail("vessel");
     fetchTrail(v, trailHours);
@@ -188,6 +190,7 @@ export default function MapView() {
   const handleSelectSts = useCallback((event: STSEvent | null) => {
     setSelectedStsEvent(event);
     if (event) {
+      setSelectedVessel(null);
       setActiveDetail("sts");
     }
   }, []);
