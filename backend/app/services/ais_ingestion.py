@@ -180,7 +180,7 @@ async def _connect_and_consume_aisstream():
 def _normalize_openwaters_event(event: dict) -> Optional[dict]:
     """Normalize an Open Waters /v1/stream event into the AISMessage envelope."""
     frame_type = event.get("type")
-    if frame_type:
+    if frame_type and frame_type != "event":
         if frame_type == "error":
             logger.warning(f"Open Waters AIS error frame: {event.get('error', event)}")
         elif frame_type in ("welcome", "ack"):
@@ -192,7 +192,7 @@ def _normalize_openwaters_event(event: dict) -> Optional[dict]:
     if not msg_type or not isinstance(payload, dict):
         return None
 
-    mmsi = payload.get("UserID") or 0
+    mmsi = payload.get("UserID") or event.get("mmsi") or 0
     if not mmsi:
         return None
 
@@ -280,6 +280,7 @@ async def _connect_and_consume_openwaters():
         subscribe_msg = {
             "type": "subscribe",
             "bbox": boxes,
+            "snapshot": True,
         }
         await ws.send(json.dumps(subscribe_msg))
         logger.info(f"✅ Connected to Open Waters AIS — subscribed to {len(boxes)} bounding box(es)")

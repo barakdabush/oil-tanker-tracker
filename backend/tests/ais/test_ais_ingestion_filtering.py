@@ -36,7 +36,9 @@ def test_normalize_openwaters_control_frames():
 
 def test_normalize_openwaters_position_event():
     event = {
+        "type": "event",
         "msg_type": "PositionReport",
+        "mmsi": 470123456,
         "lat": 26.55,
         "lon": 56.45,
         "time": "2026-11-15T12:00:00Z",
@@ -56,6 +58,7 @@ def test_normalize_openwaters_position_event():
     assert normalized["MessageType"] == "PositionReport"
     assert normalized["MetaData"]["MMSI"] == 470123456
     assert normalized["MetaData"]["latitude"] == 26.55
+    assert normalized["MetaData"]["Source"] == "openwaters:aishub"
     assert normalized["Message"]["PositionReport"]["Sog"] == 12.4
 
 
