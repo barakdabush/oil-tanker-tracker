@@ -184,7 +184,7 @@ def _normalize_openwaters_event(event: dict) -> Optional[dict]:
         if frame_type == "error":
             logger.warning(f"Open Waters AIS error frame: {event.get('error', event)}")
         elif frame_type in ("welcome", "ack"):
-            logger.info(f"Open Waters AIS {frame_type}: {json.dumps(event, default=str)[:200]}")
+            logger.info(f"Open Waters AIS {frame_type}: {json.dumps(event, default=str)}")
         return None
 
     msg_type = event.get("msg_type")
@@ -221,6 +221,33 @@ def _normalize_openwaters_event(event: dict) -> Optional[dict]:
     }
 
 
+def _fit_openwaters_boxes(area_limit: Optional[float]) -> list[list[float]]:
+    """Select chokepoint bounding boxes that fit within Open Waters' area limit (sq degrees)."""
+    all_boxes = [[min_lat, min_lon, max_lat, max_lon] for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES]
+    if area_limit is None or area_limit <= 0:
+        return all_boxes
+
+    selected = []
+    used_area = 0.0
+    for box in all_boxes:
+        box_area = abs(box[2] - box[0]) * abs(box[3] - box[1])
+        if used_area + box_area <= area_limit:
+            selected.append(box)
+            used_area += box_area
+
+    if not selected:
+        # Fallback to core Strait of Hormuz sized to fit tight anonymous limits
+        # Center around (26.2, 56.5), e.g., 2.5 x 3.5 = 8.75 sq deg
+        core_hormuz = [24.8, 54.8, 27.3, 58.3]
+        if 2.5 * 3.5 <= area_limit:
+            selected.append(core_hormuz)
+        else:
+            side = max(0.5, (area_limit * 0.9) ** 0.5)
+            selected.append([26.2 - side / 2, 56.5 - side / 2, 26.2 + side / 2, 56.5 + side / 2])
+
+    return selected
+
+
 async def _connect_and_consume_openwaters():
     """Connect to Open Waters AIS /v1/stream WebSocket and consume messages."""
     ws_url = settings.OPENWATERS_WS_URL
@@ -228,19 +255,34 @@ async def _connect_and_consume_openwaters():
         sep = "&" if "?" in ws_url else "?"
         ws_url = f"{ws_url}{sep}key={settings.OPENWATERS_API_KEY}"
 
-    # Open Waters /v1/stream expects [minLat, minLon, maxLat, maxLon]
-    subscribe_msg = {
-        "type": "subscribe",
-        "bbox": [[min_lat, min_lon, max_lat, max_lon] for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES],
-    }
-
     logger.info(f"Connecting to Open Waters AIS at {settings.OPENWATERS_WS_URL}...")
     async with websockets.connect(
         ws_url,
         open_timeout=30,
     ) as ws:
+        area_limit = None
+        try:
+            first_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            first_event = json.loads(first_raw)
+            _normalize_openwaters_event(first_event)
+            if first_event.get("type") == "welcome":
+                area_limit = (first_event.get("limits") or {}).get("area")
+        except Exception as e:
+            logger.debug(f"Open Waters initial welcome check skipped: {e}")
+
+        boxes = _fit_openwaters_boxes(area_limit)
+        if len(boxes) < len(CHOKEPOINT_BBOXES):
+            logger.warning(
+                f"Open Waters area limit is {area_limit} sq°; subscribing to {len(boxes)}/{len(CHOKEPOINT_BBOXES)} "
+                f"boxes (Hormuz prioritized). Set OPENWATERS_API_KEY for full 8-chokepoint coverage."
+            )
+
+        subscribe_msg = {
+            "type": "subscribe",
+            "bbox": boxes,
+        }
         await ws.send(json.dumps(subscribe_msg))
-        logger.info("✅ Connected to Open Waters AIS — receiving AIS data")
+        logger.info(f"✅ Connected to Open Waters AIS — subscribed to {len(boxes)} bounding box(es)")
 
         async for raw_msg in ws:
             try:

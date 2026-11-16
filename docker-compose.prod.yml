@@ -87,6 +87,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
+      OPENWATERS_API_KEY: ${OPENWATERS_API_KEY:-}
     ports:
       - "8001:8001"
     command: uvicorn websocket_app:app --host 0.0.0.0 --port 8001
