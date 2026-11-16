@@ -33,7 +33,7 @@ export const VesselLayer = React.memo(function VesselLayer({
   useEffect(() => {
     if (!map.getPane("vesselPane")) {
       const pane = map.createPane("vesselPane");
-      pane.style.zIndex = "650";
+      pane.style.zIndex = "660";
     }
 
     const currentMmsis = new Set<number>();

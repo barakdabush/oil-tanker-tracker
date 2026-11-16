@@ -258,7 +258,7 @@ export default function MapView() {
             const pos = geojsonToLeaflet(cp.boundary_geojson);
             if (pos.length === 0) return null;
             return (
-              <Polygon key={`cp-${cp.id}`} positions={pos} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
+              <Polygon key={`cp-${cp.id}`} positions={pos} interactive={false} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
                 <Tooltip permanent direction="center" className="chokepoint-tooltip">
                   <div style={{ textAlign: "center", fontSize: 11 }}>
                     <strong>{cp.name}</strong><br />
@@ -279,9 +279,7 @@ export default function MapView() {
             { name: "Cape of Good Hope",         bounds: [[-32.0, 16.5], [-37.0, 21.5]] },
             { name: "Panama Canal",              bounds: [[10.5, -80.5], [7.5, -77.5]] },
           ].map((zone) => (
-            <Rectangle key={zone.name} bounds={zone.bounds as any} pathOptions={{ color: "#06b6d4", weight: 2, dashArray: "6 4", fillColor: "#06b6d4", fillOpacity: 0.08 }}>
-              <Tooltip sticky><div style={{ fontSize: 12 }}><strong>📡 {zone.name}</strong><br /><span style={{ fontSize: 10, color: "#888" }}>AIS Monitoring Zone</span></div></Tooltip>
-            </Rectangle>
+            <Rectangle key={zone.name} bounds={zone.bounds as any} interactive={false} pathOptions={{ color: "#06b6d4", weight: 2, dashArray: "6 4", fillColor: "#06b6d4", fillOpacity: 0.08 }} />
           ))}
 
           {showPorts && ports.map((port) => (
