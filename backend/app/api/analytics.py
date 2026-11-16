@@ -15,7 +15,7 @@ from app.models import (
 from app.schemas import (
     FlowDataPoint, VolumeOverTime, TopRoute,
     FleetStatus, DashboardStats, CargoEventResponse,
-    IngestionDataPoint,
+    IngestionDataPoint, PositionSourceStat,
 )
 
 router = APIRouter()
@@ -330,4 +330,34 @@ def _bucket_minutes(bucket: str) -> int:
     if "30 minute" in bucket:
         return 30
     return 5
+
+
+@router.get("/position-sources", response_model=list[PositionSourceStat])
+async def get_position_sources(
+    hours: int = Query(24, ge=1, le=720, description="Lookback window in hours"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get vessel position count and percentage split by AIS data source."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    query = text("""
+        SELECT COALESCE(source, 'unknown') AS source, COUNT(*) AS cnt
+        FROM vessel_positions
+        WHERE time > :cutoff
+        GROUP BY 1
+        ORDER BY cnt DESC
+    """)
+    result = await db.execute(query, {"cutoff": cutoff})
+    rows = result.all()
+    total = sum(r.cnt for r in rows)
+    if total == 0:
+        return []
+
+    return [
+        PositionSourceStat(
+            source=r.source,
+            count=r.cnt,
+            percentage=round((r.cnt / total) * 100.0, 1),
+        )
+        for r in rows
+    ]
 

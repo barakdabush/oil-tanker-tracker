@@ -104,3 +104,6 @@ export const getFleetStatus = () =>
 export const getIngestionData = (hours = 24) =>
   fetchJSON<IngestionDataPoint[]>(`/api/analytics/ingestion?hours=${hours}`);
 
+export const getPositionSources = (hours = 24) =>
+  fetchJSON<import("./types").PositionSourceStat[]>(`/api/analytics/position-sources?hours=${hours}`);
+

@@ -188,6 +188,12 @@ export interface IngestionDataPoint {
   cargo_events: number;
 }
 
+export interface PositionSourceStat {
+  source: string;
+  count: number;
+  percentage: number;
+}
+
 // ─── Global Oil Market / ML Feature Types ───────────────────────────────────
 
 export interface MarketSnapshotResponse {

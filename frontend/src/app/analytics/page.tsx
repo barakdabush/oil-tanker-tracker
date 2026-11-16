@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import type { VolumeOverTime, TopRoute, FleetStatus } from "@/lib/types";
 import IngestionChart from "@/components/IngestionChart";
+import PositionSourcesChart from "@/components/PositionSourcesChart";
 import { getApiUrl } from "@/lib/config";
 
 // Dynamically import Recharts components (they don't support SSR well)
@@ -103,6 +104,9 @@ export default function AnalyticsPage() {
       <div className="page-body">
         {/* Data Ingestion Monitor */}
         <IngestionChart />
+
+        {/* AIS Position Split by Source */}
+        <PositionSourcesChart />
 
         {/* Volume Chart */}
         <div className="panel animate-in" style={{ marginBottom: 24 }}>

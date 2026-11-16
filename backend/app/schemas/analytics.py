@@ -51,3 +51,10 @@ class IngestionDataPoint(BaseModel):
     sts_events: int = 0
     ais_gaps: int = 0
     cargo_events: int = 0
+
+
+class PositionSourceStat(BaseModel):
+    """Position count and percentage share for an AIS data source."""
+    source: str
+    count: int
+    percentage: float

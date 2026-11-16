@@ -25,6 +25,7 @@ from app.schemas.analytics import (  # noqa: F401
     FleetStatus,
     DashboardStats,
     IngestionDataPoint,
+    PositionSourceStat,
 )
 from app.schemas.global_oil_features import MarketSnapshotResponse  # noqa: F401
 
@@ -47,5 +48,6 @@ __all__ = [
     "FleetStatus",
     "DashboardStats",
     "IngestionDataPoint",
+    "PositionSourceStat",
     "MarketSnapshotResponse",
 ]
