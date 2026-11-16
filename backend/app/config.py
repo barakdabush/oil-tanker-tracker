@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     # AIS ingestion settings
     AIS_WS_URL: str = "wss://stream.aisstream.io/v0/stream"
+    OPENWATERS_ENABLED: bool = True
+    OPENWATERS_WS_URL: str = "wss://ais.openwaters.io/v1/stream"
+    OPENWATERS_API_KEY: str = ""
     AIS_TANKER_TYPES: list[int] = list(range(80, 90))  # AIS ship types 80-89
 
     # Detection engine settings

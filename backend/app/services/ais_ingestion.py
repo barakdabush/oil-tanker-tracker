@@ -1,13 +1,13 @@
-"""AIS data ingestion service via aisstream.io WebSocket."""
+"""AIS data ingestion service via aisstream.io and Open Waters AIS WebSockets."""
 
 import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import TypedDict, Optional
+from typing import Optional
 
 import websockets
-from sqlalchemy import text, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import settings
@@ -24,12 +24,38 @@ from app.types.ais import AISPositionReport, AISShipDimension, AISEta, AISShipSt
 # AIS tanker ship type codes
 TANKER_TYPES = set(range(80, 90))
 
+# Focused bounding boxes around the 8 key oil tanker chokepoints
+# Format: (min_lat, min_lon, max_lat, max_lon)
+CHOKEPOINT_BBOXES = [
+    (22.0, 54.0, 27.5, 60.5),     # Strait of Hormuz (incl. Gulf of Oman + Persian Gulf approach)
+    (0.5, 98.0, 7.0, 105.5),      # Strait of Malacca (Singapore to Andaman Sea)
+    (27.0, 31.5, 32.0, 34.0),     # Suez Canal (incl. Red Sea north + Med south)
+    (10.5, 41.0, 14.0, 46.5),     # Bab el-Mandeb (Gulf of Aden + southern Red Sea)
+    (40.0, 27.5, 42.0, 30.5),     # Turkish Straits / Bosphorus (Black Sea mouth + Marmara Sea)
+    (54.0, 9.5, 57.5, 14.5),      # Danish Straits (Baltic Sea exits)
+    (-37.0, 16.5, -32.0, 21.5),   # Cape of Good Hope (southern Africa rounding)
+    (7.5, -80.5, 10.5, -77.5),    # Panama Canal (Pacific + Caribbean approaches)
+]
+
+POSITION_MSG_TYPES = (
+    "PositionReport",
+    "StandardClassBPositionReport",
+    "ExtendedClassBPositionReport",
+    "LongRangeAisBroadcastMessage",
+)
+STATIC_MSG_TYPES = ("ShipStaticData", "StaticDataReport")
+
+MAX_PENDING_POSITIONS = 5000
+MAX_KNOWN_NON_TANKERS = 50000
+
 # In-memory caches to avoid excessive DB writes and UI updates
 _last_saved_positions = {}
 _last_vessel_db_updates = {}
 _last_ui_updates = {}
 _known_drafts = {}
-_known_tankers = set()  # Strict whitelist: MMSIs confirmed to be tankers
+_known_tankers = set()      # MMSIs confirmed to be tankers
+_known_non_tankers = set()  # MMSIs confirmed to be non-tankers
+_pending_positions = {}     # MMSI -> (msg, pos_key) buffered while awaiting static data
 
 # In-memory batch accumulators
 _vessel_batch = {}
@@ -41,8 +67,8 @@ _logged_structures = set()
 
 
 async def start_ais_ingestion():
-    """Main AIS ingestion loop — connects to aisstream.io and processes messages."""
-    
+    """Main AIS ingestion loop — connects to configured AIS streams and processes messages."""
+
     # ── Seed Whitelist ──
     logger.info("Seeding known tankers whitelist from database...")
     try:
@@ -58,61 +84,61 @@ async def start_ais_ingestion():
     except Exception as e:
         logger.error(f"Failed to seed whitelist: {e}")
 
+    tasks = []
+    if settings.AIS_API_KEY and settings.AIS_API_KEY != "your_aisstream_api_key_here":
+        tasks.append(_run_stream_loop("aisstream.io", _connect_and_consume_aisstream))
+    else:
+        logger.warning("AIS_API_KEY is not configured; skipping aisstream.io connection.")
+
+    if settings.OPENWATERS_ENABLED:
+        tasks.append(_run_stream_loop("openwaters.io", _connect_and_consume_openwaters))
+
+    if not tasks:
+        logger.error("No AIS stream sources enabled or configured!")
+        return
+
+    await asyncio.gather(*tasks)
+
+
+async def _run_stream_loop(source_name: str, connect_fn):
+    """Reconnect loop with exponential backoff for a single AIS stream source."""
     backoff = 5
     while True:
         try:
-            await _connect_and_consume()
-            # If we lived and disconnected peacefully (or aisstream restarted us):
-            backoff = 5 
+            await connect_fn()
+            backoff = 5
         except asyncio.CancelledError:
-            logger.info("AIS ingestion cancelled")
+            logger.info(f"AIS ingestion ({source_name}) cancelled")
             break
-        except (TimeoutError, ConnectionRefusedError) as e:
-            logger.warning(f"AIS connection timeout/refused. Reconnecting in {backoff}s...")
+        except (TimeoutError, ConnectionRefusedError):
+            logger.warning(f"AIS ({source_name}) connection timeout/refused. Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
         except Exception as e:
-            # For other unexpected errors, log the class name to avoid mega-tracebacks
-            logger.error(f"AIS ingestion disrupted ({e.__class__.__name__}). Reconnecting in {backoff}s...")
+            logger.error(f"AIS ({source_name}) disrupted ({e.__class__.__name__}: {e}). Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
 
 
-async def _connect_and_consume():
+async def _connect_and_consume_aisstream():
     """Connect to aisstream.io WebSocket and consume messages."""
-    # Focused bounding boxes around the 8 key oil tanker chokepoints
-    # Format: [[top-left lat, top-left lon], [bottom-right lat, bottom-right lon]]
-    # Each box has ~2-3 degree padding beyond the chokepoint polygon for approach corridors
+    # aisstream.io expects [[top-left lat, top-left lon], [bottom-right lat, bottom-right lon]]
     subscribe_msg = {
         "APIKey": settings.AIS_API_KEY,
         "BoundingBoxes": [
-            # Strait of Hormuz (incl. Gulf of Oman approach + Persian Gulf)
-            [[27.5, 54.0], [22.0, 60.5]],
-            # Strait of Malacca (Singapore to Andaman Sea)
-            [[7.0, 98.0], [0.5, 105.5]],
-            # Suez Canal (incl. Red Sea north + Med south)
-            [[32.0, 31.5], [27.0, 34.0]],
-            # Bab el-Mandeb (Gulf of Aden + southern Red Sea)
-            [[14.0, 41.0], [10.5, 46.5]],
-            # Turkish Straits / Bosphorus (Black Sea mouth + Marmara Sea)
-            [[42.0, 27.5], [40.0, 30.5]],
-            # Danish Straits (Baltic Sea exits)
-            [[57.5, 9.5], [54.0, 14.5]],
-            # Cape of Good Hope (southern Africa rounding)
-            [[-32.0, 16.5], [-37.0, 21.5]],
-            # Panama Canal (Pacific + Caribbean approaches)
-            [[10.5, -80.5], [7.5, -77.5]],
+            [[max_lat, min_lon], [min_lat, max_lon]]
+            for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES
         ],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+        "FilterMessageTypes": list(POSITION_MSG_TYPES + STATIC_MSG_TYPES),
     }
 
-    logger.info(f"Connecting to AIS stream at {settings.AIS_WS_URL}...")
+    logger.info(f"Connecting to aisstream.io at {settings.AIS_WS_URL}...")
     key_masked = settings.AIS_API_KEY[:4] + "***" + settings.AIS_API_KEY[-4:] if len(settings.AIS_API_KEY) > 8 else "***"
-    logger.info(f"Using API Key: {key_masked}")
+    logger.info(f"Using aisstream.io API Key: {key_masked}")
 
     async with websockets.connect(
-        settings.AIS_WS_URL, 
-        open_timeout=30
+        settings.AIS_WS_URL,
+        open_timeout=30,
     ) as ws:
         await ws.send(json.dumps(subscribe_msg))
         logger.info("✅ Connected to aisstream.io — receiving AIS data")
@@ -122,9 +148,75 @@ async def _connect_and_consume():
                 msg = json.loads(raw_msg)
                 await _process_message(msg)
             except json.JSONDecodeError:
-                logger.warning("Invalid JSON from AIS stream")
+                logger.warning("Invalid JSON from aisstream.io")
             except Exception as e:
-                logger.error(f"Error processing AIS message: {e}")
+                logger.error(f"Error processing aisstream.io message: {e}")
+
+
+def _normalize_openwaters_event(event: dict) -> Optional[dict]:
+    """Normalize an Open Waters /v1/stream event into the AISMessage envelope."""
+    frame_type = event.get("type")
+    if frame_type:
+        if frame_type == "error":
+            logger.warning(f"Open Waters AIS error frame: {event.get('error', event)}")
+        elif frame_type in ("welcome", "ack"):
+            logger.info(f"Open Waters AIS {frame_type}: {json.dumps(event, default=str)[:200]}")
+        return None
+
+    msg_type = event.get("msg_type")
+    payload = event.get("message")
+    if not msg_type or not isinstance(payload, dict):
+        return None
+
+    mmsi = payload.get("UserID") or 0
+    if not mmsi:
+        return None
+
+    meta = {
+        "MMSI": mmsi,
+        "ShipName": (payload.get("Name") or "").strip(),
+        "latitude": event.get("lat"),
+        "longitude": event.get("lon"),
+        "time_utc": event.get("time"),
+    }
+    return {
+        "MessageType": msg_type,
+        "Message": {msg_type: payload},
+        "MetaData": meta,
+    }
+
+
+async def _connect_and_consume_openwaters():
+    """Connect to Open Waters AIS /v1/stream WebSocket and consume messages."""
+    ws_url = settings.OPENWATERS_WS_URL
+    if settings.OPENWATERS_API_KEY:
+        sep = "&" if "?" in ws_url else "?"
+        ws_url = f"{ws_url}{sep}key={settings.OPENWATERS_API_KEY}"
+
+    # Open Waters /v1/stream expects [minLat, minLon, maxLat, maxLon]
+    subscribe_msg = {
+        "type": "subscribe",
+        "bbox": [[min_lat, min_lon, max_lat, max_lon] for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES],
+    }
+
+    logger.info(f"Connecting to Open Waters AIS at {settings.OPENWATERS_WS_URL}...")
+    async with websockets.connect(
+        ws_url,
+        open_timeout=30,
+    ) as ws:
+        await ws.send(json.dumps(subscribe_msg))
+        logger.info("✅ Connected to Open Waters AIS — receiving AIS data")
+
+        async for raw_msg in ws:
+            try:
+                event = json.loads(raw_msg)
+                msg = _normalize_openwaters_event(event)
+                if msg is not None:
+                    await _process_message(msg)
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON from Open Waters AIS")
+            except Exception as e:
+                logger.error(f"Error processing Open Waters AIS message: {e}")
 
 
 async def _process_message(msg: AISMessage):
@@ -136,38 +228,57 @@ async def _process_message(msg: AISMessage):
         _logged_structures.add(msg_type)
         logger.info(f"\n{'='*60}\nFIRST {msg_type} structure:\n{json.dumps(msg, indent=2, default=str)}\n{'='*60}")
 
-    if msg_type == "PositionReport":
-        await _handle_position_report(msg)
-    elif msg_type == "ShipStaticData":
-        await _handle_static_data(msg)
+    if msg_type in POSITION_MSG_TYPES:
+        await _handle_position_report(msg, msg_type)
+    elif msg_type in STATIC_MSG_TYPES:
+        await _handle_static_data(msg, msg_type)
 
 
-async def _handle_position_report(msg: AISMessage):
+async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionReport"):
     """Handle an AIS position report — insert position and update vessel."""
     meta: Optional[AISMetaData] = msg.get("MetaData")
-    position: Optional[AISPositionReport] = msg.get("Message", {}).get("PositionReport")
+    position: Optional[AISPositionReport] = msg.get("Message", {}).get(pos_key)
     if not position or not meta:
         return
 
-    mmsi = int(meta.get("MMSI", 0))
+    mmsi = int(meta.get("MMSI") or position.get("UserID") or 0)
     if mmsi == 0:
         return
 
-    # Extract ship type from metadata if available
+    # Extract ship type from metadata or ExtendedClassBPositionReport if available
     ship_type = meta.get("ShipType", None)
+    if ship_type is None:
+        ship_type = position.get("Type", None)
 
-    # ── Strict Whitelist Filter ──
-    # Only process if it's already a known tanker OR this message explicitly confirms it is one
+    # ── Tanker Whitelist & Pending Buffer ──
+    if mmsi in _known_non_tankers:
+        if ship_type is not None and ship_type in TANKER_TYPES:
+            _known_non_tankers.discard(mmsi)
+            _known_tankers.add(mmsi)
+        else:
+            return
+
     if mmsi not in _known_tankers:
         if ship_type is not None and ship_type in TANKER_TYPES:
             _known_tankers.add(mmsi)
-            logger.info(f"Added new tanker to whitelist from position metadata: MMSI {mmsi}")
+            logger.info(f"Added new tanker to whitelist from position data: MMSI {mmsi}")
+        elif ship_type is not None:
+            if len(_known_non_tankers) < MAX_KNOWN_NON_TANKERS:
+                _known_non_tankers.add(mmsi)
+            _pending_positions.pop(mmsi, None)
+            return
         else:
-            # Unknown vessel or confirmed non-tanker -> Ignore completely
+            # ShipType not yet known — buffer latest position until ShipStaticData arrives
+            if mmsi not in _pending_positions and len(_pending_positions) >= MAX_PENDING_POSITIONS:
+                oldest_mmsi = next(iter(_pending_positions))
+                _pending_positions.pop(oldest_mmsi, None)
+            _pending_positions[mmsi] = (msg, pos_key)
             return
     elif ship_type is not None and ship_type not in TANKER_TYPES:
         # Edge case: It was in our whitelist but is now reporting as a non-tanker
         _known_tankers.discard(mmsi)
+        if len(_known_non_tankers) < MAX_KNOWN_NON_TANKERS:
+            _known_non_tankers.add(mmsi)
         logger.info(f"Removed MMSI {mmsi} from whitelist (type changed to {ship_type})")
         return
 
@@ -270,18 +381,25 @@ async def _handle_position_report(msg: AISMessage):
         "update_ui_trail": update_ui_trail
     })
 
-async def _handle_static_data(msg: AISMessage):
+async def _handle_static_data(msg: AISMessage, static_key: str = "ShipStaticData"):
     """Handle AIS static/voyage data — update vessel registry."""
     meta: Optional[AISMetaData] = msg.get("MetaData")
-    static: Optional[AISShipStaticData] = msg.get("Message", {}).get("ShipStaticData")
+    static: Optional[dict] = msg.get("Message", {}).get(static_key)
     if not static or not meta:
         return
 
-    mmsi = int(meta.get("MMSI", 0))
+    mmsi = int(meta.get("MMSI") or static.get("UserID") or 0)
     if mmsi == 0:
         return
 
+    # Support both ShipStaticData (Msg 5) and StaticDataReport (Msg 24)
+    report_a = static.get("ReportA") or {}
+    report_b = static.get("ReportB") or {}
     ship_type = static.get("Type", None)
+    if ship_type is None and isinstance(report_b, dict):
+        ship_type = report_b.get("ShipType", None)
+
+    newly_confirmed_tanker = False
 
     # Strictly process only tankers (types 80-89)
     if ship_type is not None:
@@ -289,15 +407,20 @@ async def _handle_static_data(msg: AISMessage):
             if mmsi in _known_tankers:
                 _known_tankers.discard(mmsi)
                 logger.info(f"Removed MMSI {mmsi} from whitelist (static data confirmed type {ship_type})")
+            if len(_known_non_tankers) < MAX_KNOWN_NON_TANKERS:
+                _known_non_tankers.add(mmsi)
+            _pending_positions.pop(mmsi, None)
             return
+        _known_non_tankers.discard(mmsi)
         if mmsi not in _known_tankers:
             _known_tankers.add(mmsi)
+            newly_confirmed_tanker = True
             logger.info(f"Added new tanker to whitelist from static data: MMSI {mmsi}")
     elif mmsi not in _known_tankers:
-        # Static data has no ship_type and vessel is not a known tanker -> ignore
+        # Static data has no ship_type (e.g. Msg 24 Part A only) and vessel is not a known tanker -> ignore
         return
 
-    dimension = static.get("Dimension", {})
+    dimension = static.get("Dimension") or (report_b.get("Dimension") if isinstance(report_b, dict) else None) or {}
     length = None
     beam = None
     if dimension:
@@ -315,9 +438,11 @@ async def _handle_static_data(msg: AISMessage):
         draft = None
 
     imo = static.get("ImoNumber", None)
-    callsign = static.get("CallSign", "").strip() or None
-    destination = static.get("Destination", "").strip() or None
-    name = static.get("Name", "").strip() or meta.get("ShipName", "").strip() or None
+    raw_callsign = static.get("CallSign") or (report_b.get("CallSign") if isinstance(report_b, dict) else "") or ""
+    callsign = raw_callsign.strip() or None
+    destination = (static.get("Destination") or "").strip() or None
+    raw_name = static.get("Name") or (report_a.get("Name") if isinstance(report_a, dict) else "") or meta.get("ShipName") or ""
+    name = raw_name.strip() or None
 
     eta_data = static.get("Eta", {})
     eta = None
@@ -351,6 +476,12 @@ async def _handle_static_data(msg: AISMessage):
             _known_drafts[mmsi] = draft
         if destination: v_data["destination"] = destination
         if eta is not None: v_data["eta"] = eta
+
+    if newly_confirmed_tanker:
+        pending = _pending_positions.pop(mmsi, None)
+        if pending is not None:
+            pending_msg, pending_key = pending
+            await _handle_position_report(pending_msg, pending_key)
 
     # logger.debug(f"Static: MMSI={mmsi} name={name} type={ship_type}")
 

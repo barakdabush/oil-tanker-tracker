@@ -20,7 +20,7 @@ async def list_vessels(
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="Filter: in_transit, at_port, dark"),
-    seen_within_hours: Optional[float] = Query(1, ge=0, description="Only show vessels seen within this many hours. 0 = no filter."),
+    seen_within_hours: Optional[float] = Query(6, ge=0, description="Only show vessels seen within this many hours. 0 = no filter."),
     lat_min: Optional[float] = Query(None, description="Viewport south bound"),
     lon_min: Optional[float] = Query(None, description="Viewport west bound"),
     lat_max: Optional[float] = Query(None, description="Viewport north bound"),
