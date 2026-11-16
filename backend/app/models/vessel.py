@@ -59,6 +59,7 @@ class VesselPosition(Base):
     heading = Column(Float, nullable=True)  # True heading (degrees)
     draft = Column(Float, nullable=True)
     nav_status = Column(Integer, nullable=True)  # Navigation status code
+    source = Column(String(64), nullable=True)
 
     vessel = relationship("Vessel", back_populates="positions")
 

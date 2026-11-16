@@ -16,6 +16,7 @@ def reset_ingestion_state(monkeypatch):
     ais_ingestion._last_saved_positions.clear()
     ais_ingestion._last_vessel_db_updates.clear()
     ais_ingestion._last_ui_updates.clear()
+    ais_ingestion._last_seen_timestamps.clear()
     ais_ingestion._known_drafts.clear()
 
     broadcasts = []
@@ -141,3 +142,29 @@ async def test_confirmed_non_tanker_clears_pending_and_is_ignored(reset_ingestio
     assert mmsi not in ais_ingestion._pending_positions
     assert len(ais_ingestion._position_batch) == 0
     assert len(reset_ingestion_state) == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_position_from_slower_source_is_dropped(reset_ingestion_state):
+    mmsi = 538007777
+    ais_ingestion._known_tankers.add(mmsi)
+
+    newer_msg = {
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": mmsi, "ShipName": "TANKER A", "time_utc": "2026-11-16T12:01:00Z", "Source": "aisstream"},
+        "Message": {"PositionReport": {"UserID": mmsi, "Latitude": 26.5, "Longitude": 56.5, "Sog": 12.0}},
+    }
+    older_msg = {
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": mmsi, "ShipName": "TANKER A", "time_utc": "2026-11-16T12:00:00Z", "Source": "openwaters:aishub"},
+        "Message": {"PositionReport": {"UserID": mmsi, "Latitude": 26.4, "Longitude": 56.4, "Sog": 11.5}},
+    }
+
+    await ais_ingestion._process_message(newer_msg)
+    await ais_ingestion._process_message(older_msg)
+
+    assert len(ais_ingestion._position_batch) == 1
+    assert ais_ingestion._position_batch[0]["source"] == "aisstream"
+    assert len(reset_ingestion_state) == 1
+    assert reset_ingestion_state[0]["source"] == "aisstream"
+

@@ -99,6 +99,7 @@ async def get_vessel_trail(
         VesselPosition.course,
         VesselPosition.heading,
         VesselPosition.draft,
+        VesselPosition.source,
     ).where(VesselPosition.mmsi == mmsi)
 
     if start_time and end_time:
@@ -132,6 +133,7 @@ async def get_vessel_trail(
                 course=r.course,
                 heading=r.heading,
                 draft=r.draft,
+                source=r.source,
             )
             for r in rows
         ],

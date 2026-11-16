@@ -52,6 +52,7 @@ MAX_KNOWN_NON_TANKERS = 50000
 _last_saved_positions = {}
 _last_vessel_db_updates = {}
 _last_ui_updates = {}
+_last_seen_timestamps = {}
 _known_drafts = {}
 _known_tankers = set()      # MMSIs confirmed to be tankers
 _known_non_tankers = set()  # MMSIs confirmed to be non-tankers
@@ -337,6 +338,12 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
     else:
         timestamp = now
 
+    # Drop stale/out-of-order positions (e.g. delayed duplicate from a slower feed)
+    last_seen_ts = _last_seen_timestamps.get(mmsi)
+    if last_seen_ts and timestamp < last_seen_ts:
+        return
+    _last_seen_timestamps[mmsi] = timestamp
+
     # ── Smart Position Save Logic ──
     last_saved = _last_saved_positions.get(mmsi)
     save_position = False
@@ -394,6 +401,7 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
                 "heading": heading,
                 "nav_status": nav_status,
                 "draft": _known_drafts.get(mmsi),
+                "source": source[:64] if source else None,
             })
         _last_saved_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
 

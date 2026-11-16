@@ -47,6 +47,7 @@ class PositionResponse(BaseModel):
     course: Optional[float] = None
     heading: Optional[float] = None
     draft: Optional[float] = None
+    source: Optional[str] = None
 
     class Config:
         from_attributes = True
