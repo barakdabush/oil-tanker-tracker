@@ -68,6 +68,10 @@ export default function PositionSourcesChart() {
   }, [fetchData]);
 
   const totalPositions = data.reduce((sum, d) => sum + d.count, 0);
+  const chartData = data.map((d, idx) => ({
+    ...d,
+    fill: getSourceColor(d.source, idx),
+  }));
 
   return (
     <div className="panel animate-in" id="position-sources-chart" style={{ marginBottom: 24 }}>
@@ -132,13 +136,14 @@ export default function PositionSourcesChart() {
             No positions recorded in the last {hours}h
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) minmax(240px, 1.4fr)", gap: 24, alignItems: "center" }}>
-            <div style={{ width: "100%", height: 240 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 24, alignItems: "center" }}>
+            <div style={{ width: "100%", height: 240, outline: "none" }}>
+              <style>{`#position-sources-chart svg:focus, #position-sources-chart .recharts-wrapper:focus { outline: none; }`}</style>
               {mounted && (
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
                     <Pie
-                      data={data}
+                      data={chartData}
                       dataKey="count"
                       nameKey="source"
                       cx="50%"
@@ -146,9 +151,10 @@ export default function PositionSourcesChart() {
                       innerRadius={58}
                       outerRadius={92}
                       paddingAngle={3}
+                      stroke="none"
                     >
-                      {data.map((entry, idx) => (
-                        <Cell key={entry.source} fill={getSourceColor(entry.source, idx)} />
+                      {chartData.map((entry) => (
+                        <Cell key={entry.source} fill={entry.fill} />
                       ))}
                     </Pie>
                     <RechartsTooltip
@@ -169,17 +175,17 @@ export default function PositionSourcesChart() {
               )}
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {data.map((item, idx) => {
-                const color = getSourceColor(item.source, idx);
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+              {chartData.map((item) => {
+                const color = item.fill;
                 return (
                   <div key={item.source} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", fontWeight: 600 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 13 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0, display: "inline-block" }} />
                         {item.source}
                       </span>
-                      <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+                      <span style={{ color: "var(--text-secondary)", fontSize: 12, whiteSpace: "nowrap" }}>
                         <strong>{item.count.toLocaleString()}</strong> ({item.percentage}%)
                       </span>
                     </div>
