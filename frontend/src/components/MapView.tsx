@@ -142,7 +142,7 @@ export default function MapView() {
               marker.setLatLng([data.lat, data.lon]);
               const existing = allVesselsRef.current.get(data.mmsi);
               if (existing) {
-                const updated = { ...existing, last_seen: data.timestamp, last_speed: data.speed, last_lat: data.lat, last_lon: data.lon, last_course: data.course };
+                const updated = { ...existing, last_seen: data.timestamp, last_speed: data.speed, last_lat: data.lat, last_lon: data.lon, last_course: data.course, last_source: data.source ?? existing.last_source };
                 allVesselsRef.current.set(data.mmsi, updated);
                 const color = getVesselColor(updated);
                 const isSelected = selectedVesselRef.current?.mmsi === data.mmsi;
@@ -166,7 +166,7 @@ export default function MapView() {
             }
           }
           vesselsRef.current.set(data.mmsi, data);
-          setSelectedVessel(prev => (prev && prev.mmsi === data.mmsi) ? { ...prev, last_lat: data.lat, last_lon: data.lon, last_speed: data.speed, last_course: data.course, last_seen: data.timestamp } : prev);
+          setSelectedVessel(prev => (prev && prev.mmsi === data.mmsi) ? { ...prev, last_lat: data.lat, last_lon: data.lon, last_speed: data.speed, last_course: data.course, last_seen: data.timestamp, last_source: data.source ?? prev.last_source } : prev);
           if (data.update_ui_trail && selectedVesselRef.current?.mmsi === data.mmsi) {
             setVesselTrails(prev => ({
               ...prev,

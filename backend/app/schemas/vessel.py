@@ -27,6 +27,7 @@ class VesselResponse(VesselBase):
     last_lon: Optional[float] = None
     last_speed: Optional[float] = None
     last_course: Optional[float] = None
+    last_source: Optional[str] = None
 
     class Config:
         from_attributes = True

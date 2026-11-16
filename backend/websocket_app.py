@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.database import engine
-from app.services.ais_ingestion import start_ais_ingestion, start_flush_task
+from app.services.ais_ingestion import start_ais_ingestion, start_flush_task, get_ingestion_stats
 from app.ws_manager import manager
 
 logging.basicConfig(level=logging.INFO)
@@ -66,7 +66,7 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "service": "websocket"}
+    return {"status": "healthy", "service": "websocket", "sources": get_ingestion_stats()}
 
 
 @app.websocket("/api/ws/vessels")

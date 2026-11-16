@@ -123,6 +123,12 @@ export function VesselDetailPanel({
               {selectedVessel.last_seen ? `${timeAgo(selectedVessel.last_seen)}` : "—"}
             </div>
           </div>
+          <div>
+            <div style={{ color: "var(--text-muted)", fontSize: 11 }}>AIS Source</div>
+            <div style={{ fontWeight: 600, fontFamily: "monospace", fontSize: 11, color: selectedVessel.last_source?.startsWith("openwaters") ? "var(--accent-emerald)" : "var(--text-primary)" }}>
+              {selectedVessel.last_source || "—"}
+            </div>
+          </div>
         </div>
 
         <div style={{ padding: "8px 12px", background: "rgba(6, 182, 212, 0.08)", borderRadius: 8, border: "1px solid rgba(6, 182, 212, 0.2)", fontSize: 12, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>

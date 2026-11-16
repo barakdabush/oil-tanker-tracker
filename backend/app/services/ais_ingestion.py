@@ -65,6 +65,25 @@ _batch_lock = asyncio.Lock()
 # One-time structure logging
 _logged_structures = set()
 
+# Per-source ingestion telemetry
+_source_stats = {
+    "aisstream": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None},
+    "openwaters": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None, "sub_sources": {}},
+}
+
+
+def get_ingestion_stats() -> dict:
+    """Return a snapshot of per-source AIS ingestion statistics."""
+    return {
+        "aisstream": dict(_source_stats["aisstream"]),
+        "openwaters": {
+            **_source_stats["openwaters"],
+            "sub_sources": dict(_source_stats["openwaters"]["sub_sources"]),
+        },
+        "known_tankers": len(_known_tankers),
+        "pending_positions": len(_pending_positions),
+    }
+
 
 async def start_ais_ingestion():
     """Main AIS ingestion loop — connects to configured AIS streams and processes messages."""
@@ -146,6 +165,10 @@ async def _connect_and_consume_aisstream():
         async for raw_msg in ws:
             try:
                 msg = json.loads(raw_msg)
+                _source_stats["aisstream"]["messages_received"] += 1
+                _source_stats["aisstream"]["last_message_at"] = datetime.now(timezone.utc).isoformat()
+                if isinstance(msg.get("MetaData"), dict):
+                    msg["MetaData"]["Source"] = "aisstream"
                 await _process_message(msg)
             except json.JSONDecodeError:
                 logger.warning("Invalid JSON from aisstream.io")
@@ -172,12 +195,23 @@ def _normalize_openwaters_event(event: dict) -> Optional[dict]:
     if not mmsi:
         return None
 
+    _source_stats["openwaters"]["messages_received"] += 1
+    _source_stats["openwaters"]["last_message_at"] = datetime.now(timezone.utc).isoformat()
+    sub_source = event.get("source")
+    if sub_source:
+        sub_counts = _source_stats["openwaters"]["sub_sources"]
+        sub_counts[sub_source] = sub_counts.get(sub_source, 0) + 1
+        source_label = f"openwaters:{sub_source}"
+    else:
+        source_label = "openwaters"
+
     meta = {
         "MMSI": mmsi,
         "ShipName": (payload.get("Name") or "").strip(),
         "latitude": event.get("lat"),
         "longitude": event.get("lon"),
         "time_utc": event.get("time"),
+        "Source": source_label,
     }
     return {
         "MessageType": msg_type,
@@ -326,6 +360,11 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         or (timestamp - last_v_update).total_seconds() < 0
     )
 
+    source = meta.get("Source")
+    if source:
+        provider = "openwaters" if source.startswith("openwaters") else "aisstream"
+        _source_stats[provider]["tanker_positions"] += 1
+
     if should_update_vessel_db:
         async with _batch_lock:
             v_data = _vessel_batch.setdefault(mmsi, {"mmsi": mmsi})
@@ -334,6 +373,8 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
             v_data["last_lon"] = lon
             v_data["last_speed"] = speed
             v_data["last_course"] = course
+            if source:
+                v_data["last_source"] = source[:64]
             name_val = meta.get("ShipName", "").strip()
             if name_val:
                 v_data["name"] = name_val
@@ -377,6 +418,7 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         "course": course,
         "heading": heading,
         "nav_status": nav_status,
+        "source": source,
         "timestamp": timestamp.isoformat(),
         "update_ui_trail": update_ui_trail
     })
@@ -560,10 +602,19 @@ async def flush_batch():
 async def start_flush_task():
     """Periodic task to flush DB batches."""
     logger.info("Starting batch flush task, interval=2s")
+    tick = 0
     while True:
         try:
             await asyncio.sleep(2)
             await flush_batch()
+            tick += 1
+            if tick % 30 == 0:
+                ais_s = _source_stats["aisstream"]
+                ow_s = _source_stats["openwaters"]
+                logger.info(
+                    f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}) | "
+                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, sub={ow_s['sub_sources']})"
+                )
         except asyncio.CancelledError:
             logger.info("Batch flush task cancelled")
             # Final flush before exit

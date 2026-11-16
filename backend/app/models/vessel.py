@@ -39,6 +39,7 @@ class Vessel(Base):
     last_lon = Column(Float, nullable=True)
     last_speed = Column(Float, nullable=True)
     last_course = Column(Float, nullable=True)
+    last_source = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
     updated_at = Column(DateTime(timezone=True), server_default=text("NOW()"), onupdate=datetime.utcnow)
 

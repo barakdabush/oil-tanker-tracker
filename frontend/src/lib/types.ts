@@ -18,6 +18,7 @@ export interface Vessel {
   last_lon: number | null;
   last_speed: number | null;
   last_course: number | null;
+  last_source?: string | null;
 }
 
 export interface VesselListResponse {
