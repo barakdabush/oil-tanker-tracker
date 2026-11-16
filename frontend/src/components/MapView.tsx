@@ -116,11 +116,11 @@ export default function MapView() {
   }, [API]);
 
   useEffect(() => {
-    fetch(`${API}/api/chokepoints?hours=${trailHours}`)
+    fetch(`${API}/api/chokepoints?hours=24`)
       .then(r => r.json())
       .then(data => { if (Array.isArray(data)) setDynamicChokepoints(data); })
       .catch(() => {});
-  }, [API, trailHours]);
+  }, [API]);
 
   useEffect(() => {
     fetch(`${API}/api/alerts/sts-events?status=detected,ongoing,confirmed`)
@@ -228,6 +228,8 @@ export default function MapView() {
           searchResults={searchResults} 
           isSearching={isSearching}
           onSelectVessel={(v) => {
+            setSelectedStsEvent(null);
+            setStsHighlightedMmsis(null);
             setSelectedVessel(v);
             setActiveDetail("vessel");
             setVessels(prev => prev.find(e => e.mmsi === v.mmsi) ? prev : [...prev, v]);
@@ -262,7 +264,7 @@ export default function MapView() {
                 <Tooltip permanent direction="center" className="chokepoint-tooltip">
                   <div style={{ textAlign: "center", fontSize: 11 }}>
                     <strong>{cp.name}</strong><br />
-                    <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / ${timeLabelMap[trailHours] || `${trailHours}h`}`}</span>
+                    <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / 24h`}</span>
                   </div>
                 </Tooltip>
               </Polygon>
