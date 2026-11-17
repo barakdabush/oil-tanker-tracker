@@ -76,6 +76,9 @@ def _parse_portwatch_feature(attrs: dict) -> Optional[dict]:
     }
 
 
+CHOKEPOINT_PORTIDS = [f"chokepoint{i}" for i in range(1, 16)]
+
+
 class PortWatchFetcher:
     """Periodic fetcher for IMF PortWatch Daily Chokepoints Data."""
 
@@ -88,27 +91,23 @@ class PortWatchFetcher:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"IMF PortWatch fetch error: {e}")
+                logger.error(f"IMF PortWatch fetch error: {type(e).__name__}: {e}")
                 await asyncio.sleep(10 * 60)
                 continue
             await asyncio.sleep(RUN_INTERVAL_SECONDS)
 
     async def fetch_and_store(self, lookback_days: int = LOOKBACK_DAYS) -> int:
-        """Query IMF PortWatch ArcGIS FeatureServer and upsert daily chokepoint rows."""
+        """Query IMF PortWatch ArcGIS FeatureServer per chokepoint and upsert daily rows."""
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date()
         rows: list[dict] = []
-        offset = 0
-        page_size = 2000
-        max_pages = 10
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            for _ in range(max_pages):
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            for portid in CHOKEPOINT_PORTIDS:
                 params = {
-                    "where": "1=1",
-                    "outFields": "*",
+                    "where": f"portid='{portid}'",
+                    "outFields": "portid,portname,date,n_total,n_tanker,n_cargo,n_container,capacity_tanker,capacity",
                     "orderByFields": "date DESC",
-                    "resultOffset": offset,
-                    "resultRecordCount": page_size,
+                    "resultRecordCount": min(lookback_days + 10, 1000),
                     "f": "json",
                 }
                 resp = await client.get(PORTWATCH_QUERY_URL, params=params)
@@ -116,26 +115,13 @@ class PortWatchFetcher:
                 payload = resp.json()
 
                 if "error" in payload:
-                    logger.error(f"IMF PortWatch ArcGIS error: {payload['error']}")
-                    break
+                    logger.error(f"IMF PortWatch ArcGIS error for {portid}: {payload['error']}")
+                    continue
 
-                features = payload.get("features") or []
-                if not features:
-                    break
-
-                reached_cutoff = False
-                for feat in features:
+                for feat in payload.get("features") or []:
                     parsed = _parse_portwatch_feature(feat.get("attributes") or {})
-                    if parsed is None:
-                        continue
-                    if parsed["date"] < cutoff_date:
-                        reached_cutoff = True
-                        continue
-                    rows.append(parsed)
-
-                if reached_cutoff or not payload.get("exceededTransferLimit") or len(features) < page_size:
-                    break
-                offset += len(features)
+                    if parsed is not None and parsed["date"] >= cutoff_date:
+                        rows.append(parsed)
 
         if not rows:
             logger.warning("IMF PortWatch returned 0 rows.")
