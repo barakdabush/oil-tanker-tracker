@@ -4,14 +4,52 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, and_, desc, String
+from sqlalchemy import select, func, and_, desc, or_, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Vessel, VesselPosition, CargoEvent
+from app.models import Vessel, VesselPosition, CargoEvent, OfacSanctionedVessel
 from app.schemas import VesselResponse, VesselListResponse, PositionResponse, TrailResponse, CargoEventResponse
 
 router = APIRouter()
+
+
+async def _get_sanction_maps(db: AsyncSession, vessels: list[Vessel]) -> tuple[dict[int, str], dict[int, str]]:
+    """Return ({imo: program}, {mmsi: program}) maps for a batch of vessels."""
+    imos = [v.imo for v in vessels if v.imo]
+    mmsis = [v.mmsi for v in vessels if v.mmsi]
+    if not imos and not mmsis:
+        return {}, {}
+
+    conds = []
+    if imos:
+        conds.append(OfacSanctionedVessel.imo.in_(imos))
+    if mmsis:
+        conds.append(OfacSanctionedVessel.mmsi.in_(mmsis))
+
+    rows = (await db.execute(
+        select(OfacSanctionedVessel.imo, OfacSanctionedVessel.mmsi, OfacSanctionedVessel.program)
+        .where(or_(*conds))
+    )).all()
+
+    by_imo: dict[int, str] = {}
+    by_mmsi: dict[int, str] = {}
+    for imo, mmsi, program in rows:
+        prog = program or "OFAC SDN"
+        if imo:
+            by_imo[imo] = prog
+        if mmsi:
+            by_mmsi[mmsi] = prog
+    return by_imo, by_mmsi
+
+
+def _to_vessel_response(v: Vessel, by_imo: dict[int, str], by_mmsi: dict[int, str]) -> VesselResponse:
+    resp = VesselResponse.model_validate(v)
+    program = (by_imo.get(v.imo) if v.imo else None) or by_mmsi.get(v.mmsi)
+    if program:
+        resp.is_sanctioned = True
+        resp.sanctions_program = program
+    return resp
 
 
 @router.get("", response_model=VesselListResponse)
@@ -61,10 +99,11 @@ async def list_vessels(
     # Fetch page
     query = query.order_by(desc(Vessel.last_seen)).limit(limit).offset(offset)
     result = await db.execute(query)
-    vessels = result.scalars().all()
+    vessels = list(result.scalars().all())
+    by_imo, by_mmsi = await _get_sanction_maps(db, vessels)
 
     return VesselListResponse(
-        vessels=[VesselResponse.model_validate(v) for v in vessels],
+        vessels=[_to_vessel_response(v, by_imo, by_mmsi) for v in vessels],
         total=total,
     )
 
@@ -77,7 +116,8 @@ async def get_vessel(mmsi: int, db: AsyncSession = Depends(get_db)):
     if not vessel:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Vessel not found")
-    return VesselResponse.model_validate(vessel)
+    by_imo, by_mmsi = await _get_sanction_maps(db, [vessel])
+    return _to_vessel_response(vessel, by_imo, by_mmsi)
 
 
 @router.get("/{mmsi}/trail", response_model=TrailResponse)

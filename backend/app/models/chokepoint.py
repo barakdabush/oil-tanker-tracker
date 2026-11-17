@@ -6,6 +6,7 @@ from geoalchemy2 import Geometry
 from sqlalchemy import (
     BigInteger,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -50,4 +51,23 @@ class ChokepointTransit(Base):
 
     __table_args__ = (
         Index("idx_chokepoint_transits_chokepoint_time", "chokepoint_id", "time"),
+    )
+
+
+class PortWatchChokepointDaily(Base):
+    __tablename__ = "portwatch_chokepoint_daily"
+
+    portid = Column(String(32), primary_key=True)
+    date = Column(Date, primary_key=True)
+    portname = Column(String(128), nullable=False, index=True)
+    n_total = Column(Integer, nullable=False, default=0)
+    n_tanker = Column(Integer, nullable=False, default=0)
+    n_cargo = Column(Integer, nullable=False, default=0)
+    n_container = Column(Integer, nullable=False, default=0)
+    capacity_tanker = Column(Float, nullable=True)
+    capacity_total = Column(Float, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_portwatch_portname_date", "portname", "date"),
     )

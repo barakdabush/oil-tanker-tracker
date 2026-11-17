@@ -361,3 +361,46 @@ async def get_position_sources(
         for r in rows
     ]
 
+
+@router.get("/sanctions")
+async def get_sanctioned_vessels(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get tracked tankers matching the US Treasury OFAC SDN sanctions list."""
+    from app.models import OfacSanctionedVessel
+
+    total_ofac = (await db.execute(select(func.count()).select_from(OfacSanctionedVessel))).scalar() or 0
+
+    matched_q = text("""
+        SELECT DISTINCT ON (v.mmsi)
+            v.mmsi, v.imo, v.name, v.flag, v.last_lat, v.last_lon, v.last_speed, v.last_seen,
+            o.program, o.name AS ofac_name
+        FROM vessels v
+        JOIN ofac_sanctioned_vessels o
+          ON (v.imo IS NOT NULL AND v.imo = o.imo)
+          OR (v.mmsi = o.mmsi)
+        ORDER BY v.mmsi, v.last_seen DESC NULLS LAST
+        LIMIT :limit
+    """)
+    rows = (await db.execute(matched_q, {"limit": limit})).all()
+
+    return {
+        "total_ofac_vessels": total_ofac,
+        "matched_tracked_count": len(rows),
+        "vessels": [
+            {
+                "mmsi": r.mmsi,
+                "imo": r.imo,
+                "name": r.name or r.ofac_name,
+                "flag": r.flag,
+                "last_lat": r.last_lat,
+                "last_lon": r.last_lon,
+                "last_speed": r.last_speed,
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+                "program": r.program or "OFAC SDN",
+            }
+            for r in rows
+        ],
+    }
+

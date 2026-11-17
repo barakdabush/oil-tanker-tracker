@@ -65,6 +65,24 @@ export function VesselDetailPanel({
           }`}>
             {status}
           </span>
+          {selectedVessel.is_sanctioned && (
+            <span
+              title={`OFAC SDN List (${selectedVessel.sanctions_program || "Sanctioned"})`}
+              style={{
+                background: "rgba(239, 68, 68, 0.18)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.45)",
+                borderRadius: 9999,
+                padding: "2px 8px",
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.03em",
+                whiteSpace: "nowrap",
+              }}
+            >
+              OFAC {selectedVessel.sanctions_program ? `· ${selectedVessel.sanctions_program}` : "SANCTIONED"}
+            </span>
+          )}
         </div>
         <button
           onClick={onClose}

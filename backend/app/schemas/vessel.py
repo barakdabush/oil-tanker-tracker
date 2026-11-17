@@ -28,6 +28,8 @@ class VesselResponse(VesselBase):
     last_speed: Optional[float] = None
     last_course: Optional[float] = None
     last_source: Optional[str] = None
+    is_sanctioned: bool = False
+    sanctions_program: Optional[str] = None
 
     class Config:
         from_attributes = True

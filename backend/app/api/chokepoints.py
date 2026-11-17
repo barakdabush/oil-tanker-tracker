@@ -82,6 +82,135 @@ async def list_chokepoints(
         
     return response
 
+@router.get("/portwatch")
+async def get_portwatch_chokepoint(
+    portname: str = "Strait of Hormuz",
+    days: int = 90,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get IMF PortWatch daily satellite-AIS transit history and baseline comparison."""
+    from app.models import PortWatchChokepointDaily
+
+    days = max(7, min(days, 365))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    baseline_cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date()
+
+    # Recent series for requested chokepoint (case-insensitive substring match for convenience)
+    series_q = (
+        select(PortWatchChokepointDaily)
+        .where(
+            PortWatchChokepointDaily.portname.ilike(f"%{portname}%"),
+            PortWatchChokepointDaily.date >= cutoff,
+        )
+        .order_by(PortWatchChokepointDaily.date.asc())
+    )
+    rows = (await db.execute(series_q)).scalars().all()
+
+    if not rows:
+        return {
+            "portname": portname,
+            "portid": None,
+            "latest_date": None,
+            "latest_total": 0,
+            "latest_tanker": 0,
+            "seven_day_avg_total": 0.0,
+            "seven_day_avg_tanker": 0.0,
+            "baseline_avg_total": 0.0,
+            "throughput_pct": None,
+            "series": [],
+        }
+
+    portid = rows[-1].portid
+    resolved_name = rows[-1].portname
+
+    # Baseline: 365-day average (or full stored window up to 365d)
+    baseline_q = select(
+        func.avg(PortWatchChokepointDaily.n_total),
+        func.avg(PortWatchChokepointDaily.n_tanker),
+    ).where(
+        PortWatchChokepointDaily.portid == portid,
+        PortWatchChokepointDaily.date >= baseline_cutoff,
+    )
+    base_row = (await db.execute(baseline_q)).first()
+    baseline_total = float(base_row[0] or 0.0) if base_row else 0.0
+    baseline_tanker = float(base_row[1] or 0.0) if base_row else 0.0
+
+    last_7 = rows[-7:]
+    avg_7_total = round(sum(r.n_total for r in last_7) / len(last_7), 1)
+    avg_7_tanker = round(sum(r.n_tanker for r in last_7) / len(last_7), 1)
+    latest = rows[-1]
+    throughput_pct = round((latest.n_total / baseline_total) * 100.0, 1) if baseline_total > 0 else None
+
+    return {
+        "portname": resolved_name,
+        "portid": portid,
+        "latest_date": latest.date.isoformat(),
+        "latest_total": latest.n_total,
+        "latest_tanker": latest.n_tanker,
+        "seven_day_avg_total": avg_7_total,
+        "seven_day_avg_tanker": avg_7_tanker,
+        "baseline_avg_total": round(baseline_total, 1),
+        "baseline_avg_tanker": round(baseline_tanker, 1),
+        "throughput_pct": throughput_pct,
+        "series": [
+            {
+                "date": r.date.isoformat(),
+                "n_total": r.n_total,
+                "n_tanker": r.n_tanker,
+                "n_cargo": r.n_cargo,
+                "n_container": r.n_container,
+                "capacity_tanker": r.capacity_tanker,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/portwatch/summary")
+async def get_portwatch_summary(db: AsyncSession = Depends(get_db)):
+    """Get latest IMF PortWatch transit snapshot across major global chokepoints."""
+    query = text("""
+        WITH latest AS (
+            SELECT DISTINCT ON (portid)
+                portid, portname, date, n_total, n_tanker, capacity_tanker
+            FROM portwatch_chokepoint_daily
+            ORDER BY portid, date DESC
+        ),
+        avg7 AS (
+            SELECT portid,
+                   ROUND(AVG(n_total)::numeric, 1) AS avg_7d_total,
+                   ROUND(AVG(n_tanker)::numeric, 1) AS avg_7d_tanker
+            FROM (
+                SELECT portid, n_total, n_tanker,
+                       ROW_NUMBER() OVER (PARTITION BY portid ORDER BY date DESC) AS rn
+                FROM portwatch_chokepoint_daily
+            ) sub
+            WHERE rn <= 7
+            GROUP BY portid
+        )
+        SELECT l.portid, l.portname, l.date, l.n_total, l.n_tanker, l.capacity_tanker,
+               COALESCE(a.avg_7d_total, l.n_total) AS avg_7d_total,
+               COALESCE(a.avg_7d_tanker, l.n_tanker) AS avg_7d_tanker
+        FROM latest l
+        LEFT JOIN avg7 a ON l.portid = a.portid
+        ORDER BY l.n_tanker DESC
+    """)
+    rows = (await db.execute(query)).all()
+    return [
+        {
+            "portid": r.portid,
+            "portname": r.portname,
+            "latest_date": r.date.isoformat(),
+            "latest_total": r.n_total,
+            "latest_tanker": r.n_tanker,
+            "capacity_tanker": r.capacity_tanker,
+            "avg_7d_total": float(r.avg_7d_total),
+            "avg_7d_tanker": float(r.avg_7d_tanker),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{chokepoint_id}/outline")
 async def get_chokepoint_outline(chokepoint_id: int, db: AsyncSession = Depends(get_db)):
     """Return the GeoJSON polygon for a specific chokepoint to draw on the map."""

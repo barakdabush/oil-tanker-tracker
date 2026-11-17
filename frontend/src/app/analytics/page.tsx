@@ -5,6 +5,8 @@ import dynamic from "next/dynamic";
 import type { VolumeOverTime, TopRoute, FleetStatus } from "@/lib/types";
 import IngestionChart from "@/components/IngestionChart";
 import PositionSourcesChart from "@/components/PositionSourcesChart";
+import PortWatchChart from "@/components/PortWatchChart";
+import SanctionedVesselsCard from "@/components/SanctionedVesselsCard";
 import { getApiUrl } from "@/lib/config";
 
 // Dynamically import Recharts components (they don't support SSR well)
@@ -107,6 +109,12 @@ export default function AnalyticsPage() {
 
         {/* AIS Position Split by Source */}
         <PositionSourcesChart />
+
+        {/* IMF PortWatch Satellite-AIS Chokepoint Transits */}
+        <PortWatchChart />
+
+        {/* OFAC SDN Sanctioned Tankers */}
+        <SanctionedVesselsCard />
 
         {/* Volume Chart */}
         <div className="panel animate-in" style={{ marginBottom: 24 }}>
