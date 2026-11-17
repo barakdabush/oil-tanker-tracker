@@ -6,7 +6,7 @@ name: Incident Triage (Gemini)
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -25,8 +25,7 @@ jobs:
   triage:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'auto-incident')) ||
-      (github.event.action == 'labeled' && github.event.label.name == 'retriage')
+      contains(github.event.issue.labels.*.name, 'auto-incident')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -61,9 +60,10 @@ jobs:
         uses: google-github-actions/run-gemini-cli@v0
         env:
           GEMINI_CLI_TRUST_WORKSPACE: "true"
+          NODE_OPTIONS: "--dns-result-order=ipv4first"
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          gemini_model: ${{ vars.GEMINI_MODEL }}
+          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           github_issue_number: ${{ env.ISSUE_NUMBER }}
           settings: |-
             {
