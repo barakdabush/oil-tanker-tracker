@@ -123,19 +123,36 @@ export default function SystemPage() {
     if (searchQuery.trim()) params.set("search", searchQuery.trim());
 
     try {
-      const [hRes, lRes] = await Promise.all([
+      const [hResult, lResult] = await Promise.allSettled([
         fetch(`${API}/api/system/health`),
         fetch(`${API}/api/system/logs?${params.toString()}`),
       ]);
 
-      if (!hRes.ok) throw new Error(`Health API returned ${hRes.status}`);
-      if (!lRes.ok) throw new Error(`Logs API returned ${lRes.status}`);
+      const errs: string[] = [];
 
-      const hData: HealthResponse = await hRes.json();
-      const lData = await lRes.json();
-      setHealth(hData);
-      setLogs(lData.logs || []);
-      setError(null);
+      if (hResult.status === "fulfilled") {
+        if (hResult.value.ok) {
+          const hData: HealthResponse = await hResult.value.json();
+          setHealth(hData);
+        } else {
+          errs.push(`Health API returned ${hResult.value.status}`);
+        }
+      } else {
+        errs.push(`Health API error: ${hResult.reason}`);
+      }
+
+      if (lResult.status === "fulfilled") {
+        if (lResult.value.ok) {
+          const lData = await lResult.value.json();
+          setLogs(lData.logs || []);
+        } else {
+          errs.push(`Logs API returned ${lResult.value.status}`);
+        }
+      } else {
+        errs.push(`Logs API error: ${lResult.reason}`);
+      }
+
+      setError(errs.length > 0 ? errs.join(" · ") : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch system status");
     } finally {

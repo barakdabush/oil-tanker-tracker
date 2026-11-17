@@ -158,7 +158,7 @@ async def get_system_health(db: AsyncSession = Depends(get_db)):
             "status": "healthy" if sts_row and sts_row.cnt else "empty",
         })
 
-        snap_row = (await db.execute(text("SELECT MAX(date) AS latest_date, COUNT(*) AS cnt FROM oil_market_snapshots"))).first()
+        snap_row = (await db.execute(text("SELECT MAX(snapshot_date) AS latest_date, COUNT(*) AS cnt FROM oil_market_snapshots"))).first()
         pipelines.append({
             "name": "Oil Market Snapshots",
             "source": "global_oil_feature_builder",
