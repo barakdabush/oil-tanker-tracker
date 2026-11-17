@@ -95,15 +95,16 @@ class PortWatchFetcher:
 
     async def fetch_and_store(self, lookback_days: int = LOOKBACK_DAYS) -> int:
         """Query IMF PortWatch ArcGIS FeatureServer and upsert daily chokepoint rows."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date()
         rows: list[dict] = []
         offset = 0
         page_size = 2000
+        max_pages = 10
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            while True:
+            for _ in range(max_pages):
                 params = {
-                    "where": f"date >= DATE '{cutoff}'",
+                    "where": "1=1",
                     "outFields": "*",
                     "orderByFields": "date DESC",
                     "resultOffset": offset,
@@ -114,16 +115,25 @@ class PortWatchFetcher:
                 resp.raise_for_status()
                 payload = resp.json()
 
+                if "error" in payload:
+                    logger.error(f"IMF PortWatch ArcGIS error: {payload['error']}")
+                    break
+
                 features = payload.get("features") or []
                 if not features:
                     break
 
+                reached_cutoff = False
                 for feat in features:
                     parsed = _parse_portwatch_feature(feat.get("attributes") or {})
-                    if parsed is not None:
-                        rows.append(parsed)
+                    if parsed is None:
+                        continue
+                    if parsed["date"] < cutoff_date:
+                        reached_cutoff = True
+                        continue
+                    rows.append(parsed)
 
-                if not payload.get("exceededTransferLimit") or len(features) < page_size:
+                if reached_cutoff or not payload.get("exceededTransferLimit") or len(features) < page_size:
                     break
                 offset += len(features)
 
