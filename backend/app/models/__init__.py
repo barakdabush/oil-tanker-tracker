@@ -11,6 +11,7 @@ from app.models.alert import AISGap, STSEvent  # noqa: F401
 from app.models.chokepoint import Chokepoint, ChokepointTransit, PortWatchChokepointDaily  # noqa: F401
 from app.models.global_oil_features import OilMarketSnapshot, OilPrice  # noqa: F401
 from app.models.sanctions import OfacSanctionedVessel  # noqa: F401
+from app.models.system_log import SystemLog  # noqa: F401
 
 __all__ = [
     "Vessel",
@@ -26,4 +27,5 @@ __all__ = [
     "OilMarketSnapshot",
     "OilPrice",
     "OfacSanctionedVessel",
+    "SystemLog",
 ]

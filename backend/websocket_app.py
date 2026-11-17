@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.database import engine
 from app.services.ais_ingestion import start_ais_ingestion, start_flush_task, get_ingestion_stats
+from app.services.db_log_handler import setup_db_logging
 from app.ws_manager import manager
 
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting WebSocket and AIS ingestion service...")
     
     # Start background AIS ingestion so it can broadcast to manager
+    log_flush_task = setup_db_logging("websocket")
     ingestion_task = asyncio.create_task(safe_ais_ingestion())
     flush_task = asyncio.create_task(start_flush_task())
     
@@ -41,8 +43,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down WebSocket and AIS ingestion service...")
     ingestion_task.cancel()
     flush_task.cancel()
+    log_flush_task.cancel()
     try:
-        await asyncio.gather(ingestion_task, flush_task, return_exceptions=True)
+        await asyncio.gather(ingestion_task, flush_task, log_flush_task, return_exceptions=True)
     except asyncio.CancelledError:
         pass
     

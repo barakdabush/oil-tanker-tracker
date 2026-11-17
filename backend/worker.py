@@ -21,6 +21,7 @@ from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
 from app.services.oil_price_fetcher import OilPriceFetcher
 from app.services.portwatch_fetcher import PortWatchFetcher
 from app.services.ofac_fetcher import OfacSanctionsFetcher
+from app.services.db_log_handler import setup_db_logging
 from app.database import engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -28,6 +29,7 @@ logger = logging.getLogger("worker")
 
 async def run_workers():
     logger.info("Starting background anomaly detection workers...")
+    log_flush_task = setup_db_logging("scheduler")
     
     cargo_detector = CargoDetector()
     dark_fleet_detector = DarkFleetDetector()
@@ -54,7 +56,7 @@ async def run_workers():
         # Wait for all tasks to complete (they loop forever)
         await asyncio.gather(
             detector_task, dark_fleet_task, sts_task, chokepoint_task,
-            feature_task, oil_price_task, portwatch_task, ofac_task,
+            feature_task, oil_price_task, portwatch_task, ofac_task, log_flush_task,
         )
     except asyncio.CancelledError:
         logger.info("Worker tasks cancelled.")

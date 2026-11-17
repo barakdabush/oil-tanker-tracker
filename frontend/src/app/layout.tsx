@@ -60,6 +60,10 @@ export default function RootLayout({
                 <span className="nav-icon">🚨</span>
                 <span>Alerts</span>
               </Link>
+              <Link href="/system" className="nav-link" id="nav-system">
+                <span className="nav-icon">🖥️</span>
+                <span>System</span>
+              </Link>
             </nav>
 
             <div className="sidebar-footer">
