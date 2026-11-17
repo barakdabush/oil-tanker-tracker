@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     BLOCK_COEFFICIENT: float = 0.85
     SEAWATER_DENSITY: float = 1.025  # tonnes/m³
 
+    # Auto-incident pipeline (errors/anomalies -> GitHub issues)
+    AUTO_INCIDENTS_ENABLED: bool = True
+    GITHUB_INCIDENT_TOKEN: str = ""  # fine-grained PAT, this repo only, Issues: read & write
+    GITHUB_REPO: str = "barakdabush/oil-tanker-tracker"
+    INCIDENT_MIN_OCCURRENCES: int = 3  # log errors needed before opening an issue
+    INCIDENT_MIN_ANOMALY_RUNS: int = 2  # consecutive detector runs an anomaly must persist
+    INCIDENT_MAX_ISSUES_PER_DAY: int = 5
+    INCIDENT_COMMENT_INTERVAL_HOURS: int = 6
+    DASHBOARD_URL: str = ""  # e.g. http://<server-ip>:3000, linked from issues
+
     class Config:
         env_file = ".env"
 

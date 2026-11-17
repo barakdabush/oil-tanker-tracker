@@ -1,0 +1,193 @@
+name: Incident Fix (Gemini)
+
+# Runs when a maintainer adds the `agent-fix` label to an `auto-incident` issue.
+# Gemini edits files locally with NO GitHub token. Deterministic steps then
+# enforce a path allowlist, run the tests, push `auto-fix/issue-N-*`, and open
+# a DRAFT PR. Nothing is ever merged automatically; deploy still happens only
+# on merge to main.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to attempt a fix for"
+        required: true
+
+# One fix attempt at a time across the repo.
+concurrency:
+  group: incident-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  fix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'agent-fix' && contains(github.event.issue.labels.*.name, 'auto-incident'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      PYTHONPATH: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt pytest pytest-asyncio
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --prefix frontend
+
+      - name: Build prompt
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --comments --json title,body,comments \
+            --jq '"Title: " + .title + "\n\n" + .body + "\n\n## Comments\n" + ([.comments[] | "### " + .author.login + "\n" + .body] | join("\n\n"))' \
+            > "$RUNNER_TEMP/issue.md"
+          TITLE=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title | tr -cd '[:alnum:] _-' | cut -c1-60)
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          DELIM="PROMPT_$(openssl rand -hex 16)"
+          {
+            echo "prompt<<$DELIM"
+            cat .github/agents/fix.md
+            echo
+            echo "<incident_issue number=\"$ISSUE_NUMBER\">"
+            cat "$RUNNER_TEMP/issue.md"
+            echo
+            echo "</incident_issue>"
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Gemini CLI (edit + tests only)
+        id: gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.GEMINI_MODEL }}
+          github_issue_number: ${{ env.ISSUE_NUMBER }}
+          settings: |-
+            {
+              "model": { "maxSessionTurns": 60 },
+              "telemetry": { "enabled": false },
+              "tools": {
+                "core": [
+                  "read_file", "read_many_files", "list_directory", "glob", "search_file_content",
+                  "replace", "write_file",
+                  "run_shell_command(python -m pytest)",
+                  "run_shell_command(frontend/node_modules/.bin/tsc)"
+                ],
+                "allowed": [
+                  "replace", "write_file",
+                  "run_shell_command(python -m pytest)",
+                  "run_shell_command(frontend/node_modules/.bin/tsc)"
+                ]
+              }
+            }
+          prompt: ${{ steps.ctx.outputs.prompt }}
+
+      - name: Enforce path allowlist
+        id: diff
+        run: |
+          git add -A
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.txt"
+          echo "Changed files:"; cat "$RUNNER_TEMP/changed.txt"
+          if [ ! -s "$RUNNER_TEMP/changed.txt" ]; then
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -Ev '^(backend|frontend)/' "$RUNNER_TEMP/changed.txt" \
+             || grep -Ei '(^|/)(Dockerfile[^/]*|docker-compose[^/]*|\.env[^/]*)$' "$RUNNER_TEMP/changed.txt"; then
+            echo "::error::Agent modified files outside the allowlist."
+            exit 1
+          fi
+
+      - name: Run tests
+        if: steps.diff.outputs.no_changes != 'true'
+        run: |
+          set -o pipefail
+          python -m pytest -c backend/pytest.ini backend/tests/ais -q 2>&1 | tee "$RUNNER_TEMP/tests.txt"
+          frontend/node_modules/.bin/tsc --noEmit -p frontend 2>&1 | tee -a "$RUNNER_TEMP/tests.txt"
+
+      - name: Push branch and open draft PR
+        if: steps.diff.outputs.no_changes != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.gemini.outputs.summary }}
+          TITLE: ${{ steps.ctx.outputs.title }}
+        run: |
+          BRANCH="auto-fix/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -m "fix: auto-fix for incident #${ISSUE_NUMBER}" -m "Generated by Gemini fix agent. Fixes #${ISSUE_NUMBER}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+
+          SAFE_SUMMARY=$(printf '%s' "$SUMMARY" | sed 's/@/@\xe2\x80\x8b/g' | head -c 50000)
+          {
+            echo "Fixes #${ISSUE_NUMBER}"
+            echo
+            echo "> 🤖 Draft PR generated by the Gemini incident fix agent. **Review carefully before merging.** Merging to \`main\` deploys."
+            echo
+            printf '%s\n' "$SAFE_SUMMARY"
+            echo
+            echo "<details><summary>Test output</summary>"
+            echo
+            echo '```text'
+            tail -n 40 "$RUNNER_TEMP/tests.txt" | sed 's/```/'"'''"'/g'
+            echo '```'
+            echo "</details>"
+          } > "$RUNNER_TEMP/pr_body.md"
+
+          PR_URL=$(gh pr create --draft --base main --head "$BRANCH" \
+            --title "fix(incident #${ISSUE_NUMBER}): ${TITLE}" \
+            --body-file "$RUNNER_TEMP/pr_body.md" --label auto-fix)
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "🛠️ Fix agent opened a draft PR: ${PR_URL}"
+
+      - name: Report no-op
+        if: steps.diff.outputs.no_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.gemini.outputs.summary }}
+        run: |
+          SAFE_SUMMARY=$(printf '%s' "$SUMMARY" | sed 's/@/@\xe2\x80\x8b/g' | head -c 50000)
+          printf '🤷 Fix agent made no changes.\n\n%s\n' "$SAFE_SUMMARY" > "$RUNNER_TEMP/noop.md"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/noop.md"
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label agent-fix --add-label needs-human
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "❌ Fix attempt failed (tests or allowlist check). Logs: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label agent-fix --add-label needs-human || true

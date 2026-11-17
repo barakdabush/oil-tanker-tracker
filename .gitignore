@@ -111,3 +111,7 @@ playwright/.cache/
 blob-report/
 .next-playwright/
 oil-tanker-monitor-ai/
+
+# Gemini CLI (GitHub Actions agents)
+.gemini/
+gha-creds-*.json

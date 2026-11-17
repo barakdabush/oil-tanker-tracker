@@ -1,0 +1,119 @@
+name: Incident Triage (Gemini)
+
+# Runs when the incident detector opens an `auto-incident` issue.
+# Gemini gets READ-ONLY file tools and NO GitHub token. Posting the comment and
+# labels is done by a deterministic step that validates the agent's output.
+
+on:
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to (re)triage"
+        required: true
+
+concurrency:
+  group: incident-triage-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'auto-incident')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'retriage')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build prompt
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body \
+            --jq '"Title: " + .title + "\n\n" + .body' > "$RUNNER_TEMP/issue.md"
+          DELIM="PROMPT_$(openssl rand -hex 16)"
+          {
+            echo "prompt<<$DELIM"
+            cat .github/agents/triage.md
+            echo
+            echo "<incident_issue number=\"$ISSUE_NUMBER\">"
+            cat "$RUNNER_TEMP/issue.md"
+            echo
+            echo "</incident_issue>"
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Gemini CLI (read-only)
+        id: gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.GEMINI_MODEL }}
+          github_issue_number: ${{ env.ISSUE_NUMBER }}
+          settings: |-
+            {
+              "model": { "maxSessionTurns": 30 },
+              "telemetry": { "enabled": false },
+              "tools": {
+                "core": ["read_file", "read_many_files", "list_directory", "glob", "search_file_content"]
+              }
+            }
+          prompt: ${{ steps.ctx.outputs.prompt }}
+
+      - name: Post triage comment and labels
+        uses: actions/github-script@v7
+        env:
+          SUMMARY: ${{ steps.gemini.outputs.summary }}
+        with:
+          script: |
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            let summary = process.env.SUMMARY || '';
+
+            // Parse and strictly validate the machine-readable result line.
+            let severity = 'P2';
+            let fixable = false;
+            const m = summary.match(/TRIAGE_RESULT:\s*(\{[^\n]*\})\s*$/m);
+            if (m) {
+              try {
+                const r = JSON.parse(m[1]);
+                if (['P1', 'P2', 'P3'].includes(r.severity)) severity = r.severity;
+                fixable = r.fixable === true;
+              } catch (e) { core.warning(`Bad TRIAGE_RESULT: ${e}`); }
+              summary = summary.replace(m[0], '').trim();
+            } else {
+              core.warning('No TRIAGE_RESULT line found; defaulting to needs-human.');
+            }
+
+            // Never let agent output ping people.
+            summary = summary.replace(/@/g, '@\u200b').slice(0, 60000);
+
+            const verdict = fixable
+              ? '✅ **agent-fixable**: add the `agent-fix` label to let the fix agent open a draft PR.'
+              : '🧑‍🔧 **needs-human**: not a safe automated fix.';
+
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number,
+              body: `## 🤖 Gemini triage\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
+            });
+            await github.rest.issues.addLabels({
+              ...context.repo, issue_number,
+              labels: ['triaged', `severity:${severity}`, fixable ? 'agent-fixable' : 'needs-human'],
+            });
+            try {
+              await github.rest.issues.removeLabel({ ...context.repo, issue_number, name: 'retriage' });
+            } catch (_) { /* label not present */ }
