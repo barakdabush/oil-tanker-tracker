@@ -63,7 +63,7 @@ jobs:
           NODE_OPTIONS: "--dns-result-order=ipv4first"
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
           github_issue_number: ${{ env.ISSUE_NUMBER }}
           settings: |-
             {
