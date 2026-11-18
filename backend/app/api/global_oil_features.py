@@ -3,7 +3,7 @@
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -21,12 +21,13 @@ async def get_global_oil_snapshots(
 ):
     """Get joined market snapshots + oil prices for ML analysis.
 
-    Returns daily rows with 15 fleet/market features and Brent/WTI prices.
+    Returns daily rows with fleet/market features, PortWatch strait tankers, and Brent/WTI prices.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
 
-    # Fetch snapshots and oil prices separately and full-outer-merge by date so
-    # today's latest price is always returned even before today's snapshot exists.
+    # Fetch snapshots, oil prices, and PortWatch satellite-AIS counts separately
+    # and full-outer-merge by date so 90-day PortWatch & price history are always
+    # available even for dates prior to live AIS snapshot collection.
     snap_rows = (
         await db.execute(
             select(OilMarketSnapshot).where(OilMarketSnapshot.snapshot_date >= cutoff)
@@ -37,15 +38,47 @@ async def get_global_oil_snapshots(
             select(OilPrice).where(OilPrice.price_date >= cutoff)
         )
     ).scalars().all()
+    pw_rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    date,
+                    SUM(n_tanker) FILTER (WHERE portname ILIKE '%Cape of Good Hope%') AS pw_cape_tankers,
+                    SUM(n_tanker) FILTER (
+                        WHERE portname NOT ILIKE '%Hormuz%'
+                          AND portname NOT ILIKE '%Mandeb%'
+                    ) AS pw_other_tankers
+                FROM portwatch_chokepoint_daily
+                WHERE date >= :cutoff
+                GROUP BY date
+            """),
+            {"cutoff": cutoff},
+        )
+    ).all()
 
     snaps_by_date = {s.snapshot_date: s for s in snap_rows}
     prices_by_date = {p.price_date: p for p in price_rows}
-    all_dates = sorted(set(snaps_by_date.keys()) | set(prices_by_date.keys()), reverse=True)
+    pw_by_date = {r.date: r for r in pw_rows}
+    all_dates = sorted(
+        set(snaps_by_date.keys()) | set(prices_by_date.keys()) | set(pw_by_date.keys()),
+        reverse=True,
+    )
 
     out: list[MarketSnapshotResponse] = []
     for d in all_dates:
         s = snaps_by_date.get(d)
         p = prices_by_date.get(d)
+        pw = pw_by_date.get(d)
+        pw_cape = (
+            s.portwatch_cape_tankers
+            if s and s.portwatch_cape_tankers is not None
+            else (int(pw.pw_cape_tankers) if pw and pw.pw_cape_tankers is not None else None)
+        )
+        pw_other = (
+            s.portwatch_other_straits_tankers
+            if s and s.portwatch_other_straits_tankers is not None
+            else (int(pw.pw_other_tankers) if pw and pw.pw_other_tankers is not None else None)
+        )
         out.append(
             MarketSnapshotResponse(
                 snapshot_date=d,
@@ -75,8 +108,8 @@ async def get_global_oil_snapshots(
                 cape_of_good_hope_avg_transit_min=s.cape_of_good_hope_avg_transit_min if s else None,
                 other_straits_avg_transit_min=s.other_straits_avg_transit_min if s else None,
                 hormuz_bab_avg_transit_min=s.hormuz_bab_avg_transit_min if s else None,
-                portwatch_cape_tankers=s.portwatch_cape_tankers if s else None,
-                portwatch_other_straits_tankers=s.portwatch_other_straits_tankers if s else None,
+                portwatch_cape_tankers=pw_cape,
+                portwatch_other_straits_tankers=pw_other,
                 cargo_events_24h=s.cargo_events_24h if s else None,
                 estimated_volume_barrels_24h=s.estimated_volume_barrels_24h if s else None,
                 anchored_waiting_count=s.anchored_waiting_count if s else None,
