@@ -32,7 +32,7 @@ def _resolve_provider() -> tuple[str, str, str]:
         return (
             explicit_url or "https://openrouter.ai/api/v1/chat/completions",
             os.getenv("OPENROUTER_API_KEY", "").strip(),
-            explicit_model or "qwen/qwen3-coder:free",
+            explicit_model or "openrouter/free",
         )
     if os.getenv("GROQ_API_KEY", "").strip():
         return (
