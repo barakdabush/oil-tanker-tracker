@@ -171,3 +171,17 @@ async def test_stale_position_from_slower_source_is_dropped(reset_ingestion_stat
     assert len(reset_ingestion_state) == 1
     assert reset_ingestion_state[0]["source"] == "aisstream"
 
+
+@pytest.mark.asyncio
+async def test_stream_loop_stops_on_invalid_token():
+    calls = 0
+
+    async def fake_connect():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("received 1008 (policy violation) invalid token")
+
+    await ais_ingestion._run_stream_loop("openwaters.io", fake_connect)
+    assert calls == 1
+
+

@@ -29,12 +29,12 @@ class GlobalOilFeatureBuilder:
     """Aggregates daily market features from existing vessel tracking data."""
 
     async def run_periodic(self):
-        """Run feature aggregation once daily."""
+        """Run feature aggregation once daily (backfilling recent missing days)."""
         # Small initial delay to let the system stabilise
         await asyncio.sleep(10)
         while True:
             try:
-                await self.aggregate()
+                await self.backfill_missing_days(days=7)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -42,6 +42,25 @@ class GlobalOilFeatureBuilder:
                 await asyncio.sleep(5 * 60)
                 continue
             await asyncio.sleep(RUN_INTERVAL_SECONDS)
+
+    async def backfill_missing_days(self, days: int = 7):
+        """Aggregate any missing dates in the last `days` days (up to yesterday UTC)."""
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+        start_date = yesterday - timedelta(days=days - 1)
+        async with async_session() as session:
+            existing_rows = (
+                await session.execute(
+                    select(OilMarketSnapshot.snapshot_date).where(
+                        OilMarketSnapshot.snapshot_date >= start_date
+                    )
+                )
+            ).scalars().all()
+        existing = set(existing_rows)
+
+        for offset in range(days - 1, -1, -1):
+            d = yesterday - timedelta(days=offset)
+            if d not in existing or d == yesterday:
+                await self.aggregate(target_date=d)
 
     async def aggregate(self, target_date: date | None = None):
         """Aggregate all 15 features for the given date (defaults to yesterday UTC).

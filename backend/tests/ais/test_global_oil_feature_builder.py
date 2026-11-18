@@ -48,3 +48,35 @@ async def test_aggregate_runs_without_attribute_error():
         
         # Verify that execute was called (i.e., the queries were attempted)
         assert mock_session.execute.called
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_days_aggregates_missing_and_yesterday():
+    from datetime import datetime, timedelta, timezone
+
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    two_days_ago = yesterday - timedelta(days=1)
+    three_days_ago = yesterday - timedelta(days=2)
+
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_scalars = MagicMock()
+    # Pretend three_days_ago exists, but two_days_ago and yesterday are missing
+    mock_scalars.all.return_value = [three_days_ago]
+    mock_result.scalars.return_value = mock_scalars
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    class MockAsyncSession:
+        async def __aenter__(self):
+            return mock_session
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+    builder = GlobalOilFeatureBuilder()
+    builder.aggregate = AsyncMock()
+
+    with patch("app.services.global_oil_feature_builder.async_session", return_value=MockAsyncSession()):
+        await builder.backfill_missing_days(days=3)
+
+    called_dates = [call.kwargs["target_date"] for call in builder.aggregate.await_args_list]
+    assert called_dates == [two_days_ago, yesterday]

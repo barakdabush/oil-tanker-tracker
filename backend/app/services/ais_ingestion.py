@@ -135,6 +135,13 @@ async def _run_stream_loop(source_name: str, connect_fn):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
         except Exception as e:
+            err_msg = str(e).lower()
+            if "invalid token" in err_msg or "policy violation" in err_msg or "1008" in err_msg:
+                logger.warning(
+                    f"AIS ({source_name}) rejected credentials ({e.__class__.__name__}: {e}). "
+                    "Stopping retries until configuration is updated."
+                )
+                break
             logger.error(f"AIS ({source_name}) disrupted ({e.__class__.__name__}: {e}). Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
