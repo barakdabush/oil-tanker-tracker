@@ -10,7 +10,7 @@ from alembic import op
 
 
 revision: str = "add_strait_traffic_and_delay"
-down_revision: Union[str, None] = "add_incidents"
+down_revision: Union[str, None] = "add_vessel_states"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
