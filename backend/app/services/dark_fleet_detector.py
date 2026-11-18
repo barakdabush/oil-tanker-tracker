@@ -27,7 +27,7 @@ class DarkFleetDetector:
     """Detects vessels that go dark by analyzing AIS transmission gaps."""
 
     async def run_periodic(self):
-        """Run dark fleet detection every 5 minutes."""
+        """Run dark fleet detection every 15 minutes."""
         while True:
             try:
                 await self.detect()
@@ -35,7 +35,7 @@ class DarkFleetDetector:
                 break
             except Exception as e:
                 logger.error(f"Dark fleet detection error: {e}")
-            await asyncio.sleep(300)  # 5 minutes
+            await asyncio.sleep(900)  # 15 minutes
 
     async def detect(self):
         """Scan all vessels for AIS gaps and update dark fleet status."""

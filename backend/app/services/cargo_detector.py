@@ -32,7 +32,7 @@ class CargoDetector:
     """Detects cargo loading and unloading events at ports."""
 
     async def run_periodic(self):
-        """Run cargo detection every 60 seconds."""
+        """Run cargo detection every 5 minutes."""
         while True:
             try:
                 await self.detect()
@@ -40,7 +40,7 @@ class CargoDetector:
                 break
             except Exception as e:
                 logger.error(f"Cargo detection error: {e}")
-            await asyncio.sleep(60)
+            await asyncio.sleep(300)  # 5 minutes
 
     async def detect(self):
         """Check all vessels for port proximity and draft changes."""
