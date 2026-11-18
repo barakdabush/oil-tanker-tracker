@@ -1,8 +1,7 @@
-name: Incident Triage (Gemini)
+name: Incident Triage Agent
 
 # Runs when the incident detector opens an `auto-incident` issue.
-# Gemini gets READ-ONLY file tools and NO GitHub token. Posting the comment and
-# labels is done by a deterministic step that validates the agent's output.
+# Uses OpenRouter / Groq / Gemini via .github/agents/run_agent.py (read-only).
 
 on:
   issues:
@@ -36,55 +35,51 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Build prompt
-        id: ctx
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body \
             --jq '"Title: " + .title + "\n\n" + .body' > "$RUNNER_TEMP/issue.md"
-          DELIM="PROMPT_$(openssl rand -hex 16)"
           {
-            echo "prompt<<$DELIM"
             cat .github/agents/triage.md
             echo
             echo "<incident_issue number=\"$ISSUE_NUMBER\">"
             cat "$RUNNER_TEMP/issue.md"
             echo
             echo "</incident_issue>"
-            echo "$DELIM"
-          } >> "$GITHUB_OUTPUT"
+          } > "$RUNNER_TEMP/prompt.md"
 
-      - name: Run Gemini CLI (read-only)
-        id: gemini
-        uses: google-github-actions/run-gemini-cli@v0
+      - name: Run Triage Agent (read-only)
+        id: agent
         env:
-          GEMINI_CLI_TRUST_WORKSPACE: "true"
-          NODE_OPTIONS: "--dns-result-order=ipv4first"
-        with:
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
-          github_issue_number: ${{ env.ISSUE_NUMBER }}
-          settings: |-
-            {
-              "model": { "maxSessionTurns": 30 },
-              "telemetry": { "enabled": false },
-              "tools": {
-                "core": ["read_file", "read_many_files", "list_directory", "glob", "search_file_content"]
-              }
-            }
-          prompt: ${{ steps.ctx.outputs.prompt }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+          AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
+        run: |
+          python3 .github/agents/run_agent.py \
+            --mode triage \
+            --prompt-file "$RUNNER_TEMP/prompt.md" \
+            --output "$RUNNER_TEMP/summary.md"
 
       - name: Post triage comment and labels
         uses: actions/github-script@v7
-        env:
-          SUMMARY: ${{ steps.gemini.outputs.summary }}
         with:
           script: |
+            const fs = require('fs');
             const issue_number = Number(process.env.ISSUE_NUMBER);
-            let summary = process.env.SUMMARY || '';
+            let summary = '';
+            try {
+              summary = fs.readFileSync(`${process.env.RUNNER_TEMP}/summary.md`, 'utf8');
+            } catch (_) {}
 
-            // Parse and strictly validate the machine-readable result line.
             let severity = 'P2';
             let fixable = false;
             const m = summary.match(/TRIAGE_RESULT:\s*(\{[^\n]*\})\s*$/m);
@@ -99,7 +94,6 @@ jobs:
               core.warning('No TRIAGE_RESULT line found; defaulting to needs-human.');
             }
 
-            // Never let agent output ping people.
             summary = summary.replace(/@/g, '@\u200b').slice(0, 60000);
 
             const verdict = fixable
@@ -108,12 +102,9 @@ jobs:
 
             await github.rest.issues.createComment({
               ...context.repo, issue_number,
-              body: `## 🤖 Gemini triage\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
+              body: `## 🤖 Incident Triage\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
             });
             await github.rest.issues.addLabels({
               ...context.repo, issue_number,
               labels: ['triaged', `severity:${severity}`, fixable ? 'agent-fixable' : 'needs-human'],
             });
-            try {
-              await github.rest.issues.removeLabel({ ...context.repo, issue_number, name: 'retriage' });
-            } catch (_) { /* label not present */ }
