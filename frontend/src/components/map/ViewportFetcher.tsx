@@ -33,6 +33,7 @@ export function ViewportFetcher({
       lon_min: bounds.getWest().toFixed(5),
       lat_max: bounds.getNorth().toFixed(5),
       lon_max: bounds.getEast().toFixed(5),
+      seen_within_hours: "48",
       limit: "1000",
     });
 

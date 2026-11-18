@@ -27,10 +27,10 @@ TANKER_TYPES = set(range(80, 90))
 # Focused bounding boxes around the 8 key oil tanker chokepoints
 # Format: (min_lat, min_lon, max_lat, max_lon)
 CHOKEPOINT_BBOXES = [
-    (22.0, 54.0, 27.5, 60.5),     # Strait of Hormuz (incl. Gulf of Oman + Persian Gulf approach)
+    (22.0, 48.0, 30.5, 62.0),     # Strait of Hormuz + full Persian Gulf & Gulf of Oman
     (0.5, 98.0, 7.0, 105.5),      # Strait of Malacca (Singapore to Andaman Sea)
-    (27.0, 31.5, 32.0, 34.0),     # Suez Canal (incl. Red Sea north + Med south)
-    (10.5, 41.0, 14.0, 46.5),     # Bab el-Mandeb (Gulf of Aden + southern Red Sea)
+    (20.0, 31.5, 32.5, 35.5),     # Suez Canal + northern/central Red Sea
+    (10.5, 38.0, 20.0, 46.5),     # Bab el-Mandeb + southern Red Sea & Gulf of Aden
     (40.0, 27.5, 42.0, 30.5),     # Turkish Straits / Bosphorus (Black Sea mouth + Marmara Sea)
     (54.0, 9.5, 57.5, 14.5),      # Danish Straits (Baltic Sea exits)
     (-37.0, 16.5, -32.0, 21.5),   # Cape of Good Hope (southern Africa rounding)
