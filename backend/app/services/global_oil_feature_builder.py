@@ -100,7 +100,7 @@ class GlobalOilFeatureBuilder:
                     and_(
                         or_(
                             AISGap.status.in_(["dark", "extended_dark"]),
-                            and_(AISGap.status == "resolved", AISGap.gap_hours >= 6),
+                            and_(AISGap.status == "resolved", func.extract("epoch", AISGap.gap_end - AISGap.gap_start) / 3600 >= 6),
                         ),
                         AISGap.gap_start < day_end,
                         AISGap.gap_start >= day_start - timedelta(days=30),
