@@ -183,15 +183,17 @@ class VesselStateClassifier:
             sts_cutoff = now - timedelta(hours=6)
             sts_rows = (
                 await session.execute(
-                    select(STSEvent.mmsi_1, STSEvent.mmsi_2).where(
-                        or_cond := and_(
+                    select(STSEvent.vessel_a_mmsi, STSEvent.vessel_b_mmsi).where(
+                        and_(
                             STSEvent.start_time >= sts_cutoff,
                             STSEvent.end_time.is_(None),
                         )
                     )
                 )
             ).all()
-            sts_mmsis = {m for row in sts_rows for m in (row.mmsi_1, row.mmsi_2)}
+            sts_mmsis = {
+                m for row in sts_rows for m in (row.vessel_a_mmsi, row.vessel_b_mmsi)
+            }
 
             # 5. Latest nav_status per MMSI (last 6h)
             nav_rows = (
