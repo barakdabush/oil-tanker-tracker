@@ -28,9 +28,24 @@ class MarketSnapshotResponse(BaseModel):
     sts_events_24h: Optional[int] = None
     sts_confirmed_24h: Optional[int] = None
 
-    # Chokepoint Traffic
+    # Chokepoint Traffic & Delays
     chokepoint_transits_24h: Optional[int] = None
     strait_of_hormuz_transits: Optional[int] = None
+    cape_of_good_hope_transits: Optional[int] = None
+    bab_el_mandeb_transits: Optional[int] = None
+    suez_canal_transits: Optional[int] = None
+    strait_of_malacca_transits: Optional[int] = None
+    panama_canal_transits: Optional[int] = None
+    turkish_straits_transits: Optional[int] = None
+    danish_straits_transits: Optional[int] = None
+    other_straits_transits: Optional[int] = None
+    other_straits_traffic_share_pct: Optional[float] = None
+    avg_chokepoint_transit_min: Optional[float] = None
+    cape_of_good_hope_avg_transit_min: Optional[float] = None
+    other_straits_avg_transit_min: Optional[float] = None
+    hormuz_bab_avg_transit_min: Optional[float] = None
+    portwatch_cape_tankers: Optional[int] = None
+    portwatch_other_straits_tankers: Optional[int] = None
 
     # Cargo & Volume
     cargo_events_24h: Optional[int] = None

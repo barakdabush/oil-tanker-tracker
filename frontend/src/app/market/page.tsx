@@ -20,22 +20,39 @@ type FeatureKey = Exclude<keyof MarketSnapshotResponse, "snapshot_date" | "brent
 type TargetMode = "level" | "pct_change";
 type LagDays = 0 | 1 | 3 | 7;
 
-const FEATURE_OPTIONS: { key: FeatureKey; label: string; color: string }[] = [
-  { key: "total_active_vessels", label: "Total Active Vessels", color: "#06b6d4" },
-  { key: "vessels_in_transit", label: "Vessels In Transit", color: "#3b82f6" },
-  { key: "vessels_at_port", label: "Vessels At Port", color: "#10b981" },
-  { key: "avg_fleet_speed", label: "Average Fleet Speed", color: "#14b8a6" },
-  { key: "vessels_idle_gt_48h", label: "Vessels Idle >48h", color: "#f97316" },
-  { key: "dark_vessels_count", label: "Global Dark Fleet", color: "#ef4444" },
-  { key: "new_ais_gaps_24h", label: "New AIS Gaps", color: "#f43f5e" },
-  { key: "resolved_gaps_24h", label: "Resolved AIS Gaps", color: "#84cc16" },
-  { key: "avg_gap_duration_hours", label: "Avg Gap Duration (hrs)", color: "#ec4899" },
-  { key: "sts_events_24h", label: "STS Events", color: "#8b5cf6" },
-  { key: "sts_confirmed_24h", label: "Confirmed STS Events", color: "#a855f7" },
-  { key: "chokepoint_transits_24h", label: "Chokepoint Transits", color: "#6366f1" },
-  { key: "strait_of_hormuz_transits", label: "Strait of Hormuz Transits", color: "#0ea5e9" },
-  { key: "cargo_events_24h", label: "Cargo Events", color: "#f59e0b" },
-  { key: "estimated_volume_barrels_24h", label: "Estimated Daily Volume", color: "#eab308" },
+type FeatureGroup = "fleet" | "strait";
+
+const FEATURE_OPTIONS: { key: FeatureKey; label: string; color: string; group: FeatureGroup }[] = [
+  { key: "total_active_vessels", label: "Total Active Vessels", color: "#06b6d4", group: "fleet" },
+  { key: "vessels_in_transit", label: "Vessels In Transit", color: "#3b82f6", group: "fleet" },
+  { key: "vessels_at_port", label: "Vessels At Port", color: "#10b981", group: "fleet" },
+  { key: "avg_fleet_speed", label: "Average Fleet Speed", color: "#14b8a6", group: "fleet" },
+  { key: "vessels_idle_gt_48h", label: "Vessels Idle >48h", color: "#f97316", group: "fleet" },
+  { key: "dark_vessels_count", label: "Global Dark Fleet", color: "#ef4444", group: "fleet" },
+  { key: "new_ais_gaps_24h", label: "New AIS Gaps", color: "#f43f5e", group: "fleet" },
+  { key: "resolved_gaps_24h", label: "Resolved AIS Gaps", color: "#84cc16", group: "fleet" },
+  { key: "avg_gap_duration_hours", label: "Avg Gap Duration (hrs)", color: "#ec4899", group: "fleet" },
+  { key: "sts_events_24h", label: "STS Events", color: "#8b5cf6", group: "fleet" },
+  { key: "sts_confirmed_24h", label: "Confirmed STS Events", color: "#a855f7", group: "fleet" },
+  { key: "cargo_events_24h", label: "Cargo Events", color: "#f59e0b", group: "fleet" },
+  { key: "estimated_volume_barrels_24h", label: "Estimated Daily Volume", color: "#eab308", group: "fleet" },
+  { key: "chokepoint_transits_24h", label: "All Chokepoint Transits", color: "#6366f1", group: "strait" },
+  { key: "other_straits_transits", label: "Other Straits Transits (excl. Hormuz & Bab)", color: "#22d3ee", group: "strait" },
+  { key: "other_straits_traffic_share_pct", label: "Other Straits Traffic Share (%)", color: "#38bdf8", group: "strait" },
+  { key: "cape_of_good_hope_transits", label: "Cape of Good Hope Transits", color: "#10b981", group: "strait" },
+  { key: "strait_of_hormuz_transits", label: "Strait of Hormuz Transits", color: "#0ea5e9", group: "strait" },
+  { key: "bab_el_mandeb_transits", label: "Bab el-Mandeb Transits", color: "#f43f5e", group: "strait" },
+  { key: "suez_canal_transits", label: "Suez Canal Transits", color: "#a855f7", group: "strait" },
+  { key: "strait_of_malacca_transits", label: "Strait of Malacca Transits", color: "#f97316", group: "strait" },
+  { key: "panama_canal_transits", label: "Panama Canal Transits", color: "#eab308", group: "strait" },
+  { key: "turkish_straits_transits", label: "Turkish Straits (Bosporus) Transits", color: "#ec4899", group: "strait" },
+  { key: "danish_straits_transits", label: "Danish Straits Transits", color: "#84cc16", group: "strait" },
+  { key: "other_straits_avg_transit_min", label: "Other Straits Avg Delay (min)", color: "#f59e0b", group: "strait" },
+  { key: "cape_of_good_hope_avg_transit_min", label: "Cape of Good Hope Avg Delay (min)", color: "#34d399", group: "strait" },
+  { key: "hormuz_bab_avg_transit_min", label: "Hormuz & Bab el-Mandeb Avg Delay (min)", color: "#fb7185", group: "strait" },
+  { key: "avg_chokepoint_transit_min", label: "All Chokepoints Avg Delay (min)", color: "#818cf8", group: "strait" },
+  { key: "portwatch_cape_tankers", label: "Cape of Good Hope Tankers (PortWatch)", color: "#2dd4bf", group: "strait" },
+  { key: "portwatch_other_straits_tankers", label: "Other Straits Tankers (PortWatch)", color: "#60a5fa", group: "strait" },
 ];
 
 function addDaysIso(isoDate: string, days: number): string {
@@ -83,6 +100,7 @@ export default function MarketIntelligencePage() {
   const [selectedFeature, setSelectedFeature] = useState<FeatureKey>("total_active_vessels");
   const [targetMode, setTargetMode] = useState<TargetMode>("level");
   const [lagDays, setLagDays] = useState<LagDays>(0);
+  const [featureGroupFilter, setFeatureGroupFilter] = useState<"all" | FeatureGroup>("all");
 
   const fetchSnapshots = useCallback(async () => {
     const API = getApiUrl();
@@ -274,9 +292,16 @@ export default function MarketIntelligencePage() {
                   cursor: "pointer"
                 }}
               >
-                {FEATURE_OPTIONS.map(opt => (
-                  <option key={opt.key} value={opt.key}>{opt.label}</option>
-                ))}
+                <optgroup label="Strait Traffic & Delays">
+                  {FEATURE_OPTIONS.filter((opt) => opt.group === "strait").map((opt) => (
+                    <option key={opt.key} value={opt.key}>{opt.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Fleet, Dark Fleet & Cargo">
+                  {FEATURE_OPTIONS.filter((opt) => opt.group === "fleet").map((opt) => (
+                    <option key={opt.key} value={opt.key}>{opt.label}</option>
+                  ))}
+                </optgroup>
               </select>
             </div>
           </div>
@@ -384,6 +409,34 @@ export default function MarketIntelligencePage() {
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              {/* Feature Group Filter */}
+              <div style={{ display: "inline-flex", background: "rgba(15, 23, 42, 0.7)", border: "1px solid var(--border)", borderRadius: 6, padding: 2 }}>
+                {(
+                  [
+                    { id: "all", label: "All Features" },
+                    { id: "strait", label: "Strait Traffic & Delays" },
+                  ] as const
+                ).map((grp) => (
+                  <button
+                    key={grp.id}
+                    type="button"
+                    onClick={() => setFeatureGroupFilter(grp.id)}
+                    style={{
+                      padding: "5px 10px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      borderRadius: 4,
+                      border: "none",
+                      cursor: "pointer",
+                      background: featureGroupFilter === grp.id ? "rgba(16, 185, 129, 0.2)" : "transparent",
+                      color: featureGroupFilter === grp.id ? "var(--accent-emerald)" : "var(--text-muted)",
+                    }}
+                  >
+                    {grp.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Target Mode Toggle */}
               <div style={{ display: "inline-flex", background: "rgba(15, 23, 42, 0.7)", border: "1px solid var(--border)", borderRadius: 6, padding: 2 }}>
                 {(
@@ -452,7 +505,9 @@ export default function MarketIntelligencePage() {
                 </tr>
               </thead>
               <tbody>
-                {correlationRows.map((row) => {
+                {correlationRows
+                  .filter((row) => featureGroupFilter === "all" || row.group === featureGroupFilter)
+                  .map((row) => {
                   const isSelected = row.key === selectedFeature;
                   const rColor =
                     row.rBrent == null
@@ -544,7 +599,7 @@ export default function MarketIntelligencePage() {
           </div>
           
           <div style={{ overflowX: "auto" }}>
-            <table className="data-table" style={{ minWidth: 1200 }}>
+            <table className="data-table" style={{ minWidth: 1350 }}>
               <thead>
                 <tr>
                   <th>Date</th>
@@ -556,6 +611,10 @@ export default function MarketIntelligencePage() {
                   <th>STS Events</th>
                   <th>Avg Speed</th>
                   <th>Cargo Events</th>
+                  <th>Other Straits</th>
+                  <th>Cape Transits</th>
+                  <th>Other Delay</th>
+                  <th>Cape Tankers (PW)</th>
                 </tr>
               </thead>
               <tbody>
@@ -570,6 +629,10 @@ export default function MarketIntelligencePage() {
                     <td>{row.sts_events_24h ?? "—"}</td>
                     <td>{row.avg_fleet_speed != null ? `${row.avg_fleet_speed.toFixed(1)} kn` : "—"}</td>
                     <td style={{ color: "var(--accent-emerald)" }}>{row.cargo_events_24h ?? "—"}</td>
+                    <td style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{row.other_straits_transits ?? "—"}</td>
+                    <td>{row.cape_of_good_hope_transits ?? "—"}</td>
+                    <td>{row.other_straits_avg_transit_min != null ? `${row.other_straits_avg_transit_min.toFixed(0)}m` : "—"}</td>
+                    <td>{row.portwatch_cape_tankers ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

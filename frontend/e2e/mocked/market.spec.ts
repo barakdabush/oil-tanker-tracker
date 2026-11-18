@@ -21,6 +21,21 @@ test.describe('Mocked Market Intelligence UI E2E', () => {
             sts_confirmed_24h: 1,
             chokepoint_transits_24h: 80,
             strait_of_hormuz_transits: 20,
+            cape_of_good_hope_transits: 14,
+            bab_el_mandeb_transits: 5,
+            suez_canal_transits: 8,
+            strait_of_malacca_transits: 22,
+            panama_canal_transits: 4,
+            turkish_straits_transits: 4,
+            danish_straits_transits: 3,
+            other_straits_transits: 55,
+            other_straits_traffic_share_pct: 68.75,
+            avg_chokepoint_transit_min: 132.0,
+            cape_of_good_hope_avg_transit_min: 165.0,
+            other_straits_avg_transit_min: 148.0,
+            hormuz_bab_avg_transit_min: 92.0,
+            portwatch_cape_tankers: 26,
+            portwatch_other_straits_tankers: 108,
             cargo_events_24h: 150,
             estimated_volume_barrels_24h: 10000000.0,
             brent_close_usd: 85.50,
@@ -41,6 +56,21 @@ test.describe('Mocked Market Intelligence UI E2E', () => {
             sts_confirmed_24h: 2,
             chokepoint_transits_24h: 95,
             strait_of_hormuz_transits: 25,
+            cape_of_good_hope_transits: 21,
+            bab_el_mandeb_transits: 4,
+            suez_canal_transits: 9,
+            strait_of_malacca_transits: 24,
+            panama_canal_transits: 5,
+            turkish_straits_transits: 4,
+            danish_straits_transits: 3,
+            other_straits_transits: 66,
+            other_straits_traffic_share_pct: 69.47,
+            avg_chokepoint_transit_min: 150.0,
+            cape_of_good_hope_avg_transit_min: 192.0,
+            other_straits_avg_transit_min: 171.0,
+            hormuz_bab_avg_transit_min: 95.0,
+            portwatch_cape_tankers: 31,
+            portwatch_other_straits_tankers: 121,
             cargo_events_24h: 180,
             estimated_volume_barrels_24h: 12000000.0,
             brent_close_usd: 89.00,
@@ -65,9 +95,12 @@ test.describe('Mocked Market Intelligence UI E2E', () => {
     await expect(rechartsContainer).toBeVisible({ timeout: 10000 });
     await expect(page.locator('.recharts-surface')).toBeVisible(); // Actual SVG element
 
-    // Test dropdown logic - when triggering STS events, verify table/charts adapt without crash
+    // Test dropdown logic - when triggering STS events and Cape of Good Hope transits, verify table/charts adapt without crash
     const selectDropdown = page.locator('select');
     await selectDropdown.selectOption('sts_events_24h');
+    await selectDropdown.selectOption('cape_of_good_hope_transits');
+    await selectDropdown.selectOption('other_straits_avg_transit_min');
+    await page.getByRole('button', { name: 'Strait Traffic & Delays' }).click();
     
     // Check raw data table renders rows
     await expect(page.locator('table.data-table')).toBeVisible();
