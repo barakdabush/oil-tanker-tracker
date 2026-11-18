@@ -125,7 +125,7 @@ export default function MarketIntelligencePage() {
     return <div className="page-body"><div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Loading Market Intelligence data...</div></div>;
   }
 
-  const latest = data.length > 0 ? data[data.length - 1] : null;
+  const latest = [...data].reverse().find((d) => d.total_active_vessels != null) ?? null;
   const latestBrent = [...data].reverse().find((d) => d.brent_close_usd != null) ?? null;
   const latestWti = [...data].reverse().find((d) => d.wti_close_usd != null) ?? null;
 
@@ -564,12 +564,12 @@ export default function MarketIntelligencePage() {
                     <td style={{ color: "var(--text-secondary)", fontWeight: 500 }}>{row.snapshot_date}</td>
                     <td style={{ fontWeight: 600, color: "var(--accent-amber)" }}>{row.brent_close_usd ? `$${row.brent_close_usd}` : "—"}</td>
                     <td style={{ fontWeight: 600, color: "var(--accent-purple)" }}>{row.wti_close_usd ? `$${row.wti_close_usd}` : "—"}</td>
-                    <td>{row.total_active_vessels}</td>
-                    <td>{row.vessels_in_transit}</td>
-                    <td style={{ color: "var(--accent-red)", fontWeight: 600 }}>{row.dark_vessels_count}</td>
-                    <td>{row.sts_events_24h}</td>
+                    <td>{row.total_active_vessels ?? "—"}</td>
+                    <td>{row.vessels_in_transit ?? "—"}</td>
+                    <td style={{ color: "var(--accent-red)", fontWeight: 600 }}>{row.dark_vessels_count ?? "—"}</td>
+                    <td>{row.sts_events_24h ?? "—"}</td>
                     <td>{row.avg_fleet_speed != null ? `${row.avg_fleet_speed.toFixed(1)} kn` : "—"}</td>
-                    <td style={{ color: "var(--accent-emerald)" }}>{row.cargo_events_24h}</td>
+                    <td style={{ color: "var(--accent-emerald)" }}>{row.cargo_events_24h ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

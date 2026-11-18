@@ -30,7 +30,7 @@ EIA_BASE_URL = "https://api.eia.gov/v2/petroleum/pri/spt/data/"
 BRENT_PRODUCT = "EPCBRENT"
 WTI_PRODUCT = "EPCWTI"
 
-RUN_INTERVAL_SECONDS = 4 * 60 * 60
+RUN_INTERVAL_SECONDS = 60 * 60
 BACKFILL_DAYS = 90
 
 

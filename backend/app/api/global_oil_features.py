@@ -25,44 +25,50 @@ async def get_global_oil_snapshots(
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
 
-    # Left join snapshots with prices on date
-    query = (
-        select(
-            OilMarketSnapshot,
-            OilPrice.brent_close_usd,
-            OilPrice.wti_close_usd,
+    # Fetch snapshots and oil prices separately and full-outer-merge by date so
+    # today's latest price is always returned even before today's snapshot exists.
+    snap_rows = (
+        await db.execute(
+            select(OilMarketSnapshot).where(OilMarketSnapshot.snapshot_date >= cutoff)
         )
-        .outerjoin(OilPrice, OilMarketSnapshot.snapshot_date == OilPrice.price_date)
-        .where(OilMarketSnapshot.snapshot_date >= cutoff)
-        .order_by(desc(OilMarketSnapshot.snapshot_date))
-    )
-
-    result = await db.execute(query)
-    rows = result.all()
-
-    return [
-        MarketSnapshotResponse(
-            snapshot_date=row.OilMarketSnapshot.snapshot_date,
-            total_active_vessels=row.OilMarketSnapshot.total_active_vessels,
-            vessels_in_transit=row.OilMarketSnapshot.vessels_in_transit,
-            vessels_at_port=row.OilMarketSnapshot.vessels_at_port,
-            avg_fleet_speed=row.OilMarketSnapshot.avg_fleet_speed,
-            vessels_idle_gt_48h=row.OilMarketSnapshot.vessels_idle_gt_48h,
-            dark_vessels_count=row.OilMarketSnapshot.dark_vessels_count,
-            new_ais_gaps_24h=row.OilMarketSnapshot.new_ais_gaps_24h,
-            resolved_gaps_24h=row.OilMarketSnapshot.resolved_gaps_24h,
-            avg_gap_duration_hours=row.OilMarketSnapshot.avg_gap_duration_hours,
-            sts_events_24h=row.OilMarketSnapshot.sts_events_24h,
-            sts_confirmed_24h=row.OilMarketSnapshot.sts_confirmed_24h,
-            chokepoint_transits_24h=row.OilMarketSnapshot.chokepoint_transits_24h,
-            strait_of_hormuz_transits=row.OilMarketSnapshot.strait_of_hormuz_transits,
-            cargo_events_24h=row.OilMarketSnapshot.cargo_events_24h,
-            estimated_volume_barrels_24h=row.OilMarketSnapshot.estimated_volume_barrels_24h,
-            brent_close_usd=row.brent_close_usd,
-            wti_close_usd=row.wti_close_usd,
+    ).scalars().all()
+    price_rows = (
+        await db.execute(
+            select(OilPrice).where(OilPrice.price_date >= cutoff)
         )
-        for row in rows
-    ]
+    ).scalars().all()
+
+    snaps_by_date = {s.snapshot_date: s for s in snap_rows}
+    prices_by_date = {p.price_date: p for p in price_rows}
+    all_dates = sorted(set(snaps_by_date.keys()) | set(prices_by_date.keys()), reverse=True)
+
+    out: list[MarketSnapshotResponse] = []
+    for d in all_dates:
+        s = snaps_by_date.get(d)
+        p = prices_by_date.get(d)
+        out.append(
+            MarketSnapshotResponse(
+                snapshot_date=d,
+                total_active_vessels=s.total_active_vessels if s else None,
+                vessels_in_transit=s.vessels_in_transit if s else None,
+                vessels_at_port=s.vessels_at_port if s else None,
+                avg_fleet_speed=s.avg_fleet_speed if s else None,
+                vessels_idle_gt_48h=s.vessels_idle_gt_48h if s else None,
+                dark_vessels_count=s.dark_vessels_count if s else None,
+                new_ais_gaps_24h=s.new_ais_gaps_24h if s else None,
+                resolved_gaps_24h=s.resolved_gaps_24h if s else None,
+                avg_gap_duration_hours=s.avg_gap_duration_hours if s else None,
+                sts_events_24h=s.sts_events_24h if s else None,
+                sts_confirmed_24h=s.sts_confirmed_24h if s else None,
+                chokepoint_transits_24h=s.chokepoint_transits_24h if s else None,
+                strait_of_hormuz_transits=s.strait_of_hormuz_transits if s else None,
+                cargo_events_24h=s.cargo_events_24h if s else None,
+                estimated_volume_barrels_24h=s.estimated_volume_barrels_24h if s else None,
+                brent_close_usd=p.brent_close_usd if p else None,
+                wti_close_usd=p.wti_close_usd if p else None,
+            )
+        )
+    return out
 
 
 @router.post("/recalculate")
@@ -70,10 +76,11 @@ async def recalculate_global_oil_snapshots(
     days: int = Query(90, ge=1, le=365, description="Recalculate existing snapshots within the last N days"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Recalculate market feature snapshots for existing dates within the last N days (plus yesterday)."""
+    """Recalculate market feature snapshots for existing dates within the last N days (plus yesterday & today)."""
     now_utc = datetime.now(timezone.utc)
     cutoff = (now_utc - timedelta(days=days)).date()
-    yesterday = (now_utc - timedelta(days=1)).date()
+    today = now_utc.date()
+    yesterday = today - timedelta(days=1)
 
     existing_dates = (
         await db.execute(
@@ -83,7 +90,7 @@ async def recalculate_global_oil_snapshots(
         )
     ).scalars().all()
 
-    dates_to_recalc = sorted(set(existing_dates) | {yesterday})
+    dates_to_recalc = sorted(set(existing_dates) | {yesterday, today})
     builder = GlobalOilFeatureBuilder()
     for target_date in dates_to_recalc:
         await builder.aggregate(target_date=target_date)

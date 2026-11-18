@@ -54,7 +54,8 @@ async def test_aggregate_runs_without_attribute_error():
 async def test_backfill_missing_days_aggregates_missing_and_yesterday():
     from datetime import datetime, timedelta, timezone
 
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
     two_days_ago = yesterday - timedelta(days=1)
     three_days_ago = yesterday - timedelta(days=2)
 
@@ -79,4 +80,4 @@ async def test_backfill_missing_days_aggregates_missing_and_yesterday():
         await builder.backfill_missing_days(days=3)
 
     called_dates = [call.kwargs["target_date"] for call in builder.aggregate.await_args_list]
-    assert called_dates == [two_days_ago, yesterday]
+    assert called_dates == [two_days_ago, yesterday, today]

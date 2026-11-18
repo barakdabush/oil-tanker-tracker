@@ -19,8 +19,8 @@ from app.models.global_oil_features import OilMarketSnapshot
 
 logger = logging.getLogger(__name__)
 
-# 24 hours between runs
-RUN_INTERVAL_SECONDS = 24 * 60 * 60
+# 1 hour between runs (keeps today's intraday vessel features up to date)
+RUN_INTERVAL_SECONDS = 60 * 60
 # Initial delay: ~15 minutes after midnight UTC
 INITIAL_DELAY_SECONDS = 15 * 60
 
@@ -29,7 +29,7 @@ class GlobalOilFeatureBuilder:
     """Aggregates daily market features from existing vessel tracking data."""
 
     async def run_periodic(self):
-        """Run feature aggregation once daily (backfilling recent missing days)."""
+        """Run feature aggregation hourly (backfilling recent missing days + today)."""
         # Small initial delay to let the system stabilise
         await asyncio.sleep(10)
         while True:
@@ -43,9 +43,10 @@ class GlobalOilFeatureBuilder:
                 continue
             await asyncio.sleep(RUN_INTERVAL_SECONDS)
 
-    async def backfill_missing_days(self, days: int = 7):
-        """Aggregate any missing dates in the last `days` days (up to yesterday UTC)."""
-        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    async def backfill_missing_days(self, days: int = 7, include_today: bool = True):
+        """Aggregate any missing dates in the last `days` days plus yesterday and today UTC."""
+        today = datetime.now(timezone.utc).date()
+        yesterday = today - timedelta(days=1)
         start_date = yesterday - timedelta(days=days - 1)
         async with async_session() as session:
             existing_rows = (
@@ -61,6 +62,8 @@ class GlobalOilFeatureBuilder:
             d = yesterday - timedelta(days=offset)
             if d not in existing or d == yesterday:
                 await self.aggregate(target_date=d)
+        if include_today:
+            await self.aggregate(target_date=today)
 
     async def aggregate(self, target_date: date | None = None):
         """Aggregate all 15 features for the given date (defaults to yesterday UTC).
