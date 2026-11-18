@@ -78,6 +78,7 @@ function formatR(r: number | null): string {
 
 export default function MarketIntelligencePage() {
   const [data, setData] = useState<MarketSnapshotResponse[]>([]);
+  const [portCongestion, setPortCongestion] = useState<import("@/lib/types").PortCongestionItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [recalculating, setRecalculating] = useState<boolean>(false);
   const [selectedFeature, setSelectedFeature] = useState<FeatureKey>("total_active_vessels");
@@ -87,12 +88,20 @@ export default function MarketIntelligencePage() {
   const fetchSnapshots = useCallback(async () => {
     const API = getApiUrl();
     try {
-      const r = await fetch(`${API}/api/global-oil-features/snapshots?days=90`);
-      const json: MarketSnapshotResponse[] = await r.json();
-      const sortedData = json.sort(
-        (a, b) => new Date(a.snapshot_date).getTime() - new Date(b.snapshot_date).getTime()
-      );
-      setData(sortedData);
+      const [snapRes, portRes] = await Promise.allSettled([
+        fetch(`${API}/api/global-oil-features/snapshots?days=90`),
+        fetch(`${API}/api/ports/congestion?limit=15`),
+      ]);
+      if (snapRes.status === "fulfilled" && snapRes.value.ok) {
+        const json: MarketSnapshotResponse[] = await snapRes.value.json();
+        const sortedData = json.sort(
+          (a, b) => new Date(a.snapshot_date).getTime() - new Date(b.snapshot_date).getTime()
+        );
+        setData(sortedData);
+      }
+      if (portRes.status === "fulfilled" && portRes.value.ok) {
+        setPortCongestion(await portRes.value.json());
+      }
     } catch (err) {
       console.error("Failed to load market features", err);
     } finally {
@@ -534,6 +543,52 @@ export default function MarketIntelligencePage() {
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* Port Fullness & Anchorage Congestion */}
+        <div className="panel animate-in" style={{ animationDelay: "0.18s", marginBottom: 24 }}>
+          <div className="panel-header">
+            <div>
+              <h3>⚓ Port Fullness &amp; Anchorage Congestion</h3>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Live tankers berthed vs. waiting at anchor outside major terminals
+              </span>
+            </div>
+          </div>
+          {portCongestion.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+              Port state classifier warming up — live port counts will appear after the first 5-minute cycle.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Port / Terminal</th>
+                    <th>Country</th>
+                    <th>Berthed</th>
+                    <th>Anchored (Waiting)</th>
+                    <th>Avg Wait</th>
+                    <th>Fullness (vs 90d Peak)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {portCongestion.map((p) => (
+                    <tr key={p.port_id}>
+                      <td style={{ fontWeight: 600 }}>{p.name}</td>
+                      <td style={{ color: "var(--text-muted)" }}>{p.country ?? "—"}</td>
+                      <td style={{ color: "var(--accent-amber)", fontWeight: 600 }}>{p.berthed_count}</td>
+                      <td style={{ color: p.anchored_waiting_count > 0 ? "#f97316" : "var(--text-muted)", fontWeight: 600 }}>
+                        {p.anchored_waiting_count}
+                      </td>
+                      <td>{p.avg_wait_hours != null ? `${p.avg_wait_hours.toFixed(1)}h` : "—"}</td>
+                      <td>{p.utilization_pct != null ? `${p.utilization_pct.toFixed(0)}%` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Data Grid table */}

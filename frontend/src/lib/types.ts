@@ -19,6 +19,10 @@ export interface Vessel {
   last_speed: number | null;
   last_course: number | null;
   last_source?: string | null;
+  operational_state?: string | null;
+  state_since?: string | null;
+  current_port_id?: number | null;
+  cargo_status?: string | null;
   is_sanctioned?: boolean;
   sanctions_program?: string | null;
 }
@@ -215,7 +219,25 @@ export interface MarketSnapshotResponse {
   strait_of_hormuz_transits: number;
   cargo_events_24h: number;
   estimated_volume_barrels_24h: number;
+  anchored_waiting_count?: number | null;
+  avg_port_wait_hours?: number | null;
+  port_congestion_pct?: number | null;
+  floating_storage_count?: number | null;
+  in_transit_laden_count?: number | null;
+  in_transit_ballast_count?: number | null;
   brent_close_usd: number | null;
   wti_close_usd: number | null;
+}
+
+export interface PortCongestionItem {
+  port_id: number;
+  name: string;
+  country: string | null;
+  region: string | null;
+  port_type: string | null;
+  berthed_count: number;
+  anchored_waiting_count: number;
+  avg_wait_hours: number | null;
+  utilization_pct: number | null;
 }
 

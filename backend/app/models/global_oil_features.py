@@ -27,6 +27,12 @@ class OilMarketSnapshot(Base):
     strait_of_hormuz_transits = Column(Integer)
     cargo_events_24h = Column(Integer)
     estimated_volume_barrels_24h = Column(Float)
+    anchored_waiting_count = Column(Integer)
+    avg_port_wait_hours = Column(Float)
+    port_congestion_pct = Column(Float)
+    floating_storage_count = Column(Integer)
+    in_transit_laden_count = Column(Integer)
+    in_transit_ballast_count = Column(Integer)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))
 
 

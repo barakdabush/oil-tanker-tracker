@@ -1,6 +1,7 @@
 """Vessel-related database models."""
 
 from datetime import datetime
+import uuid
 
 from sqlalchemy import (
     BigInteger,
@@ -40,11 +41,43 @@ class Vessel(Base):
     last_speed = Column(Float, nullable=True)
     last_course = Column(Float, nullable=True)
     last_source = Column(String(64), nullable=True)
+    operational_state = Column(String(32), nullable=True, index=True)
+    state_since = Column(DateTime(timezone=True), nullable=True)
+    current_port_id = Column(Integer, ForeignKey("ports.id", ondelete="SET NULL"), nullable=True, index=True)
+    cargo_status = Column(String(16), nullable=True)  # laden, ballast, unknown
+    min_draft = Column(Float, nullable=True)
+    max_draft = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
     updated_at = Column(DateTime(timezone=True), server_default=text("NOW()"), onupdate=datetime.utcnow)
 
     positions = relationship("VesselPosition", back_populates="vessel", lazy="dynamic")
     cargo_events = relationship("CargoEvent", back_populates="vessel", lazy="dynamic")
+    state_history = relationship("VesselStateHistory", back_populates="vessel", lazy="dynamic")
+
+
+class VesselStateHistory(Base):
+    """Interval-based log of vessel operational state transitions."""
+
+    __tablename__ = "vessel_state_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    mmsi = Column(BigInteger, ForeignKey("vessels.mmsi", ondelete="CASCADE"), nullable=False, index=True)
+    state = Column(String(32), nullable=False, index=True)
+    cargo_status = Column(String(16), nullable=True)
+    port_id = Column(Integer, ForeignKey("ports.id", ondelete="SET NULL"), nullable=True, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    duration_hours = Column(Float, nullable=True)
+    start_lat = Column(Float, nullable=True)
+    start_lon = Column(Float, nullable=True)
+
+    vessel = relationship("Vessel", back_populates="state_history")
+
+    __table_args__ = (
+        Index("idx_vsh_mmsi_started", "mmsi", "started_at"),
+        Index("idx_vsh_state_started", "state", "started_at"),
+        Index("idx_vsh_port_started", "port_id", "started_at"),
+    )
 
 
 class VesselPosition(Base):

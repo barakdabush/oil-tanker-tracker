@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     DARK_FLEET_SUSPICIOUS_MIN: int = 240
     DARK_FLEET_DARK_HOURS: int = 6
     DARK_FLEET_EXTENDED_HOURS: int = 24
-    STS_PROXIMITY_M: float = 500.0
+    STS_PROXIMITY_M: float = 250.0
     STS_MIN_DURATION_MIN: int = 30
     STS_PORT_DISTANCE_KM: float = 20.0
 

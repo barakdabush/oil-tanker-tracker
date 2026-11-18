@@ -213,6 +213,47 @@ class GlobalOilFeatureBuilder:
                 )
             )).scalar() or 0
 
+            # --- Operational States & Port Congestion ---
+            state_row = (await session.execute(
+                text("""
+                    SELECT
+                        COUNT(DISTINCT mmsi) FILTER (WHERE state = 'anchored_waiting') AS anchored_waiting,
+                        COUNT(DISTINCT mmsi) FILTER (WHERE state = 'floating_storage') AS floating_storage,
+                        COUNT(DISTINCT mmsi) FILTER (WHERE state = 'in_transit_laden') AS in_transit_laden,
+                        COUNT(DISTINCT mmsi) FILTER (WHERE state = 'in_transit_ballast') AS in_transit_ballast
+                    FROM vessel_state_history
+                    WHERE started_at < :day_end
+                      AND (ended_at IS NULL OR ended_at >= :day_start)
+                """),
+                {"day_start": day_start, "day_end": day_end},
+            )).one()
+
+            anchored_waiting_count = int(getattr(state_row, "anchored_waiting", 0) or 0)
+            floating_storage_count = int(getattr(state_row, "floating_storage", 0) or 0)
+            in_transit_laden_count = int(getattr(state_row, "in_transit_laden", 0) or 0)
+            in_transit_ballast_count = int(getattr(state_row, "in_transit_ballast", 0) or 0)
+
+            port_row = (await session.execute(
+                text("""
+                    SELECT
+                        AVG(avg_wait_hours) FILTER (WHERE anchored_waiting_count > 0) AS avg_wait,
+                        AVG(utilization_pct) AS avg_util
+                    FROM port_daily_stats
+                    WHERE stat_date = :target_date
+                """),
+                {"target_date": target_date},
+            )).one()
+            avg_port_wait_hours = (
+                round(float(port_row.avg_wait), 2)
+                if getattr(port_row, "avg_wait", None) is not None
+                else None
+            )
+            port_congestion_pct = (
+                round(float(port_row.avg_util), 1)
+                if getattr(port_row, "avg_util", None) is not None
+                else None
+            )
+
             # --- Upsert snapshot ---
             values = {
                 "snapshot_date": target_date,
@@ -231,6 +272,12 @@ class GlobalOilFeatureBuilder:
                 "strait_of_hormuz_transits": hormuz_count,
                 "cargo_events_24h": cargo_count,
                 "estimated_volume_barrels_24h": float(volume_result),
+                "anchored_waiting_count": anchored_waiting_count,
+                "avg_port_wait_hours": avg_port_wait_hours,
+                "port_congestion_pct": port_congestion_pct,
+                "floating_storage_count": floating_storage_count,
+                "in_transit_laden_count": in_transit_laden_count,
+                "in_transit_ballast_count": in_transit_ballast_count,
             }
 
             stmt = pg_insert(OilMarketSnapshot).values(**values)

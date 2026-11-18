@@ -22,6 +22,7 @@ from app.services.oil_price_fetcher import OilPriceFetcher
 from app.services.portwatch_fetcher import PortWatchFetcher
 from app.services.ofac_fetcher import OfacSanctionsFetcher
 from app.services.incident_detector import IncidentDetector
+from app.services.vessel_state_classifier import VesselStateClassifier
 from app.services.db_log_handler import setup_db_logging
 from app.database import engine
 
@@ -41,6 +42,7 @@ async def run_workers():
     portwatch_fetcher = PortWatchFetcher()
     ofac_fetcher = OfacSanctionsFetcher()
     incident_detector = IncidentDetector()
+    vessel_state_classifier = VesselStateClassifier()
 
     # Create background tasks for the heavy jobs
     detector_task = asyncio.create_task(cargo_detector.run_periodic())
@@ -52,6 +54,7 @@ async def run_workers():
     portwatch_task = asyncio.create_task(portwatch_fetcher.run_periodic())
     ofac_task = asyncio.create_task(ofac_fetcher.run_periodic())
     incident_task = asyncio.create_task(incident_detector.run_periodic())
+    state_task = asyncio.create_task(vessel_state_classifier.run_periodic())
 
     logger.info("🟢 All detection services started. Awaiting events...")
 
@@ -60,7 +63,7 @@ async def run_workers():
         await asyncio.gather(
             detector_task, dark_fleet_task, sts_task, chokepoint_task,
             feature_task, oil_price_task, portwatch_task, ofac_task, log_flush_task,
-            incident_task,
+            incident_task, state_task,
         )
     except asyncio.CancelledError:
         logger.info("Worker tasks cancelled.")

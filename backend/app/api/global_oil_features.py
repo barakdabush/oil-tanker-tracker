@@ -64,6 +64,12 @@ async def get_global_oil_snapshots(
                 strait_of_hormuz_transits=s.strait_of_hormuz_transits if s else None,
                 cargo_events_24h=s.cargo_events_24h if s else None,
                 estimated_volume_barrels_24h=s.estimated_volume_barrels_24h if s else None,
+                anchored_waiting_count=s.anchored_waiting_count if s else None,
+                avg_port_wait_hours=s.avg_port_wait_hours if s else None,
+                port_congestion_pct=s.port_congestion_pct if s else None,
+                floating_storage_count=s.floating_storage_count if s else None,
+                in_transit_laden_count=s.in_transit_laden_count if s else None,
+                in_transit_ballast_count=s.in_transit_ballast_count if s else None,
                 brent_close_usd=p.brent_close_usd if p else None,
                 wti_close_usd=p.wti_close_usd if p else None,
             )

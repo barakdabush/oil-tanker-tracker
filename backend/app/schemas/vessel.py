@@ -28,6 +28,10 @@ class VesselResponse(VesselBase):
     last_speed: Optional[float] = None
     last_course: Optional[float] = None
     last_source: Optional[str] = None
+    operational_state: Optional[str] = None
+    state_since: Optional[datetime] = None
+    current_port_id: Optional[int] = None
+    cargo_status: Optional[str] = None
     is_sanctioned: bool = False
     sanctions_program: Optional[str] = None
 

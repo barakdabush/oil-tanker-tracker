@@ -7,25 +7,52 @@ export const timeLabelMap: Record<number, string> = {
   336: "2w",
 };
 
+export const STATE_COLORS: Record<string, string> = {
+  dark: "#1f2937",
+  sts_transfer: "#a855f7",
+  at_port: "#f59e0b",
+  anchored_waiting: "#f97316",
+  floating_storage: "#ec4899",
+  in_transit_laden: "#ef4444",
+  in_transit_ballast: "#10b981",
+  idle_drifting: "#64748b",
+};
+
+export const STATE_LABELS: Record<string, string> = {
+  dark: "Dark (AIS off)",
+  sts_transfer: "STS Transfer",
+  at_port: "At Port (Berthed)",
+  anchored_waiting: "Anchored (Waiting)",
+  floating_storage: "Floating Storage",
+  in_transit_laden: "In Transit (Laden)",
+  in_transit_ballast: "In Transit (Ballast)",
+  idle_drifting: "Idle / Drifting",
+};
+
 export function getVesselColor(v: Vessel): string {
   const hoursSinceLastSeen = v.last_seen
     ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
     : 999;
-  
-  if (hoursSinceLastSeen > 24) return "#374151"; // Extended Dark (Slate 700)
-  if (hoursSinceLastSeen > 6) return "#4b5563";  // Dark (Grey 600)
-  if ((v.last_speed || 0) <= 1) return "#f59e0b"; // At Port (Amber)
-  if ((v.draft || 0) > 12) return "#ef4444";      // Loaded (Red)
-  return "#10b981";                               // Ballast/Moving (Green)
+
+  if (hoursSinceLastSeen > 6) return STATE_COLORS.dark;
+  if (v.operational_state && STATE_COLORS[v.operational_state]) {
+    return STATE_COLORS[v.operational_state];
+  }
+  if ((v.last_speed || 0) <= 1) return STATE_COLORS.at_port;
+  if ((v.draft || 0) > 12) return STATE_COLORS.in_transit_laden;
+  return STATE_COLORS.in_transit_ballast;
 }
 
 export function getVesselStatus(v: Vessel): string {
   const hoursSinceLastSeen = v.last_seen
     ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
     : 999;
-    
+
   if (hoursSinceLastSeen > 24) return "EXTENDED DARK";
   if (hoursSinceLastSeen > 6) return "DARK";
+  if (v.operational_state && STATE_LABELS[v.operational_state]) {
+    return STATE_LABELS[v.operational_state];
+  }
   if ((v.last_speed || 0) <= 1) return "At Port";
   if ((v.draft || 0) > 12) return "Loaded";
   return "Ballast";

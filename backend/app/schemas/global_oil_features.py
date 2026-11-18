@@ -36,6 +36,14 @@ class MarketSnapshotResponse(BaseModel):
     cargo_events_24h: Optional[int] = None
     estimated_volume_barrels_24h: Optional[float] = None
 
+    # Operational States & Port Congestion
+    anchored_waiting_count: Optional[int] = None
+    avg_port_wait_hours: Optional[float] = None
+    port_congestion_pct: Optional[float] = None
+    floating_storage_count: Optional[int] = None
+    in_transit_laden_count: Optional[int] = None
+    in_transit_ballast_count: Optional[int] = None
+
     # Oil Prices (from oil_prices table join)
     brent_close_usd: Optional[float] = None
     wti_close_usd: Optional[float] = None

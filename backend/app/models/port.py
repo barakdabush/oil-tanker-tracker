@@ -3,10 +3,14 @@
 from geoalchemy2 import Geography
 from sqlalchemy import (
     Column,
+    Date,
+    DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -32,3 +36,17 @@ class Port(Base):
     __table_args__ = (
         Index("idx_ports_position", "position", postgresql_using="gist"),
     )
+
+
+class PortDailyStat(Base):
+    """Daily port fullness and anchorage congestion rollup."""
+
+    __tablename__ = "port_daily_stats"
+
+    port_id = Column(Integer, ForeignKey("ports.id", ondelete="CASCADE"), primary_key=True)
+    stat_date = Column(Date, primary_key=True)
+    berthed_count = Column(Integer, nullable=False, default=0)
+    anchored_waiting_count = Column(Integer, nullable=False, default=0)
+    avg_wait_hours = Column(Float, nullable=True)
+    utilization_pct = Column(Float, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
