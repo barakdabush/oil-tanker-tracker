@@ -121,3 +121,65 @@ def test_classify_vessel_state_priority_order():
         stationary_days=2.0,
     )
     assert state == "idle_drifting" and port_id is None
+
+
+async def test_classify_all_active_sts_uses_vessel_a_and_b_mmsi(monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services import vessel_state_classifier as vsc
+
+    now = datetime.now(timezone.utc)
+    vessel = SimpleNamespace(
+        mmsi=111222333,
+        last_seen=now,
+        last_lat=25.0,
+        last_lon=55.0,
+        last_speed=0.4,
+        draft=14.0,
+        min_draft=9.0,
+        max_draft=15.0,
+        cargo_status=None,
+        operational_state=None,
+        state_since=None,
+        current_port_id=None,
+    )
+
+    def make_result(rows):
+        res = MagicMock()
+        res.all.return_value = rows
+        res.scalars.return_value.all.return_value = rows
+        return res
+
+    # Sequence of execute() calls in classify_all():
+    # 1. ports, 2. vessels, 3. dark_mmsis, 4. sts_rows, 5. nav_rows, 6. cargo_rows, 7. open_rows
+    execute_results = [
+        make_result([]),
+        make_result([vessel]),
+        make_result([]),
+        make_result([SimpleNamespace(vessel_a_mmsi=111222333, vessel_b_mmsi=444555666)]),
+        make_result([]),
+        make_result([]),
+        make_result([]),
+    ]
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=execute_results)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr(vsc, "async_session", lambda: session_ctx)
+
+    result = await vsc.VesselStateClassifier().classify_all()
+
+    assert result == {"classified": 1, "transitions": 1}
+    assert vessel.operational_state == "sts_transfer"
+    assert vessel.current_port_id is None
+    session.add.assert_called_once()
+    session.commit.assert_awaited_once()
+
