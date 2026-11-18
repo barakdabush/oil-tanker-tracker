@@ -102,12 +102,13 @@ export default function MarketIntelligencePage() {
   const [targetMode, setTargetMode] = useState<TargetMode>("level");
   const [lagDays, setLagDays] = useState<LagDays>(0);
   const [featureGroupFilter, setFeatureGroupFilter] = useState<"all" | FeatureGroup>("all");
+  const [windowDays, setWindowDays] = useState<90 | 180 | 365 | 730>(90);
 
   const fetchSnapshots = useCallback(async () => {
     const API = getApiUrl();
     try {
       const [snapRes, portRes] = await Promise.allSettled([
-        fetch(`${API}/api/global-oil-features/snapshots?days=90`),
+        fetch(`${API}/api/global-oil-features/snapshots?days=${windowDays}`),
         fetch(`${API}/api/ports/congestion?limit=15`),
       ]);
       if (snapRes.status === "fulfilled" && snapRes.value.ok) {
@@ -125,7 +126,7 @@ export default function MarketIntelligencePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [windowDays]);
 
   useEffect(() => {
     fetchSnapshots();
@@ -135,7 +136,7 @@ export default function MarketIntelligencePage() {
     setRecalculating(true);
     const API = getApiUrl();
     try {
-      const res = await fetch(`${API}/api/global-oil-features/recalculate?days=90`, {
+      const res = await fetch(`${API}/api/global-oil-features/recalculate?days=${windowDays}`, {
         method: "POST",
       });
       if (res.ok) {
@@ -265,9 +266,41 @@ export default function MarketIntelligencePage() {
           <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h3>🔍 ML Feature Correlations</h3>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Last 90 Days</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Last {windowDays === 365 ? "1 Year" : windowDays === 730 ? "2 Years" : `${windowDays} Days`}
+              </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div
+                title="History window for charts and correlations"
+                style={{ display: "inline-flex", background: "rgba(15, 23, 42, 0.7)", border: "1px solid var(--border)", borderRadius: 6, padding: 2 }}
+              >
+                {([
+                  { days: 90, label: "90d" },
+                  { days: 180, label: "180d" },
+                  { days: 365, label: "1y" },
+                  { days: 730, label: "2y" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.days}
+                    type="button"
+                    onClick={() => setWindowDays(opt.days)}
+                    style={{
+                      padding: "5px 9px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      borderRadius: 4,
+                      border: "none",
+                      cursor: "pointer",
+                      background: windowDays === opt.days ? "rgba(6, 182, 212, 0.2)" : "transparent",
+                      color: windowDays === opt.days ? "var(--accent-cyan)" : "var(--text-muted)",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
               <button
                 onClick={handleRecalculate}
                 disabled={recalculating}

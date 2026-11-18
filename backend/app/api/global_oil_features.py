@@ -127,7 +127,7 @@ async def get_global_oil_snapshots(
 
 @router.post("/recalculate")
 async def recalculate_global_oil_snapshots(
-    days: int = Query(90, ge=1, le=365, description="Recalculate existing snapshots within the last N days"),
+    days: int = Query(90, ge=1, le=730, description="Recalculate existing snapshots within the last N days"),
     db: AsyncSession = Depends(get_db),
 ):
     """Recalculate market feature snapshots for existing dates within the last N days (plus yesterday & today)."""
