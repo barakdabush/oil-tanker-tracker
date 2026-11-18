@@ -64,7 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --comments --json title,body,comments \
+          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body,comments \
             --jq '"Title: " + .title + "\n\n" + .body + "\n\n## Comments\n" + ([.comments[] | "### " + .author.login + "\n" + .body] | join("\n\n"))' \
             > "$RUNNER_TEMP/issue.md"
           TITLE=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title | tr -cd '[:alnum:] _-' | cut -c1-60)
