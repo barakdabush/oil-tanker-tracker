@@ -321,6 +321,15 @@ class IncidentDetector:
                 occurrences_at_notify=0,
                 status="open",
             ))
+        elif inc.status == "resolved":
+            inc.status = "open"
+            inc.github_issue_number = None
+            inc.issue_created_at = None
+            inc.first_seen = now
+            inc.last_seen = now
+            inc.occurrences = sig.count
+            inc.occurrences_at_notify = 0
+            inc.sample_message = (sig.sample or "")[:4000]
         else:
             inc.last_seen = now
             inc.occurrences = (inc.occurrences or 0) + sig.count
@@ -366,9 +375,16 @@ class IncidentDetector:
                 new_occ = (inc.occurrences or 0) - (inc.occurrences_at_notify or 0)
                 if not should_comment(new_occ, inc.last_notified_at, now, settings.INCIDENT_COMMENT_INTERVAL_HOURS):
                     continue
-                state = await self._client.get_issue_state(inc.github_issue_number)
+                status_info = await self._client.get_issue_status(inc.github_issue_number)
+                if not status_info:
+                    continue
+                state, closed_at = status_info
                 if state == "closed":
-                    # Regression after the issue was closed: track again and open a fresh issue.
+                    # Ignore occurrences from before (or within 10m deploy window of) the issue closing.
+                    if closed_at and inc.last_seen and inc.last_seen <= closed_at + timedelta(minutes=10):
+                        inc.status = "resolved"
+                        inc.occurrences_at_notify = inc.occurrences
+                        continue
                     logger.info(f"Incident detector: issue #{inc.github_issue_number} closed but error recurred.")
                     inc.status = "open"
                     inc.github_issue_number = None

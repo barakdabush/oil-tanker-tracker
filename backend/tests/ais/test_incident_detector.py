@@ -97,3 +97,115 @@ def test_issue_body_contains_metadata_and_fenced_sample():
     assert "http://1.2.3.4:3000/system" in body
     # only our own two fences remain
     assert body.count("```") == 2
+
+
+class _FakeScalarResult:
+    def __init__(self, scalar_val=None, items=None):
+        self._scalar = scalar_val
+        self._items = items or []
+
+    def scalar(self):
+        return self._scalar
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._items
+
+
+class _FakeSession:
+    def __init__(self, incidents):
+        self._incidents = incidents
+        self._calls = 0
+
+    async def execute(self, _stmt):
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeScalarResult(scalar_val=0)
+        return _FakeScalarResult(items=self._incidents)
+
+
+class _FakeGitHubClient:
+    def __init__(self, state, closed_at):
+        self._status = (state, closed_at)
+        self.created_issues = []
+        self.comments = []
+
+    async def get_issue_status(self, _number):
+        return self._status
+
+    async def create_issue(self, title, body, labels):
+        self.created_issues.append((title, body, labels))
+        return 99
+
+    async def add_comment(self, number, body):
+        self.comments.append((number, body))
+        return True
+
+
+import pytest
+from app.services.incident_detector import IncidentDetector
+
+
+@pytest.mark.asyncio
+async def test_notify_marks_resolved_when_last_seen_before_close():
+    now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+    closed_at = now - timedelta(hours=4)
+    inc = Incident(
+        fingerprint="fp-old",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] old bug",
+        sample_message="old error",
+        logger_name="app.services.x",
+        first_seen=now - timedelta(hours=10),
+        last_seen=closed_at + timedelta(minutes=2),  # within 10m deploy window
+        occurrences=15,
+        occurrences_at_notify=3,
+        status="issued",
+        github_issue_number=17,
+        issue_created_at=now - timedelta(hours=8),
+        last_notified_at=now - timedelta(hours=7),
+    )
+    client = _FakeGitHubClient("closed", closed_at)
+    detector = IncidentDetector()
+    detector._client = client
+    await detector._notify(_FakeSession([inc]), now)
+
+    assert inc.status == "resolved"
+    assert inc.occurrences_at_notify == 15
+    assert client.created_issues == []
+
+
+@pytest.mark.asyncio
+async def test_notify_reopens_when_error_recurs_after_close():
+    now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+    closed_at = now - timedelta(hours=4)
+    inc = Incident(
+        fingerprint="fp-recur",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] recurring bug",
+        sample_message="new error",
+        logger_name="app.services.x",
+        first_seen=now - timedelta(hours=10),
+        last_seen=closed_at + timedelta(minutes=30),  # genuinely recurred after close
+        occurrences=10,
+        occurrences_at_notify=3,
+        status="issued",
+        github_issue_number=17,
+        issue_created_at=now - timedelta(hours=8),
+        last_notified_at=now - timedelta(hours=7),
+    )
+    client = _FakeGitHubClient("closed", closed_at)
+    detector = IncidentDetector()
+    detector._client = client
+    await detector._notify(_FakeSession([inc]), now)
+
+    assert inc.status == "open"
+    assert inc.github_issue_number is None
+    assert inc.issue_created_at is None
+    assert inc.occurrences == 7
+    assert inc.occurrences_at_notify == 0
+
