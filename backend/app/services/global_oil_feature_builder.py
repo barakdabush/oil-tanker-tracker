@@ -179,26 +179,85 @@ class GlobalOilFeatureBuilder:
                 )
             )).scalar() or 0
 
-            # --- Chokepoint Traffic ---
-            chokepoint_total = (await session.execute(
-                select(func.count()).select_from(ChokepointTransit).where(
-                    and_(
-                        ChokepointTransit.time >= day_start,
-                        ChokepointTransit.time < day_end,
-                    )
-                )
-            )).scalar() or 0
-
-            # Hormuz transits — match by chokepoint name
-            hormuz_count = (await session.execute(
+            # --- Chokepoint Traffic & Delays ---
+            cp_row = (await session.execute(
                 text("""
-                    SELECT COUNT(*) FROM chokepoint_transits ct
+                    SELECT
+                        COUNT(*) AS total_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Strait of Hormuz') AS hormuz_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Cape of Good Hope') AS cape_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Bab el-Mandeb') AS bab_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Suez Canal') AS suez_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Strait of Malacca') AS malacca_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Panama Canal') AS panama_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Turkish Straits (Bosporus)') AS turkish_transits,
+                        COUNT(*) FILTER (WHERE c.name = 'Danish Straits') AS danish_transits,
+                        COUNT(*) FILTER (
+                            WHERE c.name NOT IN ('Strait of Hormuz', 'Bab el-Mandeb')
+                        ) AS other_transits,
+                        AVG(ct.transit_duration_min) FILTER (
+                            WHERE ct.transit_duration_min IS NOT NULL
+                        ) AS avg_transit_min,
+                        AVG(ct.transit_duration_min) FILTER (
+                            WHERE c.name = 'Cape of Good Hope' AND ct.transit_duration_min IS NOT NULL
+                        ) AS cape_avg_transit_min,
+                        AVG(ct.transit_duration_min) FILTER (
+                            WHERE c.name NOT IN ('Strait of Hormuz', 'Bab el-Mandeb')
+                              AND ct.transit_duration_min IS NOT NULL
+                        ) AS other_avg_transit_min,
+                        AVG(ct.transit_duration_min) FILTER (
+                            WHERE c.name IN ('Strait of Hormuz', 'Bab el-Mandeb')
+                              AND ct.transit_duration_min IS NOT NULL
+                        ) AS hormuz_bab_avg_transit_min
+                    FROM chokepoint_transits ct
                     JOIN chokepoints c ON ct.chokepoint_id = c.id
                     WHERE ct.time >= :day_start AND ct.time < :day_end
-                      AND c.name = 'Strait of Hormuz'
                 """),
                 {"day_start": day_start, "day_end": day_end},
-            )).scalar() or 0
+            )).one()
+
+            chokepoint_total = int(getattr(cp_row, "total_transits", 0) or 0)
+            hormuz_count = int(getattr(cp_row, "hormuz_transits", 0) or 0)
+            cape_count = int(getattr(cp_row, "cape_transits", 0) or 0)
+            bab_count = int(getattr(cp_row, "bab_transits", 0) or 0)
+            suez_count = int(getattr(cp_row, "suez_transits", 0) or 0)
+            malacca_count = int(getattr(cp_row, "malacca_transits", 0) or 0)
+            panama_count = int(getattr(cp_row, "panama_transits", 0) or 0)
+            turkish_count = int(getattr(cp_row, "turkish_transits", 0) or 0)
+            danish_count = int(getattr(cp_row, "danish_transits", 0) or 0)
+            other_straits_count = int(getattr(cp_row, "other_transits", 0) or 0)
+            other_straits_share = (
+                round((other_straits_count / chokepoint_total) * 100.0, 2)
+                if chokepoint_total > 0
+                else None
+            )
+
+            def _round_opt(val) -> float | None:
+                return round(float(val), 2) if val is not None else None
+
+            avg_chokepoint_transit_min = _round_opt(getattr(cp_row, "avg_transit_min", None))
+            cape_avg_transit_min = _round_opt(getattr(cp_row, "cape_avg_transit_min", None))
+            other_avg_transit_min = _round_opt(getattr(cp_row, "other_avg_transit_min", None))
+            hormuz_bab_avg_transit_min = _round_opt(getattr(cp_row, "hormuz_bab_avg_transit_min", None))
+
+            # --- IMF PortWatch Satellite-AIS Tanker Counts (nullable when lagged) ---
+            pw_row = (await session.execute(
+                text("""
+                    SELECT
+                        SUM(n_tanker) FILTER (WHERE portname ILIKE '%Cape of Good Hope%') AS pw_cape_tankers,
+                        SUM(n_tanker) FILTER (
+                            WHERE portname NOT ILIKE '%Hormuz%'
+                              AND portname NOT ILIKE '%Mandeb%'
+                        ) AS pw_other_tankers
+                    FROM portwatch_chokepoint_daily
+                    WHERE date = :target_date
+                """),
+                {"target_date": target_date},
+            )).one()
+            pw_cape_raw = getattr(pw_row, "pw_cape_tankers", None)
+            pw_other_raw = getattr(pw_row, "pw_other_tankers", None)
+            portwatch_cape_tankers = int(pw_cape_raw) if pw_cape_raw is not None else None
+            portwatch_other_straits_tankers = int(pw_other_raw) if pw_other_raw is not None else None
 
             # --- Cargo & Volume ---
             cargo_count = (await session.execute(
@@ -270,6 +329,21 @@ class GlobalOilFeatureBuilder:
                 "sts_confirmed_24h": sts_confirmed,
                 "chokepoint_transits_24h": chokepoint_total,
                 "strait_of_hormuz_transits": hormuz_count,
+                "cape_of_good_hope_transits": cape_count,
+                "bab_el_mandeb_transits": bab_count,
+                "suez_canal_transits": suez_count,
+                "strait_of_malacca_transits": malacca_count,
+                "panama_canal_transits": panama_count,
+                "turkish_straits_transits": turkish_count,
+                "danish_straits_transits": danish_count,
+                "other_straits_transits": other_straits_count,
+                "other_straits_traffic_share_pct": other_straits_share,
+                "avg_chokepoint_transit_min": avg_chokepoint_transit_min,
+                "cape_of_good_hope_avg_transit_min": cape_avg_transit_min,
+                "other_straits_avg_transit_min": other_avg_transit_min,
+                "hormuz_bab_avg_transit_min": hormuz_bab_avg_transit_min,
+                "portwatch_cape_tankers": portwatch_cape_tankers,
+                "portwatch_other_straits_tankers": portwatch_other_straits_tankers,
                 "cargo_events_24h": cargo_count,
                 "estimated_volume_barrels_24h": float(volume_result),
                 "anchored_waiting_count": anchored_waiting_count,
