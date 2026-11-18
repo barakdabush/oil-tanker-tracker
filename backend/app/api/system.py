@@ -168,7 +168,7 @@ async def get_system_health(db: AsyncSession = Depends(get_db)):
             "status": _freshness_status(
                 datetime.combine(snap_row.latest_date, datetime.min.time(), tzinfo=timezone.utc)
                 if snap_row and snap_row.latest_date else None,
-                36.0,
+                54.0,  # snapshot_date is yesterday UTC; 24h day + 24h cycle + 6h grace
             ),
         })
 
