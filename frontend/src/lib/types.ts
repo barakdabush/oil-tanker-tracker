@@ -232,6 +232,16 @@ export interface MarketSnapshotResponse {
   hormuz_bab_avg_transit_min?: number | null;
   portwatch_cape_tankers?: number | null;
   portwatch_other_straits_tankers?: number | null;
+  portwatch_hormuz_tankers?: number | null;
+  portwatch_hormuz_capacity_tanker?: number | null;
+  portwatch_bab_el_mandeb_tankers?: number | null;
+  portwatch_suez_tankers?: number | null;
+  hormuz_crisis_pressure?: number | null;
+  hormuz_escalation_prob?: number | null;
+  hormuz_stranded_vessels?: number | null;
+  hormuz_incidents_count?: number | null;
+  gdelt_strait_risk_vol?: number | null;
+  gdelt_strait_tone?: number | null;
   cargo_events_24h: number;
   estimated_volume_barrels_24h: number;
   anchored_waiting_count?: number | null;

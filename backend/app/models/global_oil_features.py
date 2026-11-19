@@ -60,3 +60,18 @@ class OilPrice(Base):
     brent_close_usd = Column(Float)
     wti_close_usd = Column(Float)
     fetched_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))
+
+
+class StraitRiskDaily(Base):
+    """Daily Hormuz & Bab el-Mandeb risk/incident signals from Straits.live and GDELT."""
+
+    __tablename__ = "strait_risk_daily"
+
+    date = Column(Date, primary_key=True)
+    hormuz_crisis_pressure = Column(Float)
+    hormuz_escalation_prob = Column(Float)
+    hormuz_stranded_vessels = Column(Float)
+    hormuz_incidents_count = Column(Integer)
+    gdelt_strait_risk_vol = Column(Float)
+    gdelt_strait_tone = Column(Float)
+    fetched_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))

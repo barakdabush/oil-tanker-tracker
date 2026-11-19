@@ -45,3 +45,15 @@ CREATE TABLE IF NOT EXISTS oil_prices (
     wti_close_usd FLOAT,
     fetched_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- External Hormuz & Bab el-Mandeb risk/incident signals (Straits.live + GDELT)
+CREATE TABLE IF NOT EXISTS strait_risk_daily (
+    date DATE PRIMARY KEY,
+    hormuz_crisis_pressure FLOAT,
+    hormuz_escalation_prob FLOAT,
+    hormuz_stranded_vessels FLOAT,
+    hormuz_incidents_count INT,
+    gdelt_strait_risk_vol FLOAT,
+    gdelt_strait_tone FLOAT,
+    fetched_at TIMESTAMPTZ DEFAULT NOW()
+);

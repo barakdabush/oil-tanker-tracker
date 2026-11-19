@@ -7,7 +7,7 @@ from sqlalchemy import select, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.global_oil_features import OilMarketSnapshot, OilPrice
+from app.models.global_oil_features import OilMarketSnapshot, OilPrice, StraitRiskDaily
 from app.schemas.global_oil_features import MarketSnapshotResponse
 from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
 
@@ -21,13 +21,13 @@ async def get_global_oil_snapshots(
 ):
     """Get joined market snapshots + oil prices for ML analysis.
 
-    Returns daily rows with fleet/market features, PortWatch strait tankers, and Brent/WTI prices.
+    Returns daily rows with fleet/market features, PortWatch strait tankers,
+    Straits.live/GDELT risk signals, and Brent/WTI prices.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
 
-    # Fetch snapshots, oil prices, and PortWatch satellite-AIS counts separately
-    # and full-outer-merge by date so 90-day PortWatch & price history are always
-    # available even for dates prior to live AIS snapshot collection.
+    # Fetch snapshots, oil prices, PortWatch satellite-AIS counts, and external risk signals
+    # separately and full-outer-merge by date so multi-month history is available.
     snap_rows = (
         await db.execute(
             select(OilMarketSnapshot).where(OilMarketSnapshot.snapshot_date >= cutoff)
@@ -47,7 +47,11 @@ async def get_global_oil_snapshots(
                     SUM(n_tanker) FILTER (
                         WHERE portname NOT ILIKE '%Hormuz%'
                           AND portname NOT ILIKE '%Mandeb%'
-                    ) AS pw_other_tankers
+                    ) AS pw_other_tankers,
+                    SUM(n_tanker) FILTER (WHERE portname ILIKE '%Hormuz%') AS pw_hormuz_tankers,
+                    SUM(capacity_tanker) FILTER (WHERE portname ILIKE '%Hormuz%') AS pw_hormuz_cap_tanker,
+                    SUM(n_tanker) FILTER (WHERE portname ILIKE '%Mandeb%') AS pw_bab_tankers,
+                    SUM(n_tanker) FILTER (WHERE portname ILIKE '%Suez%') AS pw_suez_tankers
                 FROM portwatch_chokepoint_daily
                 WHERE date >= :cutoff
                 GROUP BY date
@@ -55,12 +59,21 @@ async def get_global_oil_snapshots(
             {"cutoff": cutoff},
         )
     ).all()
+    risk_rows = (
+        await db.execute(
+            select(StraitRiskDaily).where(StraitRiskDaily.date >= cutoff)
+        )
+    ).scalars().all()
 
     snaps_by_date = {s.snapshot_date: s for s in snap_rows}
     prices_by_date = {p.price_date: p for p in price_rows}
     pw_by_date = {r.date: r for r in pw_rows}
+    risk_by_date = {r.date: r for r in risk_rows}
     all_dates = sorted(
-        set(snaps_by_date.keys()) | set(prices_by_date.keys()) | set(pw_by_date.keys()),
+        set(snaps_by_date.keys())
+        | set(prices_by_date.keys())
+        | set(pw_by_date.keys())
+        | set(risk_by_date.keys()),
         reverse=True,
     )
 
@@ -69,6 +82,7 @@ async def get_global_oil_snapshots(
         s = snaps_by_date.get(d)
         p = prices_by_date.get(d)
         pw = pw_by_date.get(d)
+        rk = risk_by_date.get(d)
         pw_cape = (
             s.portwatch_cape_tankers
             if s and s.portwatch_cape_tankers is not None
@@ -110,6 +124,16 @@ async def get_global_oil_snapshots(
                 hormuz_bab_avg_transit_min=s.hormuz_bab_avg_transit_min if s else None,
                 portwatch_cape_tankers=pw_cape,
                 portwatch_other_straits_tankers=pw_other,
+                portwatch_hormuz_tankers=int(pw.pw_hormuz_tankers) if pw and pw.pw_hormuz_tankers is not None else None,
+                portwatch_hormuz_capacity_tanker=round(float(pw.pw_hormuz_cap_tanker), 1) if pw and pw.pw_hormuz_cap_tanker is not None else None,
+                portwatch_bab_el_mandeb_tankers=int(pw.pw_bab_tankers) if pw and pw.pw_bab_tankers is not None else None,
+                portwatch_suez_tankers=int(pw.pw_suez_tankers) if pw and pw.pw_suez_tankers is not None else None,
+                hormuz_crisis_pressure=rk.hormuz_crisis_pressure if rk else None,
+                hormuz_escalation_prob=rk.hormuz_escalation_prob if rk else None,
+                hormuz_stranded_vessels=rk.hormuz_stranded_vessels if rk else None,
+                hormuz_incidents_count=rk.hormuz_incidents_count if rk else None,
+                gdelt_strait_risk_vol=rk.gdelt_strait_risk_vol if rk else None,
+                gdelt_strait_tone=rk.gdelt_strait_tone if rk else None,
                 cargo_events_24h=s.cargo_events_24h if s else None,
                 estimated_volume_barrels_24h=s.estimated_volume_barrels_24h if s else None,
                 anchored_waiting_count=s.anchored_waiting_count if s else None,

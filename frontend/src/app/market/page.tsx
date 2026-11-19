@@ -53,6 +53,16 @@ const FEATURE_OPTIONS: { key: FeatureKey; label: string; color: string; group: F
   { key: "avg_chokepoint_transit_min", label: "All Chokepoints Avg Delay (min)", color: "#818cf8", group: "strait" },
   { key: "portwatch_cape_tankers", label: "Cape of Good Hope Tankers (PortWatch)", color: "#2dd4bf", group: "strait" },
   { key: "portwatch_other_straits_tankers", label: "Other Straits Tankers (PortWatch)", color: "#60a5fa", group: "strait" },
+  { key: "portwatch_hormuz_tankers", label: "Strait of Hormuz Tankers (PortWatch)", color: "#38bdf8", group: "strait" },
+  { key: "portwatch_hormuz_capacity_tanker", label: "Hormuz Tanker Capacity (PortWatch)", color: "#0284c7", group: "strait" },
+  { key: "portwatch_bab_el_mandeb_tankers", label: "Bab el-Mandeb Tankers (PortWatch)", color: "#fb7185", group: "strait" },
+  { key: "portwatch_suez_tankers", label: "Suez Canal Tankers (PortWatch)", color: "#c084fc", group: "strait" },
+  { key: "hormuz_crisis_pressure", label: "Hormuz Crisis Pressure Index (Straits.live)", color: "#ef4444", group: "strait" },
+  { key: "hormuz_escalation_prob", label: "Hormuz Escalation Prob % (Straits.live)", color: "#f97316", group: "strait" },
+  { key: "hormuz_stranded_vessels", label: "Persian Gulf Stranded Ships (Straits.live)", color: "#eab308", group: "strait" },
+  { key: "hormuz_incidents_count", label: "Hormuz Maritime Incidents (Straits.live)", color: "#f43f5e", group: "strait" },
+  { key: "gdelt_strait_risk_vol", label: "Hormuz & Red Sea News Risk Vol (GDELT)", color: "#f59e0b", group: "strait" },
+  { key: "gdelt_strait_tone", label: "Hormuz & Red Sea News Tone (GDELT)", color: "#a855f7", group: "strait" },
 ];
 
 function addDaysIso(isoDate: string, days: number): string {

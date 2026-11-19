@@ -46,6 +46,18 @@ class MarketSnapshotResponse(BaseModel):
     hormuz_bab_avg_transit_min: Optional[float] = None
     portwatch_cape_tankers: Optional[int] = None
     portwatch_other_straits_tankers: Optional[int] = None
+    portwatch_hormuz_tankers: Optional[int] = None
+    portwatch_hormuz_capacity_tanker: Optional[float] = None
+    portwatch_bab_el_mandeb_tankers: Optional[int] = None
+    portwatch_suez_tankers: Optional[int] = None
+
+    # Strait Risk & Geopolitical Signals (Straits.live + GDELT)
+    hormuz_crisis_pressure: Optional[float] = None
+    hormuz_escalation_prob: Optional[float] = None
+    hormuz_stranded_vessels: Optional[float] = None
+    hormuz_incidents_count: Optional[int] = None
+    gdelt_strait_risk_vol: Optional[float] = None
+    gdelt_strait_tone: Optional[float] = None
 
     # Cargo & Volume
     cargo_events_24h: Optional[int] = None
