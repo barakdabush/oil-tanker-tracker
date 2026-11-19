@@ -145,7 +145,24 @@ class StraitRiskFetcher:
             "timespan": "180d",
             "format": "json",
         }
-        resp = await client.get(GDELT_DOC_URL, params=params)
+        backoff_delays = (6.0, 15.0, 30.0)
+        resp = None
+        for attempt in range(len(backoff_delays) + 1):
+            resp = await client.get(GDELT_DOC_URL, params=params)
+            if resp.status_code != 429 or attempt == len(backoff_delays):
+                break
+            retry_after = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
+            try:
+                wait_s = min(max(float(retry_after), 1.0), 60.0) if retry_after else backoff_delays[attempt]
+            except (TypeError, ValueError):
+                wait_s = backoff_delays[attempt]
+            logger.info(
+                f"StraitRiskFetcher[{mode}] hit 429 rate limit; retrying in {wait_s:.1f}s "
+                f"(attempt {attempt + 1}/{len(backoff_delays)})"
+            )
+            await asyncio.sleep(wait_s)
+
+        assert resp is not None
         resp.raise_for_status()
         payload = resp.json()
         timeline = payload.get("timeline") or []
@@ -162,15 +179,19 @@ class StraitRiskFetcher:
         """Fetch all configured external strait risk series and upsert into strait_risk_daily."""
         by_date: dict[date, dict] = defaultdict(dict)
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        headers = {"User-Agent": "oil-tanker-tracker/1.0 (https://github.com/barakdabush/oil-tanker-tracker)"}
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
             tasks = [
-                ("straits_index", self._fetch_straits_index(client, by_date)),
-                ("straits_stranded", self._fetch_straits_stranded(client, by_date)),
-                ("straits_events", self._fetch_straits_events(client, by_date)),
-                ("gdelt_vol", self._fetch_gdelt_series(client, "timelinevol", "gdelt_strait_risk_vol", by_date)),
-                ("gdelt_tone", self._fetch_gdelt_series(client, "timelinetone", "gdelt_strait_tone", by_date)),
+                ("straits_index", self._fetch_straits_index(client, by_date), 0.0),
+                ("straits_stranded", self._fetch_straits_stranded(client, by_date), 0.0),
+                ("straits_events", self._fetch_straits_events(client, by_date), 0.0),
+                # GDELT DOC 2.0 enforces ~1 req / 5s per IP; space out volume and tone calls.
+                ("gdelt_vol", self._fetch_gdelt_series(client, "timelinevol", "gdelt_strait_risk_vol", by_date), 0.0),
+                ("gdelt_tone", self._fetch_gdelt_series(client, "timelinetone", "gdelt_strait_tone", by_date), 6.0),
             ]
-            for name, coro in tasks:
+            for name, coro, pre_delay in tasks:
+                if pre_delay > 0:
+                    await asyncio.sleep(pre_delay)
                 try:
                     await coro
                 except Exception as e:

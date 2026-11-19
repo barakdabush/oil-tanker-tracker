@@ -80,6 +80,7 @@ async def test_fetch_and_store_merges_straits_live_and_gdelt():
     with (
         patch("app.services.strait_risk_fetcher.httpx.AsyncClient", MockAsyncClient),
         patch("app.services.strait_risk_fetcher.async_session", return_value=MockAsyncSession()),
+        patch("app.services.strait_risk_fetcher.asyncio.sleep", new_callable=AsyncMock),
     ):
         fetcher = StraitRiskFetcher()
         count = await fetcher.fetch_and_store()
@@ -87,3 +88,36 @@ async def test_fetch_and_store_merges_straits_live_and_gdelt():
     assert count == 2
     assert mock_session.execute.called
     assert mock_session.commit.called
+
+
+@pytest.mark.asyncio
+async def test_gdelt_retries_on_429():
+    attempts = 0
+
+    async def mock_get(url, params=None, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        resp = MagicMock()
+        if attempts == 1:
+            resp.status_code = 429
+            resp.headers = {"Retry-After": "2"}
+            return resp
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "timeline": [{"data": [{"date": "20261118T000000Z", "value": 1.25}]}]
+        }
+        return resp
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(side_effect=mock_get)
+    from collections import defaultdict
+    by_date = defaultdict(dict)
+
+    with patch("app.services.strait_risk_fetcher.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        fetcher = StraitRiskFetcher()
+        await fetcher._fetch_gdelt_series(mock_client, "timelinevol", "gdelt_strait_risk_vol", by_date)
+
+    assert attempts == 2
+    mock_sleep.assert_awaited_once_with(2.0)
+    assert by_date[date(2026, 11, 18)]["gdelt_strait_risk_vol"] == 1.25
