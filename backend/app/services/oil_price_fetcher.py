@@ -31,7 +31,7 @@ BRENT_PRODUCT = "EPCBRENT"
 WTI_PRODUCT = "EPCWTI"
 
 RUN_INTERVAL_SECONDS = 60 * 60
-BACKFILL_DAYS = 90
+BACKFILL_DAYS = 400
 
 
 class OilPriceFetcher:
@@ -92,7 +92,7 @@ class OilPriceFetcher:
 
     async def _fetch_from_yahoo(self, days: int) -> dict[str, dict[str, float | None]]:
         """Fetch Brent and WTI futures from Yahoo Finance."""
-        range_str = "1mo" if days <= 30 else ("3mo" if days <= 90 else "1y")
+        range_str = "1mo" if days <= 30 else ("3mo" if days <= 90 else ("1y" if days <= 365 else "2y"))
         async with httpx.AsyncClient(timeout=20.0) as client:
             brent_prices, wti_prices = await asyncio.gather(
                 self._fetch_yahoo_symbol(client, YAHOO_BRENT_SYMBOL, range_str),
