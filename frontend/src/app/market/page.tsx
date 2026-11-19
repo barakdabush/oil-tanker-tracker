@@ -213,6 +213,9 @@ export default function MarketIntelligencePage() {
       rWti,
     };
   }).sort((a, b) => {
+    const aSufficient = a.nBrent >= 10 && a.rBrent != null ? 1 : 0;
+    const bSufficient = b.nBrent >= 10 && b.rBrent != null ? 1 : 0;
+    if (aSufficient !== bSufficient) return bSufficient - aSufficient;
     const absA = a.rBrent != null ? Math.abs(a.rBrent) : -1;
     const absB = b.rBrent != null ? Math.abs(b.rBrent) : -1;
     return absB - absA;
@@ -569,6 +572,8 @@ export default function MarketIntelligencePage() {
                       : "var(--accent-red)";
                   const barPct = row.rBrent != null ? Math.round(Math.abs(row.rBrent) * 100) : 0;
 
+                  const isLowSample = row.nBrent < 10;
+
                   return (
                     <tr
                       key={row.key}
@@ -576,6 +581,7 @@ export default function MarketIntelligencePage() {
                       style={{
                         cursor: "pointer",
                         background: isSelected ? "rgba(6, 182, 212, 0.08)" : undefined,
+                        opacity: isLowSample && !isSelected ? 0.55 : 1,
                       }}
                     >
                       <td style={{ fontWeight: isSelected ? 600 : 500, color: "var(--text-primary)" }}>
@@ -591,8 +597,12 @@ export default function MarketIntelligencePage() {
                         />
                         {row.label}
                       </td>
-                      <td style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                        {row.rBrent != null ? `n=${row.nBrent}` : row.nBrent < 3 ? `n=${row.nBrent}` : "const"}
+                      <td style={{ color: isLowSample ? "var(--accent-amber)" : "var(--text-muted)", fontSize: 12 }}>
+                        {row.rBrent != null
+                          ? `n=${row.nBrent}${isLowSample ? " (low)" : ""}`
+                          : row.nBrent < 3
+                          ? `n=${row.nBrent}`
+                          : "const"}
                       </td>
                       <td style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: rColor }}>
                         {formatR(row.rBrent)}
