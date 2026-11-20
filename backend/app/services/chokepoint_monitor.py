@@ -40,8 +40,8 @@ class ChokepointMonitor:
         """Check all vessel positions against chokepoint polygons."""
         start_time = time.time()
         stats = {"entries": 0, "exits": 0, "congestion": 0, "low": 0}
-        # Intentional bug to test auto-incident detector, triage, and fix PR pipeline
-        stats["typo_entries"] += 1
+        # Increment entries counter (was typo_entries)
+        stats["entries"] += 1
 
         async with async_session() as session:
             # Get all chokepoints
