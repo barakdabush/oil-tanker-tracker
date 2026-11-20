@@ -17,36 +17,46 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 REPO_ROOT = Path.cwd().resolve()
 MAX_FILE_CHARS = 24000
 MAX_CMD_CHARS = 12000
+LLM_WALL_TIMEOUT_SECONDS = 120
+AGENT_WALL_BUDGET_SECONDS = 20 * 60
 
 
-def _resolve_provider() -> tuple[str, str, str]:
+def _resolve_providers() -> list[tuple[str, str, str]]:
     explicit_url = os.getenv("AGENT_BASE_URL", "").strip()
     explicit_model = os.getenv("AGENT_MODEL", "").strip()
+    providers: list[tuple[str, str, str]] = []
 
     if os.getenv("OPENROUTER_API_KEY", "").strip():
-        return (
+        providers.append((
             explicit_url or "https://openrouter.ai/api/v1/chat/completions",
             os.getenv("OPENROUTER_API_KEY", "").strip(),
             explicit_model or "openrouter/free",
-        )
+        ))
     if os.getenv("GROQ_API_KEY", "").strip():
-        return (
+        providers.append((
             explicit_url or "https://api.groq.com/openai/v1/chat/completions",
             os.getenv("GROQ_API_KEY", "").strip(),
             explicit_model or "llama-3.3-70b-versatile",
-        )
+        ))
     if os.getenv("GEMINI_API_KEY", "").strip():
-        return (
+        providers.append((
             explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             os.getenv("GEMINI_API_KEY", "").strip(),
             explicit_model or "gemini-3.8-flash",
-        )
-    raise RuntimeError("Set one of OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY.")
+        ))
+    if not providers:
+        raise RuntimeError("Set one of OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY.")
+    return providers
+
+
+def _resolve_provider() -> tuple[str, str, str]:
+    return _resolve_providers()[0]
 
 
 def _safe_path(rel_path: str) -> Path:
@@ -277,7 +287,13 @@ def _dispatch(name: str, args: dict, allow_write: bool) -> str:
         return f"Tool error ({name}): {e}"
 
 
-def _chat(url: str, api_key: str, model: str, messages: list, tools: list) -> dict:
+def _post_json(url: str, headers: dict, payload: bytes) -> dict:
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _chat_once(url: str, api_key: str, model: str, messages: list, tools: list) -> dict:
     payload = json.dumps({
         "model": model,
         "messages": messages,
@@ -289,23 +305,49 @@ def _chat(url: str, api_key: str, model: str, messages: list, tools: list) -> di
         "Content-Type": "application/json",
         "User-Agent": "oil-tanker-tracker-agent",
     }
-    for attempt in range(5):
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    for attempt in range(3):
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_post_json, url, headers, payload)
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            res = future.result(timeout=LLM_WALL_TIMEOUT_SECONDS)
+            executor.shutdown(wait=False)
+            return res
+        except FuturesTimeoutError:
+            executor.shutdown(wait=False)
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise RuntimeError(f"LLM request exceeded {LLM_WALL_TIMEOUT_SECONDS}s wall-clock timeout")
         except urllib.error.HTTPError as e:
+            executor.shutdown(wait=False)
             body = e.read().decode("utf-8", errors="replace")
-            if e.code in (429, 500, 502, 503, 504) and attempt < 4:
+            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
                 time.sleep(2 ** (attempt + 1))
                 continue
             raise RuntimeError(f"LLM HTTP {e.code}: {body[:500]}")
         except Exception as e:
-            if attempt < 4:
+            executor.shutdown(wait=False)
+            if attempt < 2:
                 time.sleep(2 ** (attempt + 1))
                 continue
             raise RuntimeError(f"LLM request failed: {e}")
     raise RuntimeError("Exceeded LLM retries")
+
+
+def _chat(providers: list[tuple[str, str, str]], messages: list, tools: list) -> tuple[dict, str]:
+    last_err: Exception | None = None
+    for idx, (url, api_key, model) in enumerate(providers):
+        try:
+            return _chat_once(url, api_key, model, messages, tools), model
+        except Exception as e:
+            last_err = e
+            if idx + 1 < len(providers):
+                next_url, _, next_model = providers[idx + 1]
+                print(
+                    f"Provider {model} ({url}) failed: {e}; falling back to {next_model} ({next_url})",
+                    file=sys.stderr,
+                )
+    raise RuntimeError(str(last_err) if last_err else "No LLM providers available")
 
 
 def main():
@@ -316,18 +358,23 @@ def main():
     parser.add_argument("--max-turns", type=int, default=None)
     args = parser.parse_args()
 
-    url, api_key, model = _resolve_provider()
+    providers = _resolve_providers()
     allow_write = args.mode == "fix"
     tools = READ_TOOLS + (WRITE_TOOLS if allow_write else [])
     max_turns = args.max_turns or (35 if allow_write else 20)
 
     prompt_text = Path(args.prompt_file).read_text(encoding="utf-8")
     messages: list[dict] = [{"role": "user", "content": prompt_text}]
-    print(f"Running {args.mode} agent with model={model} via {url}", file=sys.stderr)
+    url, _, model = providers[0]
+    print(f"Running {args.mode} agent with model={model} via {url} ({len(providers)} provider(s) configured)", file=sys.stderr)
 
+    deadline = time.monotonic() + AGENT_WALL_BUDGET_SECONDS
     final_text = ""
     for turn in range(1, max_turns + 1):
-        resp = _chat(url, api_key, model, messages, tools)
+        if time.monotonic() >= deadline:
+            print(f"Stopping at turn {turn}: reached {AGENT_WALL_BUDGET_SECONDS}s wall-clock budget.", file=sys.stderr)
+            break
+        resp, used_model = _chat(providers, messages, tools)
         msg = resp["choices"][0]["message"]
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
@@ -346,7 +393,7 @@ def main():
                 "tool_call_id": tc["id"],
                 "content": result,
             })
-        print(f"Turn {turn}: executed {len(tool_calls)} tool(s)", file=sys.stderr)
+        print(f"Turn {turn} ({used_model}): executed {len(tool_calls)} tool(s)", file=sys.stderr)
 
     Path(args.output).write_text(final_text, encoding="utf-8")
 
