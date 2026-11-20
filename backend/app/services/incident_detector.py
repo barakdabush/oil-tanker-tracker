@@ -272,9 +272,9 @@ class IncidentDetector:
         return group_log_rows(rows)
 
     async def _collect_anomaly_signals(self, session) -> list[Signal]:
-        from app.api.system import get_system_health  # local import avoids circular deps
+        from app.api.system import _build_system_health  # local import avoids circular deps
 
-        health = await get_system_health(db=session)
+        health = await _build_system_health(db=session, check_backend=True)
         signals: list[Signal] = []
         for p in health.get("pipelines", []):
             if p["name"] not in WATCHED_PIPELINES or p["status"] not in ("stale", "empty"):
@@ -357,6 +357,15 @@ class IncidentDetector:
                 if issued_24h >= settings.INCIDENT_MAX_ISSUES_PER_DAY:
                     logger.info("Incident detector: daily issue cap reached, deferring new issues.")
                     break
+                existing_number = await self._client.find_open_issue_by_fingerprint(inc.fingerprint)
+                if existing_number:
+                    inc.status = "issued"
+                    inc.github_issue_number = existing_number
+                    inc.issue_created_at = inc.issue_created_at or now
+                    inc.last_notified_at = now
+                    inc.occurrences_at_notify = inc.occurrences
+                    logger.info(f"Incident detector: linked existing GitHub issue #{existing_number} ({inc.kind}).")
+                    continue
                 number = await self._client.create_issue(
                     title=f"[incident] {sanitize_title(inc.title)}",
                     body=build_issue_body(inc, settings.DASHBOARD_URL),

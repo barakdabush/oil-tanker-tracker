@@ -28,6 +28,21 @@ async def _fetch_websocket_health() -> dict:
     return {"reachable": False, "data": None}
 
 
+async def _fetch_backend_health() -> bool:
+    """Probe the backend API /api/health endpoint when called from an external monitor."""
+    urls = ["http://backend:8000/api/health", "http://localhost:8000/api/health"]
+    async with httpx.AsyncClient(timeout=2.5) as client:
+        for url in urls:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+
 def _freshness_status(latest: Optional[datetime], stale_after_hours: float) -> str:
     if latest is None:
         return "empty"
@@ -40,6 +55,11 @@ def _freshness_status(latest: Optional[datetime], stale_after_hours: float) -> s
 @router.get("/health")
 async def get_system_health(db: AsyncSession = Depends(get_db)):
     """Return container health, AIS source stats, and data pipeline freshness."""
+    return await _build_system_health(db, check_backend=False)
+
+
+async def _build_system_health(db: AsyncSession, check_backend: bool = False) -> dict:
+    """Compute container health, AIS source stats, and data pipeline freshness."""
     now = datetime.now(timezone.utc)
 
     # 1. Database check
@@ -197,11 +217,32 @@ async def get_system_health(db: AsyncSession = Depends(get_db)):
     ws_stats = log_stats.get("websocket", {"last_log_at": None, "errors_1h": 0, "warnings_1h": 0})
     backend_stats = log_stats.get("backend", {"last_log_at": None, "errors_1h": 0, "warnings_1h": 0})
 
+    backend_reachable = (await _fetch_backend_health()) if check_backend else True
+    if not db_ok or not backend_reachable:
+        backend_status = "down"
+    elif backend_stats["errors_1h"] > 0:
+        backend_status = "degraded"
+    else:
+        backend_status = "healthy"
+
+    scheduler_last_dt = None
+    if scheduler_stats["last_log_at"]:
+        scheduler_last_dt = datetime.fromisoformat(scheduler_stats["last_log_at"])
+        if scheduler_last_dt.tzinfo is None:
+            scheduler_last_dt = scheduler_last_dt.replace(tzinfo=timezone.utc)
+    scheduler_stale = scheduler_last_dt is None or (now - scheduler_last_dt) > timedelta(minutes=20)
+    if scheduler_stale:
+        scheduler_status = "down"
+    elif scheduler_stats["errors_1h"] > 0:
+        scheduler_status = "degraded"
+    else:
+        scheduler_status = "healthy"
+
     services = [
         {
             "name": "backend",
             "label": "Backend API",
-            "status": "healthy" if db_ok and backend_stats["errors_1h"] == 0 else ("degraded" if db_ok else "down"),
+            "status": backend_status,
             "errors_1h": backend_stats["errors_1h"],
             "warnings_1h": backend_stats["warnings_1h"],
             "last_log_at": backend_stats["last_log_at"],
@@ -218,10 +259,7 @@ async def get_system_health(db: AsyncSession = Depends(get_db)):
         {
             "name": "scheduler",
             "label": "Scheduler Worker",
-            "status": (
-                "degraded" if scheduler_stats["errors_1h"] > 0
-                else ("healthy" if scheduler_stats["last_log_at"] else "unknown")
-            ),
+            "status": scheduler_status,
             "errors_1h": scheduler_stats["errors_1h"],
             "warnings_1h": scheduler_stats["warnings_1h"],
             "last_log_at": scheduler_stats["last_log_at"],
