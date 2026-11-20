@@ -127,13 +127,17 @@ class _FakeSession:
 
 
 class _FakeGitHubClient:
-    def __init__(self, state, closed_at):
+    def __init__(self, state, closed_at, existing_open_issue=None):
         self._status = (state, closed_at)
+        self._existing_open_issue = existing_open_issue
         self.created_issues = []
         self.comments = []
 
     async def get_issue_status(self, _number):
         return self._status
+
+    async def find_open_issue_by_fingerprint(self, _fingerprint):
+        return self._existing_open_issue
 
     async def create_issue(self, title, body, labels):
         self.created_issues.append((title, body, labels))
@@ -208,4 +212,79 @@ async def test_notify_reopens_when_error_recurs_after_close():
     assert inc.issue_created_at is None
     assert inc.occurrences == 7
     assert inc.occurrences_at_notify == 0
+
+
+@pytest.mark.asyncio
+async def test_notify_links_existing_open_issue_from_other_tier():
+    now = datetime(2026, 11, 20, 8, 0, tzinfo=timezone.utc)
+    inc = Incident(
+        fingerprint="fp-watchdog-opened",
+        kind="service_down",
+        service="backend",
+        title="[backend] service is down",
+        sample_message="Backend down",
+        logger_name=None,
+        first_seen=now - timedelta(minutes=20),
+        last_seen=now,
+        occurrences=2,
+        occurrences_at_notify=0,
+        status="open",
+    )
+    client = _FakeGitHubClient("open", None, existing_open_issue=42)
+    detector = IncidentDetector()
+    detector._client = client
+    await detector._notify(_FakeSession([inc]), now)
+
+    assert inc.status == "issued"
+    assert inc.github_issue_number == 42
+    assert client.created_issues == []
+
+
+@pytest.mark.asyncio
+async def test_build_system_health_detects_down_backend_and_stale_scheduler(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.api import system as system_api
+
+    class _FakeRow:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class _FakeExecResult:
+        def __init__(self, first_row=None, all_rows=None):
+            self._first = first_row
+            self._all = all_rows or []
+
+        def first(self):
+            return self._first
+
+        def all(self):
+            return self._all
+
+    now = datetime.now(timezone.utc)
+    stale_time = now - timedelta(minutes=45)
+    # 1: SELECT 1, 2-9: 8 pipeline queries, 10: log_stats
+    results = [
+        _FakeExecResult(),
+        _FakeExecResult(first_row=_FakeRow(latest_time=now, count_24h=10)),
+        _FakeExecResult(first_row=_FakeRow(latest_time=now, cnt=5)),
+        _FakeExecResult(first_row=_FakeRow(latest_date=now.date(), latest_fetch=now, cnt=10)),
+        _FakeExecResult(first_row=_FakeRow(latest_date=now.date(), latest_fetch=now, cnt=10)),
+        _FakeExecResult(first_row=_FakeRow(latest_fetch=now, cnt=10)),
+        _FakeExecResult(first_row=_FakeRow(latest_at=now, cnt=1)),
+        _FakeExecResult(first_row=_FakeRow(latest_at=now, cnt=1)),
+        _FakeExecResult(first_row=_FakeRow(latest_date=now.date(), cnt=1)),
+        _FakeExecResult(all_rows=[_FakeRow(service="scheduler", last_log_at=stale_time, errors_1h=0, warnings_1h=0)]),
+    ]
+    db = SimpleNamespace(execute=AsyncMock(side_effect=results))
+    monkeypatch.setattr(system_api, "_fetch_websocket_health", AsyncMock(return_value={"reachable": True, "data": {}}))
+    monkeypatch.setattr(system_api, "_fetch_backend_health", AsyncMock(return_value=False))
+
+    health = await system_api._build_system_health(db, check_backend=True)
+    by_name = {s["name"]: s["status"] for s in health["services"]}
+    assert by_name["backend"] == "down"
+    assert by_name["scheduler"] == "down"
+    assert by_name["websocket"] == "healthy"
+    assert by_name["db"] == "healthy"
+
 

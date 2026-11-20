@@ -1,0 +1,104 @@
+name: External Uptime Probe (Tier 3)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check production health endpoint
+        id: probe
+        env:
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          URL="${HEALTHCHECK_URL:-}"
+          if [ -z "$URL" ] && [ -n "$SERVER_HOST" ]; then
+            URL="http://${SERVER_HOST}:8000/api/health"
+          fi
+          if [ -z "$URL" ]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "No HEALTHCHECK_URL var or SERVER_HOST secret configured; skipping."
+            exit 0
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+          echo "target=$URL" >> "$GITHUB_OUTPUT"
+
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 8 "$URL" >/dev/null 2>&1; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+              echo "Attempt $attempt succeeded."
+              exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 20s..."
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update deduplicated incident issue
+        if: steps.probe.outputs.skipped != 'true' && steps.probe.outputs.healthy == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const crypto = require("crypto");
+            const fp = crypto.createHash("sha256").update("infra|host_unreachable").digest("hex").slice(0, 32);
+            const { owner, repo } = context.repo;
+            const now = new Date();
+
+            const issues = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              labels: "auto-incident",
+              per_page: 100,
+            });
+            const existing = issues.data.find((i) => !i.pull_request && (i.body || "").includes(fp));
+
+            if (existing) {
+              const comments = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: existing.number,
+                per_page: 20,
+              });
+              const lastBotComment = [...comments.data].reverse().find((c) => (c.body || "").includes("External uptime probe"));
+              const sixHoursMs = 6 * 60 * 60 * 1000;
+              if (!lastBotComment || (now - new Date(lastBotComment.created_at)) >= sixHoursMs) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: existing.number,
+                  body: `🔁 External uptime probe: production host is still unreachable at ${now.toISOString()}.`,
+                });
+              }
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: "[incident] [infra] Production host unreachable",
+              labels: ["auto-incident", "svc:infra", "kind:service_down"],
+              body: [
+                "## 🚨 External Uptime Probe Incident (Tier 3)",
+                "",
+                "| Field | Value |",
+                "|---|---|",
+                "| **Kind** | `service_down` |",
+                "| **Service** | `infra` |",
+                `| **Detected at** | ${now.toISOString()} |`,
+                `| **Fingerprint** | \`${fp}\` |`,
+                "",
+                "The production `/api/health` endpoint failed 3 consecutive external checks spaced 20s apart.",
+                "",
+                "---",
+                "_Opened by `.github/workflows/uptime-probe.yml`, independent of the VPS, Docker, and database._",
+              ].join("\n"),
+            });

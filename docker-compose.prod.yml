@@ -70,11 +70,23 @@ services:
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
       EIA_API_KEY: ${EIA_API_KEY}
+    command: python worker.py
+
+  incident-monitor:
+    image: ghcr.io/${USER_REPO_LOWERCASE}-backend:latest
+    logging: *default-logging
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
+      DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       GITHUB_INCIDENT_TOKEN: ${GITHUB_INCIDENT_TOKEN:-}
       GITHUB_REPO: ${GITHUB_REPO:-barakdabush/oil-tanker-tracker}
       AUTO_INCIDENTS_ENABLED: ${AUTO_INCIDENTS_ENABLED:-true}
       DASHBOARD_URL: ${DASHBOARD_URL:-http://${SERVER_IP}:3000}
-    command: python worker.py
+    command: python incident_worker.py
 
   websocket:
     image: ghcr.io/${USER_REPO_LOWERCASE}-backend:latest

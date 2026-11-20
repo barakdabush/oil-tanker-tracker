@@ -64,3 +64,23 @@ class GitHubIssuesClient:
                 logger.warning(f"GitHub add_comment failed: HTTP {resp.status_code}")
                 return False
             return True
+
+    async def find_open_issue_by_fingerprint(self, fingerprint: str) -> Optional[int]:
+        """Return an open auto-incident issue number matching fingerprint, if any."""
+        if not fingerprint:
+            return None
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{self.repo}/issues",
+                params={"state": "open", "labels": "auto-incident", "per_page": 100},
+            )
+            if resp.status_code >= 300:
+                logger.warning(f"GitHub list_issues failed: HTTP {resp.status_code}")
+                return None
+            for issue in resp.json():
+                if issue.get("pull_request"):
+                    continue
+                if fingerprint in (issue.get("body") or ""):
+                    return int(issue["number"])
+            return None
+

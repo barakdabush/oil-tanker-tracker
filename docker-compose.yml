@@ -68,6 +68,22 @@ services:
       - ./backend:/app
     command: python worker.py
 
+  incident-monitor:
+    build: ./backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
+      DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
+      GITHUB_INCIDENT_TOKEN: ${GITHUB_INCIDENT_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-barakdabush/oil-tanker-tracker}
+      AUTO_INCIDENTS_ENABLED: ${AUTO_INCIDENTS_ENABLED:-false}
+    volumes:
+      - ./backend:/app
+    command: python incident_worker.py
+
   websocket:
     build: ./backend
     restart: always
