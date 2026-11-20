@@ -71,6 +71,17 @@ class MarketSnapshotResponse(BaseModel):
     in_transit_laden_count: Optional[int] = None
     in_transit_ballast_count: Optional[int] = None
 
+    # News & Event Intelligence + AIS x News Interactions
+    news_event_count_24h: Optional[int] = None
+    news_max_rank_24h: Optional[float] = None
+    news_net_impact_1d: Optional[float] = None
+    news_net_impact_7d: Optional[float] = None
+    news_supply_risk_score: Optional[float] = None
+    news_sanctions_pressure_7d: Optional[float] = None
+    news_opec_signal_7d: Optional[float] = None
+    news_hormuz_x_transit_drop: Optional[float] = None
+    news_sanctions_x_dark_fleet: Optional[float] = None
+
     # Oil Prices (from oil_prices table join)
     brent_close_usd: Optional[float] = None
     wti_close_usd: Optional[float] = None

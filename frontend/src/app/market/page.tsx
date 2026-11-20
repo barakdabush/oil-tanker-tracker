@@ -20,7 +20,7 @@ type FeatureKey = Exclude<keyof MarketSnapshotResponse, "snapshot_date" | "brent
 type TargetMode = "level" | "pct_change";
 type LagDays = 0 | 1 | 3 | 7;
 
-type FeatureGroup = "fleet" | "strait";
+type FeatureGroup = "fleet" | "strait" | "news";
 
 const FEATURE_OPTIONS: { key: FeatureKey; label: string; color: string; group: FeatureGroup }[] = [
   { key: "total_active_vessels", label: "Total Active Vessels", color: "#06b6d4", group: "fleet" },
@@ -63,6 +63,15 @@ const FEATURE_OPTIONS: { key: FeatureKey; label: string; color: string; group: F
   { key: "hormuz_incidents_count", label: "Hormuz Maritime Incidents (Straits.live)", color: "#f43f5e", group: "strait" },
   { key: "gdelt_strait_risk_vol", label: "Hormuz & Red Sea News Risk Vol (GDELT)", color: "#f59e0b", group: "strait" },
   { key: "gdelt_strait_tone", label: "Hormuz & Red Sea News Tone (GDELT)", color: "#a855f7", group: "strait" },
+  { key: "news_net_impact_1d", label: "News Net Impact (1d Decayed)", color: "#22c55e", group: "news" },
+  { key: "news_net_impact_7d", label: "News Net Impact (7d Decayed)", color: "#10b981", group: "news" },
+  { key: "news_supply_risk_score", label: "News Supply Risk Score", color: "#ef4444", group: "news" },
+  { key: "news_sanctions_pressure_7d", label: "News Sanctions Pressure (7d)", color: "#f97316", group: "news" },
+  { key: "news_opec_signal_7d", label: "News OPEC+ Signal (7d)", color: "#3b82f6", group: "news" },
+  { key: "news_event_count_24h", label: "News Ranked Events (24h)", color: "#06b6d4", group: "news" },
+  { key: "news_max_rank_24h", label: "News Max Event Rank (24h)", color: "#f59e0b", group: "news" },
+  { key: "news_hormuz_x_transit_drop", label: "Hormuz News x Transit Drop (AIS Confirm)", color: "#f43f5e", group: "news" },
+  { key: "news_sanctions_x_dark_fleet", label: "Sanctions News x Dark Fleet Gaps", color: "#a855f7", group: "news" },
 ];
 
 function addDaysIso(isoDate: string, days: number): string {
@@ -470,6 +479,7 @@ export default function MarketIntelligencePage() {
                   [
                     { id: "all", label: "All Features" },
                     { id: "strait", label: "Strait Traffic & Delays" },
+                    { id: "news", label: "News Intel" },
                   ] as const
                 ).map((grp) => (
                   <button

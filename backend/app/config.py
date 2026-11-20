@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     INCIDENT_COMMENT_INTERVAL_HOURS: int = 6
     DASHBOARD_URL: str = ""  # e.g. http://<server-ip>:3000, linked from issues
 
+    # News & Event Intelligence pipeline (free sources by default; LLM is strictly optional)
+    NEWS_FETCH_ENABLED: bool = True
+    NEWS_FETCH_INTERVAL_MINUTES: int = 15
+    NEWS_LLM_ENABLED: bool = False
+    NEWS_LLM_PROVIDER: str = "openai"  # "openai" | "gemini"
+    NEWS_LLM_API_KEY: str = ""
+    NEWS_LLM_MODEL: str = ""  # defaults to gpt-4o-mini (openai) or gemini-2.0-flash (gemini)
+    NEWS_LLM_BASE_URL: str = ""  # optional custom OpenAI-compatible endpoint
+    NEWS_LLM_MIN_RANK: float = 45.0
+    NEWS_LLM_MAX_EVENTS_PER_DAY: int = 30
+
     class Config:
         env_file = ".env"
 

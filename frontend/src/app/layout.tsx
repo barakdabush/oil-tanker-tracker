@@ -56,6 +56,10 @@ export default function RootLayout({
                 <span className="nav-icon">🌍</span>
                 <span>Market</span>
               </Link>
+              <Link href="/news" className="nav-link" id="nav-news">
+                <span className="nav-icon">📰</span>
+                <span>News Intel</span>
+              </Link>
               <Link href="/alerts" className="nav-link" id="nav-alerts">
                 <span className="nav-icon">🚨</span>
                 <span>Alerts</span>

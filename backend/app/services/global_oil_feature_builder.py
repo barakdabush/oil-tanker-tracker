@@ -7,6 +7,7 @@ Runs daily at ~00:15 UTC via the worker.
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone, timedelta, date
 
@@ -16,6 +17,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.database import async_session
 from app.models import Vessel, AISGap, STSEvent, ChokepointTransit, CargoEvent
 from app.models.global_oil_features import OilMarketSnapshot
+from app.models.news import NewsEvent, NewsImpactPrior
+from app.services.news_clusterer import EVENT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +316,16 @@ class GlobalOilFeatureBuilder:
                 else None
             )
 
+            # --- News & Event Intelligence + AIS x News Interactions (strictly <= day_end) ---
+            news_feats = await self._compute_news_features(
+                session=session,
+                target_date=target_date,
+                day_start=day_start,
+                day_end=day_end,
+                hormuz_transits=hormuz_count,
+                new_ais_gaps=new_gaps,
+            )
+
             # --- Upsert snapshot ---
             values = {
                 "snapshot_date": target_date,
@@ -352,6 +365,7 @@ class GlobalOilFeatureBuilder:
                 "floating_storage_count": floating_storage_count,
                 "in_transit_laden_count": in_transit_laden_count,
                 "in_transit_ballast_count": in_transit_ballast_count,
+                **news_feats,
             }
 
             stmt = pg_insert(OilMarketSnapshot).values(**values)
@@ -368,3 +382,160 @@ class GlobalOilFeatureBuilder:
             f"active={total_active}, transit={vessels_in_transit}, dark={dark_count}, "
             f"STS={sts_count}, chokepoints={chokepoint_total}, cargo={cargo_count}"
         )
+
+    async def _compute_news_features(
+        self,
+        session,
+        target_date: date,
+        day_start: datetime,
+        day_end: datetime,
+        hormuz_transits: int,
+        new_ais_gaps: int,
+    ) -> dict:
+        """Compute daily decayed news pressure and AIS x News interaction features (zero look-ahead)."""
+        empty = {
+            "news_event_count_24h": None,
+            "news_max_rank_24h": None,
+            "news_net_impact_1d": None,
+            "news_net_impact_7d": None,
+            "news_supply_risk_score": None,
+            "news_sanctions_pressure_7d": None,
+            "news_opec_signal_7d": None,
+            "news_hormuz_x_transit_drop": None,
+            "news_sanctions_x_dark_fleet": None,
+        }
+        try:
+            lookback_start = day_end - timedelta(days=14)
+            res = await session.execute(
+                select(NewsEvent).where(
+                    and_(
+                        NewsEvent.first_seen_at >= lookback_start,
+                        NewsEvent.first_seen_at < day_end,
+                    )
+                )
+            )
+            events = [
+                e for e in (res.scalars().all() or [])
+                if hasattr(e, "first_seen_at") and isinstance(e.first_seen_at, datetime)
+            ]
+        except Exception:
+            return empty
+
+        if not events:
+            return empty
+
+        # Walk-forward priors strictly on or before target_date (anti-leakage)
+        priors_1d: dict[str, float] = {}
+        priors_7d: dict[str, float] = {}
+        half_lives: dict[str, float] = {}
+        try:
+            latest_prior_date = (
+                await session.execute(
+                    select(func.max(NewsImpactPrior.as_of_date)).where(
+                        and_(
+                            NewsImpactPrior.as_of_date <= target_date,
+                            NewsImpactPrior.symbol == "BZ=F",
+                        )
+                    )
+                )
+            ).scalar()
+            if isinstance(latest_prior_date, date):
+                p_rows = (
+                    await session.execute(
+                        select(NewsImpactPrior).where(
+                            and_(
+                                NewsImpactPrior.as_of_date == latest_prior_date,
+                                NewsImpactPrior.symbol == "BZ=F",
+                                NewsImpactPrior.region_scope == "global",
+                            )
+                        )
+                    )
+                ).scalars().all()
+                for pr in p_rows or []:
+                    if pr.horizon == "24h" and pr.shrunk_weight is not None:
+                        priors_1d[pr.event_type] = float(pr.shrunk_weight)
+                    elif pr.horizon == "7d" and pr.shrunk_weight is not None:
+                        priors_7d[pr.event_type] = float(pr.shrunk_weight)
+                    if pr.half_life_hours:
+                        half_lives[pr.event_type] = float(pr.half_life_hours)
+        except Exception:
+            pass
+
+        events_24h = [e for e in events if e.first_seen_at >= day_start]
+        count_24h = len(events_24h)
+        max_rank_24h = round(max((float(e.prior_rank_score or 0.0) for e in events_24h), default=0.0), 2)
+
+        net_1d = 0.0
+        net_7d = 0.0
+        supply_risk = 0.0
+        sanctions_7d = 0.0
+        opec_7d = 0.0
+        hormuz_news = 0.0
+
+        supply_cats = {"chokepoint_attack_blockade", "refinery_pipeline_outage", "geopolitical_escalation"}
+
+        for ev in events:
+            age_h = max(0.0, (day_end - ev.first_seen_at).total_seconds() / 3600.0)
+            cat = ev.event_type
+            default_hl = EVENT_CATEGORIES.get(cat, EVENT_CATEGORIES["geopolitical_escalation"]).default_half_life_hours
+            hl = max(6.0, half_lives.get(cat, default_hl))
+            decay = math.exp(-math.log(2.0) * age_h / hl)
+
+            rank_w = float(ev.prior_rank_score or 0.0) / 100.0
+            direction = float(ev.effective_direction or 0.0)
+
+            # Weight by learned shrunk_weight magnitude if available, else 1.0 prior
+            w1 = max(0.25, abs(priors_1d.get(cat, 0.0))) if cat in priors_1d else 1.0
+            w7 = max(0.25, abs(priors_7d.get(cat, 0.0))) if cat in priors_7d else 1.0
+
+            net_1d += direction * rank_w * w1 * decay
+            net_7d += direction * rank_w * w7 * math.exp(-math.log(2.0) * age_h / max(hl, 120.0))
+
+            if cat in supply_cats and age_h <= 72.0:
+                supply_risk += max(0.0, direction) * rank_w * decay
+            if cat == "sanctions_enforcement" and age_h <= 168.0:
+                sanctions_7d += rank_w * decay
+            if cat == "opec_production_decision" and age_h <= 168.0:
+                opec_7d += direction * rank_w * decay
+            if "Strait of Hormuz" in (ev.chokepoints or []) and age_h <= 72.0:
+                hormuz_news += max(0.0, direction) * rank_w * decay
+
+        # AIS x News confirmation interactions
+        # Compare today's Hormuz transits against trailing 14d baseline if available
+        hormuz_baseline = None
+        try:
+            hb = (
+                await session.execute(
+                    select(func.avg(OilMarketSnapshot.strait_of_hormuz_transits)).where(
+                        and_(
+                            OilMarketSnapshot.snapshot_date >= target_date - timedelta(days=14),
+                            OilMarketSnapshot.snapshot_date < target_date,
+                        )
+                    )
+                )
+            ).scalar()
+            if isinstance(hb, (int, float)) and hb > 0:
+                hormuz_baseline = float(hb)
+        except Exception:
+            pass
+
+        if hormuz_baseline and hormuz_baseline > 0:
+            transit_drop_pct = max(0.0, (hormuz_baseline - hormuz_transits) / hormuz_baseline)
+            hormuz_x_drop = round(hormuz_news * transit_drop_pct * 100.0, 3)
+        else:
+            hormuz_x_drop = 0.0
+
+        sanctions_x_dark = round(sanctions_7d * math.log1p(max(0, new_ais_gaps)), 3)
+
+        return {
+            "news_event_count_24h": count_24h,
+            "news_max_rank_24h": max_rank_24h,
+            "news_net_impact_1d": round(net_1d, 4),
+            "news_net_impact_7d": round(net_7d, 4),
+            "news_supply_risk_score": round(supply_risk, 4),
+            "news_sanctions_pressure_7d": round(sanctions_7d, 4),
+            "news_opec_signal_7d": round(opec_7d, 4),
+            "news_hormuz_x_transit_drop": hormuz_x_drop,
+            "news_sanctions_x_dark_fleet": sanctions_x_dark,
+        }
+
