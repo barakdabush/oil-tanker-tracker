@@ -7,16 +7,18 @@ and upserts them into the oil_prices table.
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone, timedelta, date
 
 import httpx
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import settings
 from app.database import async_session
 from app.models.global_oil_features import OilPrice
+from app.models.news import OilPriceIntraday
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +34,47 @@ WTI_PRODUCT = "EPCWTI"
 
 RUN_INTERVAL_SECONDS = 60 * 60
 BACKFILL_DAYS = 400
+INTRADAY_INITIAL_RANGE = "730d"
+INTRADAY_INCREMENTAL_RANGE = "30d"
+
+
+def compute_rolling_daily_vol(closes: list[float], window_bars: int = 20 * 23) -> list[float | None]:
+    """Compute trailing daily realized volatility (log-return std scaled to 1 day) from hourly closes.
+
+    Uses ~23 trading hours per day for Brent/WTI futures. Returns None until at least 24 returns exist.
+    """
+    n = len(closes)
+    if n == 0:
+        return []
+    log_rets: list[float | None] = [None] * n
+    for i in range(1, n):
+        if closes[i] and closes[i - 1] and closes[i] > 0 and closes[i - 1] > 0:
+            log_rets[i] = math.log(closes[i] / closes[i - 1])
+
+    vols: list[float | None] = [None] * n
+    scale = math.sqrt(23.0)
+    for i in range(n):
+        start = max(1, i - window_bars + 1)
+        window = [r for r in log_rets[start : i + 1] if r is not None]
+        if len(window) < 24:
+            continue
+        mean = sum(window) / len(window)
+        var = sum((r - mean) ** 2 for r in window) / max(1, len(window) - 1)
+        vol = math.sqrt(var) * scale
+        vols[i] = round(vol, 6) if vol > 0 else None
+    return vols
 
 
 class OilPriceFetcher:
-    """Fetches daily oil prices from Yahoo Finance with EIA fallback."""
+    """Fetches daily and 1h intraday oil prices from Yahoo Finance with EIA daily fallback."""
 
     async def run_periodic(self):
-        """Run oil price fetching periodically every 4 hours."""
+        """Run oil price fetching periodically every hour (daily + 1h intraday bars)."""
         await asyncio.sleep(30)
         while True:
             try:
                 await self.fetch_prices()
+                await self.fetch_intraday_prices()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -207,3 +239,113 @@ class OilPriceFetcher:
             f"Oil price fetch ({source}) complete in {duration:.1f}s — "
             f"{upserted} records upserted. Latest data date: {latest_date}"
         )
+
+    async def _fetch_yahoo_intraday_symbol(
+        self, client: httpx.AsyncClient, symbol: str, range_str: str
+    ) -> list[dict]:
+        """Fetch 1h OHLCV bars for a Yahoo Finance symbol and compute 20d realized volatility."""
+        url = YAHOO_CHART_URL.format(symbol=symbol)
+        resp = await client.get(
+            url,
+            params={"range": range_str, "interval": "1h"},
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        result_list = data.get("chart", {}).get("result") or []
+        if not result_list:
+            return []
+
+        chart = result_list[0]
+        timestamps = chart.get("timestamp") or []
+        quotes = (chart.get("indicators", {}).get("quote") or [{}])[0]
+        opens = quotes.get("open") or []
+        highs = quotes.get("high") or []
+        lows = quotes.get("low") or []
+        closes = quotes.get("close") or []
+        volumes = quotes.get("volume") or []
+
+        raw_bars: list[dict] = []
+        for idx, ts in enumerate(timestamps):
+            close = closes[idx] if idx < len(closes) else None
+            if ts is None or close is None:
+                continue
+            bar_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+            raw_bars.append({
+                "symbol": symbol,
+                "bar_time": bar_time,
+                "interval": "1h",
+                "open": round(float(opens[idx]), 4) if idx < len(opens) and opens[idx] is not None else None,
+                "high": round(float(highs[idx]), 4) if idx < len(highs) and highs[idx] is not None else None,
+                "low": round(float(lows[idx]), 4) if idx < len(lows) and lows[idx] is not None else None,
+                "close": round(float(close), 4),
+                "volume": float(volumes[idx]) if idx < len(volumes) and volumes[idx] is not None else None,
+            })
+
+        # Deduplicate by bar_time preserving chronological order
+        by_time: dict[datetime, dict] = {b["bar_time"]: b for b in raw_bars}
+        ordered = [by_time[t] for t in sorted(by_time.keys())]
+        vols = compute_rolling_daily_vol([b["close"] for b in ordered])
+        now = datetime.now(timezone.utc)
+        for bar, vol in zip(ordered, vols):
+            bar["realized_vol_20d"] = vol
+            bar["fetched_at"] = now
+        return ordered
+
+    async def fetch_intraday_prices(self, range_str: str | None = None) -> int:
+        """Fetch and upsert 1h intraday Brent & WTI bars into oil_prices_intraday."""
+        start_time = time.time()
+        if range_str is None:
+            async with async_session() as session:
+                existing_cnt = (
+                    await session.execute(select(func.count()).select_from(OilPriceIntraday))
+                ).scalar() or 0
+            range_str = INTRADAY_INITIAL_RANGE if existing_cnt < 500 else INTRADAY_INCREMENTAL_RANGE
+
+        all_bars: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                brent_bars, wti_bars = await asyncio.gather(
+                    self._fetch_yahoo_intraday_symbol(client, YAHOO_BRENT_SYMBOL, range_str),
+                    self._fetch_yahoo_intraday_symbol(client, YAHOO_WTI_SYMBOL, range_str),
+                )
+            all_bars = brent_bars + wti_bars
+        except Exception as e:
+            logger.warning(f"Yahoo Finance 1h intraday oil fetch failed: {type(e).__name__}: {e}")
+            return 0
+
+        if not all_bars:
+            return 0
+
+        # Batch upsert in chunks of 500 to keep parameter counts well below asyncpg limits
+        chunk_size = 500
+        async with async_session() as session:
+            for i in range(0, len(all_bars), chunk_size):
+                chunk = all_bars[i : i + chunk_size]
+                stmt = pg_insert(OilPriceIntraday).values(chunk)
+                upsert = stmt.on_conflict_do_update(
+                    index_elements=["symbol", "bar_time"],
+                    set_={
+                        "open": stmt.excluded.open,
+                        "high": stmt.excluded.high,
+                        "low": stmt.excluded.low,
+                        "close": stmt.excluded.close,
+                        "volume": stmt.excluded.volume,
+                        "realized_vol_20d": func.coalesce(
+                            stmt.excluded.realized_vol_20d,
+                            OilPriceIntraday.realized_vol_20d,
+                        ),
+                        "fetched_at": stmt.excluded.fetched_at,
+                    },
+                )
+                await session.execute(upsert)
+            await session.commit()
+
+        duration = time.time() - start_time
+        logger.info(
+            f"Intraday 1h oil price fetch ({range_str}) complete in {duration:.1f}s — "
+            f"{len(all_bars)} bars upserted."
+        )
+        return len(all_bars)
+

@@ -250,6 +250,15 @@ export interface MarketSnapshotResponse {
   floating_storage_count?: number | null;
   in_transit_laden_count?: number | null;
   in_transit_ballast_count?: number | null;
+  news_event_count_24h?: number | null;
+  news_max_rank_24h?: number | null;
+  news_net_impact_1d?: number | null;
+  news_net_impact_7d?: number | null;
+  news_supply_risk_score?: number | null;
+  news_sanctions_pressure_7d?: number | null;
+  news_opec_signal_7d?: number | null;
+  news_hormuz_x_transit_drop?: number | null;
+  news_sanctions_x_dark_fleet?: number | null;
   brent_close_usd: number | null;
   wti_close_usd: number | null;
 }
@@ -265,4 +274,109 @@ export interface PortCongestionItem {
   avg_wait_hours: number | null;
   utilization_pct: number | null;
 }
+
+// ─── News & Event Intelligence Types ────────────────────────────────────────
+
+export interface NewsArticleItem {
+  id: number;
+  source: string;
+  source_tier: number;
+  title: string;
+  url: string;
+  published_at: string;
+  gdelt_tone: number | null;
+}
+
+export interface EventPriceReaction {
+  symbol: string;
+  price_t0: number | null;
+  ret_pre_24h: number | null;
+  ret_pre_4h: number | null;
+  ret_1h: number | null;
+  ret_4h: number | null;
+  ret_24h: number | null;
+  ret_3d: number | null;
+  ret_7d: number | null;
+  ret_14d: number | null;
+  z_1h: number | null;
+  z_4h: number | null;
+  z_24h: number | null;
+  z_3d: number | null;
+  z_7d: number | null;
+  z_14d: number | null;
+  max_computed_horizon: string | null;
+}
+
+export interface NewsEventResponse {
+  id: number;
+  headline: string;
+  summary: string | null;
+  event_type: string;
+  event_type_label: string;
+  chokepoints: string[];
+  entities: string[];
+  primary_region: string;
+  first_seen_at: string;
+  market_aligned_at: string;
+  article_count: number;
+  distinct_sources: number;
+  max_source_tier: number;
+  novelty_score: number;
+  effective_direction: number;
+  effective_severity: number;
+  prior_rank_score: number;
+  learned_impact_score: number | null;
+  llm_enriched: boolean;
+  llm_confidence: number | null;
+  llm_estimated_mbpd: number | null;
+  llm_rationale: string | null;
+  brent_impact: EventPriceReaction | null;
+  wti_impact: EventPriceReaction | null;
+  articles: NewsArticleItem[];
+}
+
+export interface HorizonStatCell {
+  horizon: string;
+  sample_count: number;
+  mean_ret_pct: number | null;
+  median_ret_pct: number | null;
+  mean_z: number | null;
+  hit_rate_pct: number | null;
+  t_stat: number | null;
+  shrunk_weight: number;
+}
+
+export interface ImpactMatrixRow {
+  event_type: string;
+  event_type_label: string;
+  total_events: number;
+  peak_horizon: string | null;
+  peak_mean_ret_pct: number | null;
+  peak_hit_rate_pct: number | null;
+  peak_t_stat: number | null;
+  persistence_label: string;
+  half_life_hours: number | null;
+  horizons: Record<string, HorizonStatCell>;
+}
+
+export interface ImpactMatrixResponse {
+  symbol: string;
+  as_of_date: string | null;
+  horizon_order: string[];
+  rows: ImpactMatrixRow[];
+}
+
+export interface NewsSummaryResponse {
+  events_24h: number;
+  high_impact_events_24h: number;
+  total_events_30d: number;
+  net_pressure_24h: number;
+  pressure_label: string;
+  top_event_24h: NewsEventResponse | null;
+  strongest_learned_driver: ImpactMatrixRow | null;
+  llm_enabled: boolean;
+  llm_provider: string | null;
+  scoring_mode: string;
+}
+
 

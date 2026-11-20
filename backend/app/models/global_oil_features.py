@@ -48,6 +48,16 @@ class OilMarketSnapshot(Base):
     floating_storage_count = Column(Integer)
     in_transit_laden_count = Column(Integer)
     in_transit_ballast_count = Column(Integer)
+    # News & Event Intelligence + AIS x News interaction features
+    news_event_count_24h = Column(Integer)
+    news_max_rank_24h = Column(Float)
+    news_net_impact_1d = Column(Float)
+    news_net_impact_7d = Column(Float)
+    news_supply_risk_score = Column(Float)
+    news_sanctions_pressure_7d = Column(Float)
+    news_opec_signal_7d = Column(Float)
+    news_hormuz_x_transit_drop = Column(Float)
+    news_sanctions_x_dark_fleet = Column(Float)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))
 
 
