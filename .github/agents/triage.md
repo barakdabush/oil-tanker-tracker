@@ -18,9 +18,14 @@ data-freshness anomaly. Your job is to analyze it **read-only** and write a tria
    - `P1`: user-facing outage or data pipeline fully stopped
    - `P2`: one feature or pipeline broken or degraded
    - `P3`: noisy or cosmetic, no data loss
-4. Decide if it is **agent-fixable**: a contained code bug where a small, testable change in
-   `backend/` or `frontend/` fixes it. It is **not** agent-fixable if it needs secrets, infra or
-   server changes, an upstream API is down or rate limiting, or a product decision is needed.
+4. Decide if it is **agent-fixable**:
+   - Set `fixable: true` for normal, contained code bugs in `backend/` or `frontend/` (e.g., `AttributeError`, `KeyError`, `TypeError`, bad model/column names, missing null checks, query/serialization bugs, small UI/API fixes).
+   - Set `fixable: false` **only** for really complicated or dangerous issues:
+     - Database schema migrations (`backend/migrations/`) or destructive data changes
+     - Security, authentication, permissions, or secrets/credentials handling
+     - Infrastructure, Docker, CI/CD, or deployment config (`.github/`, `Dockerfile*`, `docker-compose*`, `ops/`)
+     - Upstream API outages, rate limits, missing secrets, or product decisions
+     - Large multi-file architectural rewrites
 
 ## Output format (Markdown, concise)
 ### Summary
