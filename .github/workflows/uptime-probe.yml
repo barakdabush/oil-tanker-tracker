@@ -18,9 +18,10 @@ jobs:
           HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
         run: |
-          URL="${HEALTHCHECK_URL:-}"
-          if [ -z "$URL" ] && [ -n "$SERVER_HOST" ]; then
-            URL="http://${SERVER_HOST}:8000/api/health"
+          URL=$(printf '%s' "${HEALTHCHECK_URL:-}" | tr -d '[:space:]')
+          HOST=$(printf '%s' "${SERVER_HOST:-}" | tr -d '[:space:]')
+          if [ -z "$URL" ] && [ -n "$HOST" ]; then
+            URL="http://${HOST}:8000/api/health"
           fi
           if [ -z "$URL" ]; then
             echo "skipped=true" >> "$GITHUB_OUTPUT"
@@ -28,7 +29,6 @@ jobs:
             exit 0
           fi
           echo "skipped=false" >> "$GITHUB_OUTPUT"
-          echo "target=$URL" >> "$GITHUB_OUTPUT"
 
           for attempt in 1 2 3; do
             if curl -fsS --max-time 8 "$URL" >/dev/null 2>&1; then
