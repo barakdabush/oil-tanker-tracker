@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     NEWS_LLM_BASE_URL: str = ""  # optional custom OpenAI-compatible endpoint
     NEWS_LLM_MIN_RANK: float = 45.0
     NEWS_LLM_MAX_EVENTS_PER_DAY: int = 30
+    AGENT_BRIEFING_TOKEN: str = ""  # optional bearer token for POST /api/agent-intel/briefings
 
     class Config:
         env_file = ".env"
