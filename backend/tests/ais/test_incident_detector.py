@@ -288,3 +288,22 @@ async def test_build_system_health_detects_down_backend_and_stale_scheduler(monk
     assert by_name["db"] == "healthy"
 
 
+def test_warning_logs_grouped_and_thresholded():
+    rows = [
+        SimpleNamespace(
+            level="WARNING",
+            service="scheduler",
+            logger_name="app.services.news_fetcher",
+            message="NewsFetcher GDELT[chokepoints] rate-limited (429)",
+        )
+        for _ in range(4)
+    ]
+    signals = group_log_rows(rows)
+    assert len(signals) == 1
+    assert signals[0].kind == "log_warning"
+    assert signals[0].count == 4
+    assert not should_open_issue("log_warning", 4, 3, 2, 5)
+    assert should_open_issue("log_warning", 5, 3, 2, 5)
+
+
+

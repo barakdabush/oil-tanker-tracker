@@ -101,8 +101,19 @@ def sanitize_title(text: str, max_len: int = 200) -> str:
     return t[:max_len]
 
 
-def should_open_issue(kind: str, occurrences: int, min_occurrences: int, min_anomaly_runs: int) -> bool:
-    threshold = min_occurrences if kind == "log_error" else min_anomaly_runs
+def should_open_issue(
+    kind: str,
+    occurrences: int,
+    min_occurrences: int,
+    min_anomaly_runs: int,
+    min_warning_occurrences: int = 5,
+) -> bool:
+    if kind == "log_error":
+        threshold = min_occurrences
+    elif kind == "log_warning":
+        threshold = min_warning_occurrences
+    else:
+        threshold = min_anomaly_runs
     return occurrences >= threshold
 
 
@@ -131,19 +142,21 @@ class Signal:
 
 
 def group_log_rows(rows: list) -> list[Signal]:
-    """Group SystemLog-like rows (service, logger_name, message) into signals."""
+    """Group SystemLog-like rows (level, service, logger_name, message) into signals."""
     grouped: dict[str, Signal] = {}
     for r in rows:
         logger_name = r.logger_name or ""
         if logger_name.startswith(_SELF_LOGGERS):
             continue
+        level = (getattr(r, "level", None) or "ERROR").upper()
+        kind = "log_warning" if level == "WARNING" else "log_error"
         norm = normalize_message(r.message)
-        fp = fingerprint_for("log_error", r.service, logger_name, norm)
+        fp = fingerprint_for(kind, r.service, logger_name, norm)
         sig = grouped.get(fp)
         if sig is None:
             grouped[fp] = Signal(
                 fingerprint=fp,
-                kind="log_error",
+                kind=kind,
                 service=r.service,
                 title=f"[{r.service}] {norm[:180]}",
                 sample=r.message,
@@ -242,7 +255,7 @@ class IncidentDetector:
             seen = {s.fingerprint for s in anomaly_signals}
             reset_q = (
                 update(Incident)
-                .where(Incident.status == "open", Incident.kind != "log_error")
+                .where(Incident.status == "open", Incident.kind.notin_(("log_error", "log_warning")))
                 .values(occurrences=0)
             )
             if seen:
@@ -257,7 +270,7 @@ class IncidentDetector:
             logger.info(f"Incident detector: processed {len(signals)} signal(s).")
 
     async def _collect_log_signals(self, session, now: datetime) -> list[Signal]:
-        q = select(SystemLog).where(SystemLog.level.in_(("ERROR", "CRITICAL")))
+        q = select(SystemLog).where(SystemLog.level.in_(("WARNING", "ERROR", "CRITICAL")))
         if self._last_log_id is None:
             q = q.where(SystemLog.created_at >= now - timedelta(minutes=INITIAL_LOOKBACK_MINUTES))
         else:
@@ -350,8 +363,11 @@ class IncidentDetector:
         for inc in incidents:
             if inc.status == "open":
                 if not should_open_issue(
-                    inc.kind, inc.occurrences,
-                    settings.INCIDENT_MIN_OCCURRENCES, settings.INCIDENT_MIN_ANOMALY_RUNS,
+                    inc.kind,
+                    inc.occurrences,
+                    settings.INCIDENT_MIN_OCCURRENCES,
+                    settings.INCIDENT_MIN_ANOMALY_RUNS,
+                    settings.INCIDENT_MIN_WARNING_OCCURRENCES,
                 ):
                     continue
                 if issued_24h >= settings.INCIDENT_MAX_ISSUES_PER_DAY:
