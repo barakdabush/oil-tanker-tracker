@@ -384,3 +384,22 @@ async def test_rebuild_events_from_raw_preserves_llm_enrichment():
     assert added_events[0].distinct_sources == 2
     assert added_events[0].llm_rationale == "Direct threat to Strait of Hormuz flows."
 
+
+@pytest.mark.asyncio
+async def test_news_fetcher_429_cooldown_and_retry_after():
+    from datetime import timedelta
+    import httpx
+    from app.services.news_fetcher import NewsFetcher
+
+    fetcher = NewsFetcher()
+    now = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
+    req = httpx.Request("GET", "https://api.gdeltproject.org/api/v2/doc/doc")
+    resp_429 = httpx.Response(429, headers={"Retry-After": "4500"}, request=req)
+    exc = httpx.HTTPStatusError("429 Too Many Requests", request=req, response=resp_429)
+
+    assert not fetcher._is_in_cooldown("gdelt:chokepoints", now)
+    fetcher._handle_fetch_error("gdelt:chokepoints", "NewsFetcher GDELT[chokepoints]", exc, now)
+    assert fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=70))
+    assert not fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=80))
+
+
