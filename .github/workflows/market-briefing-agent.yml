@@ -1,0 +1,85 @@
+name: AI Market Briefing Agent
+
+# Periodically fetches unified analytics, market intel, and ranked news from
+# /api/agent-intel/context, runs an AI analyst (reusing OPENROUTER_API_KEY,
+# GROQ_API_KEY, or GEMINI_API_KEY), writes a summary to the GitHub Actions
+# Job Summary, and stores the briefing back in the app via POST /api/agent-intel/briefings.
+
+on:
+  schedule:
+    # Twice daily: 07:00 UTC (Europe open) and 19:00 UTC (US close)
+    - cron: "0 7,19 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Lookback window in days (1-90)"
+        required: false
+        default: "14"
+      post_issue:
+        description: "Also publish the briefing as a GitHub Issue"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: ai-market-briefing
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run AI Market Briefing Agent
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          AGENT_BRIEFING_TOKEN: ${{ secrets.AGENT_BRIEFING_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+          AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
+          LOOKBACK_DAYS: ${{ inputs.days || '14' }}
+        run: |
+          python3 .github/agents/run_market_briefing.py \
+            --days "$LOOKBACK_DAYS" \
+            --top-events 15 \
+            --prompt-file .github/agents/market_analyst.md \
+            --output "$RUNNER_TEMP/market_briefing.md" \
+            --post-briefing
+
+      - name: Publish to GitHub Actions Job Summary
+        run: |
+          cat "$RUNNER_TEMP/market_briefing.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Optionally publish as GitHub Issue
+        if: ${{ inputs.post_issue == true }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/market_briefing.md`, 'utf8')
+              .replace(/@/g, '@\u200b')
+              .slice(0, 60000);
+            const dateStr = new Date().toISOString().slice(0, 10);
+            await github.rest.issues.create({
+              ...context.repo,
+              title: `[market-briefing] Oil & Tanker Intelligence — ${dateStr}`,
+              body,
+            });

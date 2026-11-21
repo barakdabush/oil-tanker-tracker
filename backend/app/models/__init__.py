@@ -19,6 +19,7 @@ from app.models.news import (  # noqa: F401
     NewsArticle,
     NewsEventPriceImpact,
     NewsImpactPrior,
+    AIMarketBriefing,
 )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "NewsArticle",
     "NewsEventPriceImpact",
     "NewsImpactPrior",
+    "AIMarketBriefing",
 ]
