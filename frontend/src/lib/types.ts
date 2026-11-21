@@ -379,4 +379,18 @@ export interface NewsSummaryResponse {
   scoring_mode: string;
 }
 
+export interface AIMarketBriefingResponse {
+  id: number;
+  window_days: number;
+  model_used: string | null;
+  market_bias: "bullish" | "bearish" | "neutral" | "mixed";
+  confidence: number | null;
+  executive_summary: string;
+  key_points: string[];
+  watch_items: string[];
+  full_markdown: string | null;
+  created_at: string;
+}
+
+
 

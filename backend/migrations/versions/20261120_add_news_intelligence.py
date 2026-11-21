@@ -154,7 +154,25 @@ def upgrade() -> None:
         )
     """)
 
-    # 6. Extend oil_market_snapshots with daily news + AIS x News interaction features
+    # 6. Stored AI agent market briefings
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS ai_market_briefings (
+            id BIGSERIAL PRIMARY KEY,
+            window_days INT NOT NULL DEFAULT 14,
+            model_used VARCHAR(128),
+            market_bias VARCHAR(24) NOT NULL DEFAULT 'neutral',
+            confidence FLOAT,
+            executive_summary TEXT NOT NULL,
+            key_points JSONB NOT NULL DEFAULT '[]'::jsonb,
+            watch_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+            full_markdown TEXT,
+            context_snapshot JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS idx_ai_market_briefings_created ON ai_market_briefings (created_at DESC)")
+
+    # 7. Extend oil_market_snapshots with daily news + AIS x News interaction features
     op.execute("""
         ALTER TABLE oil_market_snapshots
             ADD COLUMN IF NOT EXISTS news_event_count_24h INT,
@@ -182,6 +200,7 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS news_hormuz_x_transit_drop,
             DROP COLUMN IF EXISTS news_sanctions_x_dark_fleet
     """)
+    op.execute("DROP TABLE IF EXISTS ai_market_briefings")
     op.execute("DROP TABLE IF EXISTS news_impact_priors")
     op.execute("DROP TABLE IF EXISTS news_event_price_impacts")
     op.execute("DROP TABLE IF EXISTS news_articles")

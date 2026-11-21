@@ -384,3 +384,46 @@ async def test_rebuild_events_from_raw_preserves_llm_enrichment():
     assert added_events[0].distinct_sources == 2
     assert added_events[0].llm_rationale == "Direct threat to Strait of Hormuz flows."
 
+
+def test_agent_intel_routes_and_briefing_parser():
+    """Verify /api/agent-intel endpoints register and GitHub Action briefing parser works cleanly."""
+    import importlib.util
+    from pathlib import Path
+    from app.main import app
+
+    agent_routes = [r.path for r in app.routes if "/agent-intel" in r.path]
+    assert "/api/agent-intel/context" in agent_routes
+    assert "/api/agent-intel/briefings" in agent_routes
+    assert "/api/agent-intel/briefings/latest" in agent_routes
+
+    script_path = Path(__file__).resolve().parents[3] / ".github" / "agents" / "run_market_briefing.py"
+    spec = importlib.util.spec_from_file_location("run_market_briefing", script_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    raw_llm = (
+        "### Executive Summary\n\nBrent rose +1.8% after Hormuz tensions.\n\n"
+        'BRIEFING_JSON: {"market_bias": "bullish", "confidence": 0.78, '
+        '"executive_summary": "Brent rose +1.8% after Hormuz tensions.", '
+        '"key_points": ["Hormuz transits down 14%", "Brent +1.4% at +4h"], '
+        '"watch_items": ["Monitor 24h Hormuz AIS recovery"]}'
+    )
+    md, structured = mod.parse_briefing_output(raw_llm)
+    assert "BRIEFING_JSON" not in md
+    assert structured["market_bias"] == "bullish"
+    assert structured["confidence"] == 0.78
+    assert len(structured["key_points"]) == 2
+    assert len(structured["watch_items"]) == 1
+
+    # Fallback when no LLM key is set must still produce valid markdown & structured payload
+    fb_md, fb_struct = mod.build_deterministic_fallback({
+        "analytics": {"total_vessels": 420, "in_transit": 250, "at_port": 170, "currently_dark": 12, "ongoing_sts": 3},
+        "market_intel": {"prices": {"brent_usd": 76.5, "wti_usd": 72.1, "brent_change_1d_pct": 1.2}},
+        "news_intel": {"events_24h": 8, "high_impact_events_24h": 2, "net_pressure_24h": 0.85, "pressure_label": "Bullish Supply Risk", "top_events": []},
+    })
+    assert "Executive Summary" in fb_md
+    assert fb_struct["market_bias"] == "bullish"
+    assert len(fb_struct["key_points"]) >= 2
+
+
