@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     GITHUB_INCIDENT_TOKEN: str = ""  # fine-grained PAT, this repo only, Issues: read & write
     GITHUB_REPO: str = "barakdabush/oil-tanker-tracker"
     INCIDENT_MIN_OCCURRENCES: int = 3  # log errors needed before opening an issue
+    INCIDENT_MIN_WARNING_OCCURRENCES: int = 5  # repeated warnings needed before opening an issue
     INCIDENT_MIN_ANOMALY_RUNS: int = 2  # consecutive detector runs an anomaly must persist
     INCIDENT_MAX_ISSUES_PER_DAY: int = 5
     INCIDENT_COMMENT_INTERVAL_HOURS: int = 6

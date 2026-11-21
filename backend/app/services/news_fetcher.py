@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 CLUSTER_WINDOW_HOURS = 36
 CLUSTER_SIMILARITY_THRESHOLD = 0.36
 NOVELTY_LOOKBACK_HOURS = 72
+GDELT_MIN_INTERVAL_SECONDS = 30 * 60
+RATE_LIMIT_COOLDOWN_SECONDS = 60 * 60
 
 STRAITS_EVENTS_URL = "https://straits.live/api/v1/events?limit=200"
 GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -190,6 +192,49 @@ def parse_rss_xml(xml_text: str, source_name: str, source_tier: int) -> list[Raw
 class NewsFetcher:
     """Periodic free-source oil & maritime news fetcher and event clusterer."""
 
+    def __init__(self):
+        self._source_cooldowns: dict[str, datetime] = {}
+        self._last_gdelt_fetch: Optional[datetime] = None
+
+    def _is_in_cooldown(self, source_key: str, now: datetime) -> bool:
+        until = self._source_cooldowns.get(source_key)
+        return until is not None and now < until
+
+    def _set_cooldown(self, source_key: str, now: datetime, retry_after_s: Optional[float] = None) -> None:
+        seconds = max(float(RATE_LIMIT_COOLDOWN_SECONDS), retry_after_s or 0.0)
+        seconds = min(seconds, 4 * 3600.0)
+        self._source_cooldowns[source_key] = now + timedelta(seconds=seconds)
+
+    @staticmethod
+    def _parse_retry_after(resp: httpx.Response) -> Optional[float]:
+        raw = resp.headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return max(1.0, float(raw.strip()))
+        except ValueError:
+            return None
+
+    async def _get_with_rate_limit_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        params: Optional[dict] = None,
+        backoff_delays: tuple[float, ...] = (10.0, 20.0, 40.0),
+    ) -> httpx.Response:
+        resp: Optional[httpx.Response] = None
+        for attempt in range(len(backoff_delays) + 1):
+            resp = await client.get(url, params=params)
+            if resp.status_code != 429 or attempt == len(backoff_delays):
+                break
+            retry_after = self._parse_retry_after(resp)
+            delay = min(max(retry_after or backoff_delays[attempt], 5.0), 60.0)
+            await asyncio.sleep(delay)
+        assert resp is not None
+        resp.raise_for_status()
+        return resp
+
     async def run_periodic(self):
         if not settings.NEWS_FETCH_ENABLED:
             logger.info("NewsFetcher disabled (NEWS_FETCH_ENABLED=false).")
@@ -210,13 +255,15 @@ class NewsFetcher:
     async def _fetch_rss_feed(
         self, client: httpx.AsyncClient, source_name: str, tier: int, url: str
     ) -> list[RawNewsItem]:
-        resp = await client.get(url)
-        resp.raise_for_status()
+        resp = await self._get_with_rate_limit_retry(
+            client, url, backoff_delays=(5.0, 15.0)
+        )
         return parse_rss_xml(resp.text, source_name, tier)
 
     async def _fetch_straits_events(self, client: httpx.AsyncClient) -> list[RawNewsItem]:
-        resp = await client.get(STRAITS_EVENTS_URL)
-        resp.raise_for_status()
+        resp = await self._get_with_rate_limit_retry(
+            client, STRAITS_EVENTS_URL, backoff_delays=(5.0, 15.0)
+        )
         payload = resp.json()
         items: list[RawNewsItem] = []
         for ev in payload.get("events") or []:
@@ -251,16 +298,9 @@ class NewsFetcher:
             "format": "json",
             "sort": "DateDesc",
         }
-        backoff_delays = (6.0, 15.0, 30.0)
-        resp = None
-        for attempt in range(len(backoff_delays) + 1):
-            resp = await client.get(GDELT_DOC_URL, params=params)
-            if resp.status_code != 429 or attempt == len(backoff_delays):
-                break
-            await asyncio.sleep(backoff_delays[attempt])
-
-        assert resp is not None
-        resp.raise_for_status()
+        resp = await self._get_with_rate_limit_retry(
+            client, GDELT_DOC_URL, params=params, backoff_delays=(10.0, 20.0, 40.0)
+        )
         data = resp.json()
         items: list[RawNewsItem] = []
         for art in data.get("articles") or []:
@@ -296,9 +336,18 @@ class NewsFetcher:
             ))
         return items
 
+    def _handle_fetch_error(self, source_key: str, label: str, exc: Exception, now: datetime) -> None:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+            retry_after = self._parse_retry_after(exc.response)
+            self._set_cooldown(source_key, now, retry_after)
+            logger.warning(f"{label} rate-limited (429); cooling down for >=60m.")
+        else:
+            logger.warning(f"{label} failed: {type(exc).__name__}: {exc}")
+
     async def fetch_and_store(self, timespan: str = "3d", include_rss: bool = True) -> dict[str, int]:
         """Fetch free news sources, deduplicate articles, and cluster into canonical events."""
         raw_items: list[RawNewsItem] = []
+        now = datetime.now(timezone.utc)
         headers = {
             "User-Agent": "oil-tanker-tracker/1.0 (https://github.com/barakdabush/oil-tanker-tracker)",
             "Accept": "application/rss+xml, application/xml, application/json, text/xml, */*",
@@ -306,25 +355,40 @@ class NewsFetcher:
 
         async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
             if include_rss:
-                for source_name, tier, url in RSS_FEEDS:
+                for idx, (source_name, tier, url) in enumerate(RSS_FEEDS):
+                    key = f"rss:{source_name}"
+                    if self._is_in_cooldown(key, now):
+                        continue
+                    if idx > 0:
+                        await asyncio.sleep(0.5)
                     try:
                         fetched = await self._fetch_rss_feed(client, source_name, tier, url)
                         raw_items.extend(fetched)
                     except Exception as e:
-                        logger.warning(f"NewsFetcher RSS[{source_name}] failed: {type(e).__name__}: {e}")
+                        self._handle_fetch_error(key, f"NewsFetcher RSS[{source_name}]", e, now)
 
-                try:
-                    raw_items.extend(await self._fetch_straits_events(client))
-                except Exception as e:
-                    logger.warning(f"NewsFetcher[Straits.live] failed: {type(e).__name__}: {e}")
+                if not self._is_in_cooldown("straits", now):
+                    try:
+                        raw_items.extend(await self._fetch_straits_events(client))
+                    except Exception as e:
+                        self._handle_fetch_error("straits", "NewsFetcher[Straits.live]", e, now)
 
-            for idx, (qname, qtext) in enumerate(GDELT_QUERIES):
-                if idx > 0:
-                    await asyncio.sleep(6.0)
-                try:
-                    raw_items.extend(await self._fetch_gdelt_articles(client, qtext, timespan=timespan))
-                except Exception as e:
-                    logger.warning(f"NewsFetcher GDELT[{qname}] failed: {type(e).__name__}: {e}")
+            gdelt_due = (
+                self._last_gdelt_fetch is None
+                or (now - self._last_gdelt_fetch).total_seconds() >= GDELT_MIN_INTERVAL_SECONDS
+            )
+            if gdelt_due:
+                self._last_gdelt_fetch = now
+                for idx, (qname, qtext) in enumerate(GDELT_QUERIES):
+                    key = f"gdelt:{qname}"
+                    if self._is_in_cooldown(key, now):
+                        continue
+                    if idx > 0:
+                        await asyncio.sleep(10.0)
+                    try:
+                        raw_items.extend(await self._fetch_gdelt_articles(client, qtext, timespan=timespan))
+                    except Exception as e:
+                        self._handle_fetch_error(key, f"NewsFetcher GDELT[{qname}]", e, now)
 
         stats = await self.ingest_items(raw_items)
         logger.info(
