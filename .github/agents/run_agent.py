@@ -71,6 +71,8 @@ def _assert_writable(rel_path: str) -> Path:
     norm = p.relative_to(REPO_ROOT).as_posix()
     if not (norm.startswith("backend/") or norm.startswith("frontend/")):
         raise ValueError(f"Write outside backend/ or frontend/ is forbidden: {norm}")
+    if norm.startswith("backend/migrations/"):
+        raise ValueError(f"Write to database migrations is forbidden: {norm}")
     name = p.name
     if re.match(r"^(Dockerfile|docker-compose|\.env)", name, re.I):
         raise ValueError(f"Write to protected file is forbidden: {norm}")

@@ -1,7 +1,8 @@
-name: Incident Triage Agent
+name: Incident Triage & Auto-Fix Agent
 
-# Runs when the incident detector opens an `auto-incident` issue.
-# Uses OpenRouter / Groq / Gemini via .github/agents/run_agent.py (read-only).
+# Runs when an `auto-incident` issue is opened (or manually via workflow_dispatch).
+# Combines triage + fix in a single LLM session to save tokens & rate-limit quota.
+# Blocks complicated/dangerous changes (`needs-human`); otherwise tests & opens a PR.
 
 on:
   issues:
@@ -9,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: "Issue number to (re)triage"
+        description: "Issue number to triage and auto-fix"
         required: true
 
 concurrency:
@@ -22,36 +23,43 @@ permissions:
   pull-requests: write
 
 jobs:
-  triage:
+  triage-and-fix:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.issue.labels.*.name, 'auto-incident')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    outputs:
-      fixable: ${{ steps.post.outputs.fixable }}
-      issue_number: ${{ steps.post.outputs.issue_number }}
+    timeout-minutes: 30
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      PYTHONPATH: backend
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt pytest pytest-asyncio
 
       - name: Build prompt
+        id: ctx
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body \
             --jq '"Title: " + .title + "\n\n" + .body' > "$RUNNER_TEMP/issue.md"
+          TITLE=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title | tr -cd '[:alnum:] _-' | cut -c1-60)
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           {
-            cat .github/agents/triage.md
+            cat .github/agents/triage_and_fix.md
             echo
             echo "<incident_issue number=\"$ISSUE_NUMBER\">"
             cat "$RUNNER_TEMP/issue.md"
@@ -59,8 +67,7 @@ jobs:
             echo "</incident_issue>"
           } > "$RUNNER_TEMP/prompt.md"
 
-      - name: Run Triage Agent (read-only)
-        id: agent
+      - name: Run Unified Triage & Fix Agent
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -69,17 +76,16 @@ jobs:
           AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
         run: |
           python3 .github/agents/run_agent.py \
-            --mode triage \
+            --mode fix \
             --prompt-file "$RUNNER_TEMP/prompt.md" \
             --output "$RUNNER_TEMP/summary.md"
 
-      - name: Post triage comment and labels
-        id: post
+      - name: Parse triage verdict
+        id: verdict
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const issue_number = Number(process.env.ISSUE_NUMBER);
             let summary = '';
             try {
               summary = fs.readFileSync(`${process.env.RUNNER_TEMP}/summary.md`, 'utf8');
@@ -98,28 +104,138 @@ jobs:
             } else {
               core.warning('No TRIAGE_RESULT line found; defaulting to needs-human.');
             }
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/clean_summary.md`, summary);
+            core.setOutput('severity', severity);
+            core.setOutput('fixable', fixable ? 'true' : 'false');
 
+      - name: Enforce safety & complexity gates
+        id: diff
+        run: |
+          git add -A
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.txt"
+          echo "Changed files:"; cat "$RUNNER_TEMP/changed.txt"
+          if [ ! -s "$RUNNER_TEMP/changed.txt" ] || [ "${{ steps.verdict.outputs.fixable }}" != "true" ]; then
+            git reset -q HEAD -- . || true
+            git checkout -- . || true
+            git clean -fd || true
+            echo "has_pr_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if grep -Ev '^(backend|frontend)/' "$RUNNER_TEMP/changed.txt" \
+             || grep -Ei '(^|/)(Dockerfile[^/]*|docker-compose[^/]*|\.env[^/]*)$' "$RUNNER_TEMP/changed.txt" \
+             || grep -E '^backend/migrations/' "$RUNNER_TEMP/changed.txt"; then
+            echo "::error::Agent modified files outside the safe allowlist (or touched migrations)."
+            exit 1
+          fi
+
+          FILE_COUNT=$(wc -l < "$RUNNER_TEMP/changed.txt")
+          CHANGED_LINES=$(git diff --cached --numstat | awk '{add+=$1; del+=$2} END {print add+del+0}')
+          echo "Files changed: $FILE_COUNT, total lines changed: $CHANGED_LINES"
+          if [ "$FILE_COUNT" -gt 6 ] || [ "$CHANGED_LINES" -gt 250 ]; then
+            echo "::error::Fix too large/complex for auto-PR ($FILE_COUNT files, $CHANGED_LINES lines); escalating to needs-human."
+            exit 1
+          fi
+
+          echo "has_pr_changes=true" >> "$GITHUB_OUTPUT"
+          if grep -q '^frontend/' "$RUNNER_TEMP/changed.txt"; then
+            echo "frontend_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node (only if frontend changed)
+        if: steps.diff.outputs.has_pr_changes == 'true' && steps.diff.outputs.frontend_changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps (only if frontend changed)
+        if: steps.diff.outputs.has_pr_changes == 'true' && steps.diff.outputs.frontend_changed == 'true'
+        run: npm ci --prefix frontend
+
+      - name: Run tests
+        if: steps.diff.outputs.has_pr_changes == 'true'
+        run: |
+          set -o pipefail
+          python -m pytest -c backend/pytest.ini backend/tests/ais -q 2>&1 | tee "$RUNNER_TEMP/tests.txt"
+          if [ "${{ steps.diff.outputs.frontend_changed }}" == "true" ]; then
+            frontend/node_modules/.bin/tsc --noEmit -p frontend 2>&1 | tee -a "$RUNNER_TEMP/tests.txt"
+          fi
+
+      - name: Push branch and open PR
+        id: pr
+        if: steps.diff.outputs.has_pr_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.ctx.outputs.title }}
+        run: |
+          BRANCH="auto-fix/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -m "fix: auto-fix for incident #${ISSUE_NUMBER}" -m "Generated by unified incident agent. Fixes #${ISSUE_NUMBER}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+
+          SAFE_SUMMARY=$(sed 's/@/@\xe2\x80\x8b/g' "$RUNNER_TEMP/clean_summary.md" 2>/dev/null | head -c 50000 || true)
+          {
+            echo "Fixes #${ISSUE_NUMBER}"
+            echo
+            echo "> 🤖 PR generated automatically by the unified incident agent (all safety gates & tests passed). Merging to \`main\` deploys."
+            echo
+            printf '%s\n' "$SAFE_SUMMARY"
+            echo
+            echo "<details><summary>Test output</summary>"
+            echo
+            echo '```text'
+            tail -n 40 "$RUNNER_TEMP/tests.txt" | sed 's/```/'"'''"'/g'
+            echo '```'
+            echo "</details>"
+          } > "$RUNNER_TEMP/pr_body.md"
+
+          PR_URL=$(gh pr create --base main --head "$BRANCH" \
+            --title "fix(incident #${ISSUE_NUMBER}): ${TITLE}" \
+            --body-file "$RUNNER_TEMP/pr_body.md" --label auto-fix)
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post triage & PR comment and labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            const severity = '${{ steps.verdict.outputs.severity }}';
+            const fixable = '${{ steps.verdict.outputs.fixable }}' === 'true';
+            const prUrl = '${{ steps.pr.outputs.url }}';
+
+            let summary = '';
+            try {
+              summary = fs.readFileSync(`${process.env.RUNNER_TEMP}/clean_summary.md`, 'utf8');
+            } catch (_) {}
             summary = summary.replace(/@/g, '@\u200b').slice(0, 60000);
 
-            const verdict = fixable
-              ? '🤖 **agent-fixable**: automatically running the fix agent to open a PR.'
-              : '🧑‍🔧 **needs-human**: blocked from auto-fix (complicated or dangerous change).';
+            const verdict = prUrl
+              ? `🛠️ **auto-fixed**: opened PR ${prUrl}`
+              : (fixable
+                  ? '🤷 **no-op**: marked fixable, but no code changes were produced (`needs-human`).'
+                  : '🧑‍🔧 **needs-human**: blocked from auto-fix (complicated or dangerous change).');
 
             await github.rest.issues.createComment({
               ...context.repo, issue_number,
-              body: `## 🤖 Incident Triage\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
+              body: `## 🤖 Incident Triage & Fix\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
             });
             await github.rest.issues.addLabels({
               ...context.repo, issue_number,
-              labels: ['triaged', `severity:${severity}`, fixable ? 'agent-fixable' : 'needs-human'],
+              labels: ['triaged', `severity:${severity}`, prUrl ? 'agent-fixable' : 'needs-human'],
             });
-            core.setOutput('fixable', fixable ? 'true' : 'false');
-            core.setOutput('issue_number', String(issue_number));
 
-  auto-fix:
-    needs: triage
-    if: needs.triage.outputs.fixable == 'true'
-    uses: ./.github/workflows/incident-fix.yml
-    with:
-      issue_number: ${{ needs.triage.outputs.issue_number }}
-    secrets: inherit
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "❌ Unified triage/fix attempt failed (tests, safety gate, or LLM error). Logs: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human || true
