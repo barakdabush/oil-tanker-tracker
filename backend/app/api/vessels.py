@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import Vessel, VesselPosition, CargoEvent, OfacSanctionedVessel
 from app.schemas import VesselResponse, VesselListResponse, PositionResponse, TrailResponse, CargoEventResponse
+from app.services.position_cleanup import cleanup_corrupted_positions
+from app.utils.geo import MAX_PLAUSIBLE_TANKER_SPEED_KNOTS, despike_positions
 
 router = APIRouter()
 
@@ -108,6 +110,22 @@ async def list_vessels(
     )
 
 
+@router.post("/cleanup-positions")
+async def cleanup_positions(
+    mmsi: Optional[int] = Query(None, description="Optional MMSI to clean; omit to scan all vessels"),
+    dry_run: bool = Query(False, description="If true, report corrupted rows without modifying the DB"),
+    max_speed_knots: float = Query(MAX_PLAUSIBLE_TANKER_SPEED_KNOTS, gt=0, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retroactively delete corrupted/spoofed vessel_positions spikes and repair vessels.last_lat/last_lon."""
+    return await cleanup_corrupted_positions(
+        db,
+        mmsi=mmsi,
+        dry_run=dry_run,
+        max_speed_knots=max_speed_knots,
+    )
+
+
 @router.get("/{mmsi}", response_model=VesselResponse)
 async def get_vessel(mmsi: int, db: AsyncSession = Depends(get_db)):
     """Get vessel detail with latest position."""
@@ -153,6 +171,9 @@ async def get_vessel_trail(
     result = await db.execute(query)
     rows = list(result.all())
     rows.reverse()
+
+    # Filter out invalid coordinates and physically impossible teleport/spoofing spikes
+    rows, _ = despike_positions(rows)
 
     if max_points > 0 and len(rows) > max_points:
         step = max(1, len(rows) // max_points)
