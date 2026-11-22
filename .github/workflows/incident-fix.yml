@@ -1,24 +1,10 @@
 name: Incident Fix Agent
 
-# Runs automatically after triage marks an `auto-incident` issue as `agent-fixable`,
-# or manually via `agent-fix` label / workflow_dispatch.
+# Manual fallback workflow (automatic incident triage & fix now runs via Antigravity /automation).
 # Uses OpenRouter / Groq / Gemini via .github/agents/run_agent.py.
 # Enforces safety & complexity gates, runs tests, and opens a PR.
 
 on:
-  workflow_call:
-    inputs:
-      issue_number:
-        description: "Issue number to attempt a fix for"
-        required: true
-        type: string
-      auto_triggered:
-        description: "True when invoked via workflow_call from triage"
-        required: false
-        type: boolean
-        default: false
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -26,7 +12,7 @@ on:
         required: true
 
 concurrency:
-  group: incident-fix-${{ github.event.issue.number || inputs.issue_number }}
+  group: incident-fix-${{ inputs.issue_number }}
   cancel-in-progress: false
 
 permissions:
@@ -36,14 +22,10 @@ permissions:
 
 jobs:
   fix:
-    if: >-
-      inputs.auto_triggered == true ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.label.name == 'agent-fix' && contains(github.event.issue.labels.*.name, 'auto-incident'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
       PYTHONPATH: backend
     steps:
       - name: Checkout
