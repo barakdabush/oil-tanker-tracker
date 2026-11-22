@@ -459,3 +459,11 @@ def test_rejection_diagnostics_track_reasons():
         rejected_counts=rejected,
     )
     assert rejected.get("gap_too_long") == 1
+
+
+def test_backend_app_and_chokepoints_recalculate_route_import():
+    """Regression test for #48: app.main and chokepoints router must import cleanly."""
+    from app.main import app
+
+    route_paths = {route.path for route in app.routes}
+    assert "/api/chokepoints/recalculate" in route_paths
