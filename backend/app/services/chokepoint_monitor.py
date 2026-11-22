@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 # barriers so straight-line chords between pre-gap and post-gap positions
 # reliably intersect the gate even around coastal bends (e.g. Musandam Peninsula).
 DEFAULT_GATE_LINES_WKT: dict[str, str] = {
-    "Strait of Hormuz": "LINESTRING(56.45 27.35, 56.35 26.40, 55.90 24.50)",
+    "Strait of Hormuz": "LINESTRING(56.50 28.50, 56.35 26.40, 55.50 21.50)",
     "Strait of Malacca": "LINESTRING(101.00 0.50, 102.80 3.00)",
-    "Suez Canal": "LINESTRING(31.50 30.55, 33.30 30.55)",
-    "Bab el-Mandeb": "LINESTRING(42.40 12.20, 44.10 13.30)",
+    "Suez Canal": "LINESTRING(29.00 30.55, 36.00 30.55)",
+    "Bab el-Mandeb": "LINESTRING(40.00 10.50, 43.30 12.65, 46.50 15.00)",
     "Turkish Straits (Bosporus)": "LINESTRING(28.40 41.12, 29.80 41.12)",
     "Danish Straits": "LINESTRING(9.80 55.40, 13.50 55.80)",
     "Cape of Good Hope": "LINESTRING(18.50 -33.80, 18.50 -37.50)",
@@ -103,9 +103,10 @@ def detect_segment_crossing(
     p2: TrackPoint,
     cp: ChokepointGeometry,
     *,
-    max_gap_hours: float = 120.0,
-    max_distance_km: float = 1500.0,
+    max_gap_hours: float = 336.0,
+    max_distance_km: float = 2500.0,
     max_implied_speed_knots: float = 35.0,
+    rejected_counts: Optional[dict[str, int]] = None,
 ) -> Optional[CrossingMatch]:
     """Determine whether the movement segment (p1 -> p2) crossed chokepoint `cp`.
 
@@ -116,19 +117,26 @@ def detect_segment_crossing(
     if dt_seconds <= 0:
         return None
 
+    # Check geometry first only if we need rejection diagnostics; otherwise
+    # check cheap scalar guards first.
     dt_hours = dt_seconds / 3600.0
-    if dt_hours > max_gap_hours:
-        return None
-
     dist_km = haversine_km(p1.lat, p1.lon, p2.lat, p2.lon)
-    if dist_km < 0.05 or dist_km > max_distance_km:
+    if dist_km < 0.05:
         return None
 
-    # Enforce physical speed cap on intervals >= 3 minutes (avoids noise on tiny deltas)
-    if dt_hours >= 0.05:
-        implied_knots = (dist_km / 1.852) / dt_hours
-        if implied_knots > max_implied_speed_knots:
-            return None
+    rejection_reason: Optional[str] = None
+    if dt_hours > max_gap_hours:
+        rejection_reason = "gap_too_long"
+    elif dist_km > max_distance_km:
+        rejection_reason = "distance_too_far"
+    elif dt_hours >= 0.05 and ((dist_km / 1.852) / dt_hours) > max_implied_speed_knots:
+        rejection_reason = "speed_too_high"
+
+    if rejection_reason is not None:
+        if rejected_counts is not None and cp.gate_line is not None:
+            if segment_crosses_linestring(p1.lon, p1.lat, p2.lon, p2.lat, cp.gate_line) is not None:
+                rejected_counts[rejection_reason] = rejected_counts.get(rejection_reason, 0) + 1
+        return None
 
     # Primary check: gate-line crossing (handles dark transits & coastal bends)
     if cp.gate_line is not None:
@@ -316,9 +324,10 @@ def replay_historical_track(
     existing_transit_times: Optional[list[datetime]] = None,
     window_start: Optional[datetime] = None,
     cooldown_hours: float = 12.0,
-    max_gap_hours: float = 120.0,
-    max_distance_km: float = 1500.0,
+    max_gap_hours: float = 336.0,
+    max_distance_km: float = 2500.0,
     max_implied_speed_knots: float = 35.0,
+    rejected_counts: Optional[dict[str, int]] = None,
 ) -> list[dict]:
     """Replay a vessel's full chronological track against one chokepoint.
 
@@ -352,12 +361,16 @@ def replay_historical_track(
                 max_gap_hours=max_gap_hours,
                 max_distance_km=max_distance_km,
                 max_implied_speed_knots=max_implied_speed_knots,
+                rejected_counts=rejected_counts,
             )
             if match is not None:
                 if open_transit is not None:
                     if not open_transit["direction"] or open_transit["direction"] == "unknown":
                         open_transit["direction"] = match.direction
-                elif not _in_cooldown(match.crossing_time):
+                elif _in_cooldown(match.crossing_time):
+                    if rejected_counts is not None:
+                        rejected_counts["in_cooldown"] = rejected_counts.get("in_cooldown", 0) + 1
+                else:
                     pt_inside = (
                         cp.polygon is not None
                         and cp.polygon.contains(Point(pt.lon, pt.lat))
@@ -780,6 +793,7 @@ class ChokepointMonitor:
             "inserted_total": 0,
             "inserted_by_method": {"polygon": 0, "gate_crossing": 0, "polygon_segment": 0},
             "inserted_by_chokepoint": {},
+            "rejected_crossings": {},
         }
 
         async with async_session() as session:
@@ -804,7 +818,7 @@ class ChokepointMonitor:
                 tanker_rows = (
                     await session.execute(
                         text("""
-                            SELECT DISTINCT v.mmsi, v.draft
+                            SELECT DISTINCT v.mmsi, v.draft, v.last_seen, v.last_lat, v.last_lon, v.last_course
                             FROM vessels v
                             JOIN vessel_positions vp ON vp.mmsi = v.mmsi
                             WHERE v.ship_type = ANY(:tanker_types)
@@ -820,7 +834,7 @@ class ChokepointMonitor:
                 tanker_rows = (
                     await session.execute(
                         text("""
-                            SELECT DISTINCT v.mmsi, v.draft
+                            SELECT DISTINCT v.mmsi, v.draft, v.last_seen, v.last_lat, v.last_lon, v.last_course
                             FROM vessels v
                             JOIN vessel_positions vp ON vp.mmsi = v.mmsi
                             WHERE v.ship_type = ANY(:tanker_types)
@@ -848,7 +862,7 @@ class ChokepointMonitor:
             for offset in range(0, len(tanker_rows), batch_size):
                 batch = tanker_rows[offset : offset + batch_size]
                 batch_mmsis = [r.mmsi for r in batch]
-                draft_by_mmsi = {r.mmsi: r.draft for r in batch}
+                vessel_meta = {r.mmsi: r for r in batch}
 
                 if pos_fetch_start is not None:
                     pos_rows = (
@@ -888,6 +902,25 @@ class ChokepointMonitor:
                         )
                     )
 
+                # Append latest position from `vessels` if newer than stored vessel_positions
+                for mmsi, meta in vessel_meta.items():
+                    if (
+                        meta.last_seen is not None
+                        and meta.last_lat is not None
+                        and meta.last_lon is not None
+                    ):
+                        v_track = tracks[mmsi]
+                        if not v_track or meta.last_seen > v_track[-1].time:
+                            v_track.append(
+                                TrackPoint(
+                                    time=meta.last_seen,
+                                    lat=meta.last_lat,
+                                    lon=meta.last_lon,
+                                    course=meta.last_course,
+                                    draft=meta.draft,
+                                )
+                            )
+
                 # Load existing transits for cooldown deduplication when additive
                 existing_by_key: dict[tuple[int, int], list[datetime]] = defaultdict(list)
                 if not replace_existing:
@@ -924,6 +957,7 @@ class ChokepointMonitor:
                     t_max_lon = max(p.lon for p in v_track)
                     t_min_lat = min(p.lat for p in v_track)
                     t_max_lat = max(p.lat for p in v_track)
+                    v_draft = vessel_meta[mmsi].draft if mmsi in vessel_meta else None
 
                     for cp in chokepoints:
                         bounds = cp_bounds.get(cp.id)
@@ -937,9 +971,10 @@ class ChokepointMonitor:
                             ):
                                 continue
 
+                        cp_rejected: dict[str, int] = {}
                         new_rows = replay_historical_track(
                             mmsi=mmsi,
-                            vessel_draft=draft_by_mmsi.get(mmsi),
+                            vessel_draft=v_draft,
                             track=v_track,
                             cp=cp,
                             existing_transit_times=existing_by_key.get((mmsi, cp.id)),
@@ -948,7 +983,13 @@ class ChokepointMonitor:
                             max_gap_hours=max_gap_hours,
                             max_distance_km=max_distance_km,
                             max_implied_speed_knots=max_implied_speed_knots,
+                            rejected_counts=cp_rejected,
                         )
+                        if cp_rejected:
+                            agg = stats["rejected_crossings"].setdefault(cp.name, {})
+                            for reason, cnt in cp_rejected.items():
+                                agg[reason] = agg.get(reason, 0) + cnt
+
                         for row_dict in new_rows:
                             stats["inserted_total"] += 1
                             method = row_dict["detection_method"]
