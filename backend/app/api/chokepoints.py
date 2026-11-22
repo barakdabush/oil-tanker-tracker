@@ -216,6 +216,80 @@ async def get_portwatch_summary(db: AsyncSession = Depends(get_db)):
     ]
 
 
+@router.post("/recalculate")
+async def recalculate_chokepoint_transits(
+    days: Optional[int] = Query(
+        30,
+        ge=1,
+        le=730,
+        description="Replay vessel_positions from the last N days (omit with all_history=true for full history)",
+    ),
+    all_history: bool = Query(
+        False,
+        description="If true, replay all available vessel_positions history",
+    ),
+    replace_existing: bool = Query(
+        False,
+        description="If true, delete existing chokepoint_transits in the window before rebuilding; if false, only insert missed transits (idempotent)",
+    ),
+    dry_run: bool = Query(
+        False,
+        description="If true, return counts without modifying the database",
+    ),
+    recalculate_snapshots: bool = Query(
+        False,
+        description="If true (and not dry_run), also recalculate daily oil_market_snapshots for the backfilled window",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recalculate historical chokepoint transits using the hybrid polygon + gate-line algorithm."""
+    from app.services.chokepoint_monitor import ChokepointMonitor
+
+    monitor = ChokepointMonitor()
+    effective_days = None if all_history else days
+    stats = await monitor.backfill_transits(
+        days=effective_days,
+        replace_existing=replace_existing,
+        dry_run=dry_run,
+    )
+
+    snapshots_recalculated = 0
+    if recalculate_snapshots and not dry_run:
+        from app.models import OilMarketSnapshot
+        from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
+
+        now_utc = datetime.now(timezone.utc)
+        today = now_utc.date()
+        yesterday = today - timedelta(days=1)
+        if effective_days is not None:
+            cutoff = (now_utc - timedelta(days=effective_days)).date()
+            existing_dates = (
+                await db.execute(
+                    select(OilMarketSnapshot.snapshot_date)
+                    .where(OilMarketSnapshot.snapshot_date >= cutoff)
+                    .order_by(OilMarketSnapshot.snapshot_date.asc())
+                )
+            ).scalars().all()
+        else:
+            existing_dates = (
+                await db.execute(
+                    select(OilMarketSnapshot.snapshot_date)
+                    .order_by(OilMarketSnapshot.snapshot_date.asc())
+                )
+            ).scalars().all()
+
+        dates_to_recalc = sorted(set(existing_dates) | {yesterday, today})
+        builder = GlobalOilFeatureBuilder()
+        for target_date in dates_to_recalc:
+            await builder.aggregate(target_date=target_date)
+        snapshots_recalculated = len(dates_to_recalc)
+
+    return {
+        **stats,
+        "snapshots_recalculated": snapshots_recalculated,
+    }
+
+
 @router.get("/{chokepoint_id}/outline")
 async def get_chokepoint_outline(chokepoint_id: int, db: AsyncSession = Depends(get_db)):
     """Return the GeoJSON polygon for a specific chokepoint to draw on the map."""
