@@ -389,10 +389,81 @@ def test_historical_replay_additive_idempotency():
     assert len(second_run) == 0
 
 
+def test_extended_hormuz_suez_bab_long_dark_routes():
+    """Extended inland gate lines catch southern Persian Gulf, East Med, and North Red Sea dark gaps."""
+    t0 = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(hours=72)
+
+    hormuz = _make_hormuz()
+    # Qatar (Ras Laffan) -> Muscat (previously missed when Hormuz gate stopped at 24.50N)
+    m1 = detect_segment_crossing(
+        TrackPoint(time=t0, lat=25.90, lon=51.60),
+        TrackPoint(time=t1, lat=23.62, lon=58.59),
+        hormuz,
+    )
+    assert m1 is not None and m1.method == "gate_crossing"
+
+    # Abu Dhabi -> Sohar
+    m2 = detect_segment_crossing(
+        TrackPoint(time=t0, lat=24.50, lon=54.30),
+        TrackPoint(time=t1, lat=24.45, lon=56.75),
+        hormuz,
+    )
+    assert m2 is not None and m2.method == "gate_crossing"
+
+    # Suez: Alexandria/Med -> Red Sea
+    suez = ChokepointGeometry(
+        id=3, name="Suez Canal", congestion_threshold=15, polygon=None,
+        gate_line=shapely_wkt.loads(DEFAULT_GATE_LINES_WKT["Suez Canal"]),
+    )
+    m3 = detect_segment_crossing(
+        TrackPoint(time=t0, lat=31.50, lon=30.50),
+        TrackPoint(time=t1, lat=27.50, lon=34.00),
+        suez,
+    )
+    assert m3 is not None and m3.method == "gate_crossing"
+
+    # Bab el-Mandeb: Jeddah -> Aden
+    bab = ChokepointGeometry(
+        id=4, name="Bab el-Mandeb", congestion_threshold=20, polygon=None,
+        gate_line=shapely_wkt.loads(DEFAULT_GATE_LINES_WKT["Bab el-Mandeb"]),
+    )
+    m4 = detect_segment_crossing(
+        TrackPoint(time=t0, lat=21.00, lon=39.00),
+        TrackPoint(time=t1, lat=12.50, lon=45.50),
+        bab,
+    )
+    assert m4 is not None and m4.method == "gate_crossing"
+
+
+def test_rejection_diagnostics_track_reasons():
+    """rejected_counts records why segments crossing a gate line were filtered out."""
+    cp = _make_hormuz()
+    t0 = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+    rejected: dict[str, int] = {}
+
+    # Speed too high (teleport across Hormuz in 10 min)
+    detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.50, lon=54.50),
+        TrackPoint(time=t0 + timedelta(minutes=10), lat=25.50, lon=58.50),
+        cp,
+        rejected_counts=rejected,
+    )
+    assert rejected.get("speed_too_high") == 1
+
+    # Gap too long (20 days > 14d default)
+    detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.50, lon=54.50),
+        TrackPoint(time=t0 + timedelta(days=20), lat=25.50, lon=58.50),
+        cp,
+        rejected_counts=rejected,
+    )
+    assert rejected.get("gap_too_long") == 1
+
+
 def test_backend_app_and_chokepoints_recalculate_route_import():
     """Regression test for #48: app.main and chokepoints router must import cleanly."""
     from app.main import app
 
     route_paths = {route.path for route in app.routes}
     assert "/api/chokepoints/recalculate" in route_paths
-

@@ -117,6 +117,8 @@ export default function MarketIntelligencePage() {
   const [portCongestion, setPortCongestion] = useState<import("@/lib/types").PortCongestionItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [recalculating, setRecalculating] = useState<boolean>(false);
+  const [recalculatingChokepoints, setRecalculatingChokepoints] = useState<boolean>(false);
+  const [chokepointRecalcMsg, setChokepointRecalcMsg] = useState<string | null>(null);
   const [selectedFeature, setSelectedFeature] = useState<FeatureKey>("total_active_vessels");
   const [targetMode, setTargetMode] = useState<TargetMode>("level");
   const [lagDays, setLagDays] = useState<LagDays>(0);
@@ -165,6 +167,38 @@ export default function MarketIntelligencePage() {
       console.error("Failed to recalculate market features", err);
     } finally {
       setRecalculating(false);
+    }
+  };
+
+  const handleRecalculateChokepoints = async () => {
+    setRecalculatingChokepoints(true);
+    setChokepointRecalcMsg(null);
+    const API = getApiUrl();
+    try {
+      const res = await fetch(
+        `${API}/api/chokepoints/recalculate?days=${windowDays}&recalculate_snapshots=true`,
+        { method: "POST" }
+      );
+      if (res.ok) {
+        const stats = await res.json();
+        const byCp = Object.entries(stats.inserted_by_chokepoint || {})
+          .map(([name, cnt]) => `${name}: ${cnt}`)
+          .join(", ");
+        const gateCount = stats.inserted_by_method?.gate_crossing ?? 0;
+        setChokepointRecalcMsg(
+          `Chokepoint backfill (${windowDays}d): +${stats.inserted_total ?? 0} transits ` +
+            `(${gateCount} gate crossings) across ${stats.vessels_scanned ?? 0} tankers` +
+            (byCp ? ` — ${byCp}` : "")
+        );
+        await fetchSnapshots();
+      } else {
+        setChokepointRecalcMsg(`Chokepoint backfill failed (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      console.error("Failed to recalculate chokepoint transits", err);
+      setChokepointRecalcMsg("Failed to recalculate chokepoint transits");
+    } finally {
+      setRecalculatingChokepoints(false);
     }
   };
 
@@ -325,7 +359,7 @@ export default function MarketIntelligencePage() {
 
               <button
                 onClick={handleRecalculate}
-                disabled={recalculating}
+                disabled={recalculating || recalculatingChokepoints}
                 title="Recalculate historical market features from vessel data"
                 style={{
                   background: recalculating ? "rgba(6, 182, 212, 0.12)" : "rgba(6, 182, 212, 0.2)",
@@ -335,11 +369,30 @@ export default function MarketIntelligencePage() {
                   borderRadius: "6px",
                   fontSize: "13px",
                   fontWeight: 600,
-                  cursor: recalculating ? "not-allowed" : "pointer",
-                  opacity: recalculating ? 0.7 : 1,
+                  cursor: recalculating || recalculatingChokepoints ? "not-allowed" : "pointer",
+                  opacity: recalculating || recalculatingChokepoints ? 0.7 : 1,
                 }}
               >
                 {recalculating ? "⏳ Recalculating..." : "🔄 Recalculate"}
+              </button>
+
+              <button
+                onClick={handleRecalculateChokepoints}
+                disabled={recalculatingChokepoints || recalculating}
+                title="Backfill missed dark-AIS chokepoint transits using gate-line crossing detection and refresh snapshots"
+                style={{
+                  background: recalculatingChokepoints ? "rgba(250, 204, 21, 0.12)" : "rgba(250, 204, 21, 0.18)",
+                  border: "1px solid rgba(250, 204, 21, 0.45)",
+                  color: "#facc15",
+                  padding: "8px 12px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  cursor: recalculatingChokepoints || recalculating ? "not-allowed" : "pointer",
+                  opacity: recalculatingChokepoints || recalculating ? 0.7 : 1,
+                }}
+              >
+                {recalculatingChokepoints ? "⏳ Backfilling..." : "🚧 Recalc Chokepoints"}
               </button>
 
               <select 
@@ -369,6 +422,39 @@ export default function MarketIntelligencePage() {
               </select>
             </div>
           </div>
+
+          {chokepointRecalcMsg && (
+            <div
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 14px",
+                borderRadius: "8px",
+                background: "rgba(250, 204, 21, 0.1)",
+                border: "1px solid rgba(250, 204, 21, 0.35)",
+                color: "#fde047",
+                fontSize: "13px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <span>{chokepointRecalcMsg}</span>
+              <button
+                onClick={() => setChokepointRecalcMsg(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#fde047",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+                aria-label="Dismiss message"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           
           <div className="panel-body">
             {chartData.length === 0 ? (
