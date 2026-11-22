@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.config import settings
 from app.database import async_session
 from app.models import Vessel, VesselPosition
-from app.utils.geo import haversine_km
+from app.utils.geo import haversine_km, is_plausible_move, is_valid_coordinate
 from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,17 @@ STATIC_MSG_TYPES = ("ShipStaticData", "StaticDataReport")
 
 MAX_PENDING_POSITIONS = 5000
 MAX_KNOWN_NON_TANKERS = 50000
+SUSPECT_POSITION_QUORUM = 3
+
+# Regex for Go time.String() format used by aisstream.io, e.g. "2026-04-23 18:42:33.749439468 +0000 UTC"
+_GO_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*([+-]\d{2}:?\d{2})?(?:\s+UTC)?$"
+)
 
 # In-memory caches to avoid excessive DB writes and UI updates
 _last_saved_positions = {}
+_last_trusted_positions = {}  # MMSI -> {"lat", "lon", "time"} of latest accepted position
+_suspect_positions = {}       # MMSI -> list[{"lat", "lon", "time"}] awaiting quorum
 _last_vessel_db_updates = {}
 _last_ui_updates = {}
 _last_seen_timestamps = {}
@@ -68,9 +77,42 @@ _logged_structures = set()
 
 # Per-source ingestion telemetry
 _source_stats = {
-    "aisstream": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None},
-    "openwaters": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None, "sub_sources": {}},
+    "aisstream": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None},
+    "openwaters": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None, "sub_sources": {}},
 }
+
+
+def _parse_ais_timestamp(timestamp_str: Optional[str], fallback: datetime) -> datetime:
+    """Parse AIS timestamp strings from both ISO 8601 (Open Waters) and Go time.String() (aisstream.io)."""
+    if not timestamp_str or not isinstance(timestamp_str, str):
+        return fallback
+    raw = timestamp_str.strip()
+    if not raw:
+        return fallback
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+
+    m = _GO_TIME_RE.match(raw)
+    if m:
+        base, frac, tz_part = m.groups()
+        iso = base.replace(" ", "T")
+        if frac:
+            iso += "." + frac[:6].ljust(6, "0")
+        if tz_part:
+            if ":" not in tz_part and len(tz_part) == 5:
+                tz_part = f"{tz_part[:3]}:{tz_part[3:]}"
+            iso += tz_part
+        else:
+            iso += "+00:00"
+        try:
+            dt = datetime.fromisoformat(iso)
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+    return fallback
 
 
 def get_ingestion_stats() -> dict:
@@ -89,18 +131,38 @@ def get_ingestion_stats() -> dict:
 async def start_ais_ingestion():
     """Main AIS ingestion loop — connects to configured AIS streams and processes messages."""
 
-    # ── Seed Whitelist ──
+    # ── Seed Whitelist & Last Trusted Positions ──
     logger.info("Seeding known tankers whitelist from database...")
     try:
         async with async_session() as session:
             result = await session.execute(
-                select(Vessel.mmsi, Vessel.draft).where(Vessel.ship_type.in_(TANKER_TYPES))
+                select(
+                    Vessel.mmsi,
+                    Vessel.draft,
+                    Vessel.last_lat,
+                    Vessel.last_lon,
+                    Vessel.last_seen,
+                ).where(Vessel.ship_type.in_(TANKER_TYPES))
             )
+            seeded_positions = 0
             for row in result.all():
                 _known_tankers.add(row.mmsi)
                 if row.draft is not None:
                     _known_drafts[row.mmsi] = row.draft
-        logger.info(f"Loaded {len(_known_tankers)} known tankers into whitelist.")
+                if row.last_seen is not None and is_valid_coordinate(row.last_lat, row.last_lon):
+                    ts = row.last_seen
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    _last_trusted_positions[row.mmsi] = {
+                        "lat": row.last_lat,
+                        "lon": row.last_lon,
+                        "time": ts,
+                    }
+                    seeded_positions += 1
+        logger.info(
+            f"Loaded {len(_known_tankers)} known tankers into whitelist "
+            f"({seeded_positions} with trusted last positions)."
+        )
     except Exception as e:
         logger.error(f"Failed to seed whitelist: {e}")
 
@@ -367,31 +429,73 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         logger.info(f"Removed MMSI {mmsi} from whitelist (type changed to {ship_type})")
         return
 
-    lat = position.get("Latitude", 0)
-    lon = position.get("Longitude", 0)
+    source = meta.get("Source")
+    provider = ("openwaters" if source.startswith("openwaters") else "aisstream") if source else None
+
+    if position.get("Valid") is False:
+        if provider:
+            _source_stats[provider]["dropped_glitches"] += 1
+        return
+
+    lat = position.get("Latitude")
+    lon = position.get("Longitude")
     speed = position.get("Sog", None)  # Speed over ground
     course = position.get("Cog", None)  # Course over ground
     heading = position.get("TrueHeading", None)
     nav_status = position.get("NavigationalStatus", None)
 
-    # Validate coordinates
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+    # Validate coordinates (rejects None, NaN/Inf, out-of-range, and Null Island (0, 0))
+    if not is_valid_coordinate(lat, lon):
+        if provider:
+            _source_stats[provider]["dropped_glitches"] += 1
         return
 
     now = datetime.now(timezone.utc)
-    timestamp_str = meta.get("time_utc", None)
-    if timestamp_str:
-        try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            timestamp = now
-    else:
-        timestamp = now
+    timestamp = _parse_ais_timestamp(meta.get("time_utc", None), now)
 
     # Drop stale/out-of-order positions (e.g. delayed duplicate from a slower feed)
     last_seen_ts = _last_seen_timestamps.get(mmsi)
     if last_seen_ts and timestamp < last_seen_ts:
         return
+
+    # ── Teleport / GPS-Spoofing Guard (before throttle so glitches never bypass 30-min save) ──
+    trusted = _last_trusted_positions.get(mmsi)
+    if trusted is not None:
+        if is_plausible_move(trusted["lat"], trusted["lon"], trusted["time"], lat, lon, timestamp):
+            _suspect_positions.pop(mmsi, None)
+            _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+        else:
+            suspects = _suspect_positions.get(mmsi, [])
+            if suspects and is_plausible_move(
+                suspects[-1]["lat"], suspects[-1]["lon"], suspects[-1]["time"], lat, lon, timestamp
+            ):
+                suspects.append({"lat": lat, "lon": lon, "time": timestamp})
+            else:
+                suspects = [{"lat": lat, "lon": lon, "time": timestamp}]
+
+            if len(suspects) >= SUSPECT_POSITION_QUORUM:
+                # 3 consecutive consistent reports confirm real relocation / recovery from bad DB anchor
+                logger.info(
+                    f"Position quorum reached for MMSI {mmsi}: relocating from "
+                    f"({trusted['lat']:.4f}, {trusted['lon']:.4f}) to ({lat:.4f}, {lon:.4f})"
+                )
+                _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+                _suspect_positions.pop(mmsi, None)
+            else:
+                _suspect_positions[mmsi] = suspects
+                if provider:
+                    _source_stats[provider]["dropped_glitches"] += 1
+                dist_km = haversine_km(trusted["lat"], trusted["lon"], lat, lon)
+                dt_sec = (timestamp - trusted["time"]).total_seconds()
+                logger.debug(
+                    f"Dropped implausible jump for MMSI {mmsi} ({source}): "
+                    f"({trusted['lat']:.4f}, {trusted['lon']:.4f}) -> ({lat:.4f}, {lon:.4f}) "
+                    f"({dist_km:.1f} km in {dt_sec:.0f}s; suspect {len(suspects)}/{SUSPECT_POSITION_QUORUM})"
+                )
+                return
+    else:
+        _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+
     _last_seen_timestamps[mmsi] = timestamp
 
     # ── Smart Position Save Logic ──
@@ -417,9 +521,7 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         or (timestamp - last_v_update).total_seconds() < 0
     )
 
-    source = meta.get("Source")
-    if source:
-        provider = "openwaters" if source.startswith("openwaters") else "aisstream"
+    if provider:
         _source_stats[provider]["tanker_positions"] += 1
 
     if should_update_vessel_db:
@@ -670,8 +772,8 @@ async def start_flush_task():
                 ais_s = _source_stats["aisstream"]
                 ow_s = _source_stats["openwaters"]
                 logger.info(
-                    f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}) | "
-                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, sub={ow_s['sub_sources']})"
+                    f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}, glitches={ais_s['dropped_glitches']}) | "
+                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, glitches={ow_s['dropped_glitches']}, sub={ow_s['sub_sources']})"
                 )
         except asyncio.CancelledError:
             logger.info("Batch flush task cancelled")
