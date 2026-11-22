@@ -9,7 +9,39 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  verify:
+    name: Verify Backend Before Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies and linters
+        run: pip install -r backend/requirements.txt pytest pytest-asyncio ruff
+
+      - name: Static analysis (undefined names & syntax checks)
+        run: ruff check --select F,E9 --ignore F401,F541,F841 backend/
+
+      - name: Entrypoint import smoke test
+        env:
+          PYTHONPATH: backend
+        run: |
+          python -c "import app.main, websocket_app, worker, incident_worker; print('All backend entrypoints imported cleanly')"
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: backend
+        run: python -m pytest -c backend/pytest.ini backend/tests/ais -q
+
   build-and-push:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
