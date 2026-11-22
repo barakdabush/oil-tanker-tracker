@@ -1,9 +1,9 @@
 """Chokepoint API endpoints."""
 
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, text, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
