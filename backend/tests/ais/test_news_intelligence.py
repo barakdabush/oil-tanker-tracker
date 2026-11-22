@@ -445,3 +445,23 @@ async def test_news_fetcher_429_cooldown_and_retry_after():
     assert not fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=80))
 
 
+@pytest.mark.asyncio
+async def test_news_fetcher_429_cooldown_short_retry_after():
+    from datetime import timedelta
+    from datetime import timezone
+    from app.services.news_fetcher import NewsFetcher
+    import httpx
+
+    fetcher = NewsFetcher()
+    now = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
+    req = httpx.Request("GET", "https://api.gdeltproject.org/api/v2/doc/doc")
+    resp_429 = httpx.Response(429, headers={"Retry-After": "10"}, request=req)
+    exc = httpx.HTTPStatusError("429 Too Many Requests", request=req, response=resp_429)
+
+    assert not fetcher._is_in_cooldown("gdelt:chokepoints", now)
+    fetcher._handle_fetch_error("gdelt:chokepoints", "NewsFetcher GDELT[chokepoints]", exc, now)
+    # With the fix, cooldown should be at most RATE_LIMIT_COOLDOWN_SECONDS (5 minutes)
+    assert fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=4))
+    assert not fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=6))
+
+
