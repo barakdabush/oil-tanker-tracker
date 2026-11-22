@@ -307,6 +307,114 @@ def evaluate_vessel_track(
     return result
 
 
+def replay_historical_track(
+    *,
+    mmsi: int,
+    vessel_draft: Optional[float],
+    track: list[TrackPoint],
+    cp: ChokepointGeometry,
+    existing_transit_times: Optional[list[datetime]] = None,
+    window_start: Optional[datetime] = None,
+    cooldown_hours: float = 12.0,
+    max_gap_hours: float = 120.0,
+    max_distance_km: float = 1500.0,
+    max_implied_speed_knots: float = 35.0,
+) -> list[dict]:
+    """Replay a vessel's full chronological track against one chokepoint.
+
+    Walks point-by-point in time order, combining gate-line / polygon-segment
+    crossing detection with polygon entry/exit tracking. Existing transit
+    timestamps (if provided) enforce cooldown deduplication so additive
+    backfills are idempotent and never double-count previously recorded passes.
+    """
+    if not track:
+        return []
+
+    cooldown_seconds = cooldown_hours * 3600.0
+    known_times: list[datetime] = list(existing_transit_times or [])
+    emitted: list[dict] = []
+    open_transit: Optional[dict] = None
+
+    def _in_cooldown(event_time: datetime) -> bool:
+        return any(
+            abs((event_time - t).total_seconds()) < cooldown_seconds
+            for t in known_times
+        )
+
+    for idx, pt in enumerate(track):
+        # 1. Check segment (prev -> pt) for gate-line or polygon-skip crossing
+        if idx > 0:
+            prev_pt = track[idx - 1]
+            match = detect_segment_crossing(
+                prev_pt,
+                pt,
+                cp,
+                max_gap_hours=max_gap_hours,
+                max_distance_km=max_distance_km,
+                max_implied_speed_knots=max_implied_speed_knots,
+            )
+            if match is not None:
+                if open_transit is not None:
+                    if not open_transit["direction"] or open_transit["direction"] == "unknown":
+                        open_transit["direction"] = match.direction
+                elif not _in_cooldown(match.crossing_time):
+                    pt_inside = (
+                        cp.polygon is not None
+                        and cp.polygon.contains(Point(pt.lon, pt.lat))
+                    )
+                    known_times.append(match.crossing_time)
+                    transit_row = {
+                        "time": match.crossing_time,
+                        "chokepoint_id": cp.id,
+                        "mmsi": mmsi,
+                        "entry_time": match.crossing_time,
+                        "exit_time": None if pt_inside else match.crossing_time,
+                        "direction": match.direction,
+                        "transit_duration_min": None,
+                        "draft_on_entry": pt.draft if pt.draft is not None else vessel_draft,
+                        "detection_method": match.method,
+                    }
+                    if pt_inside:
+                        open_transit = transit_row
+                    else:
+                        if window_start is None or transit_row["entry_time"] >= window_start:
+                            emitted.append(transit_row)
+
+        # 2. Check polygon containment at pt
+        is_inside = cp.polygon is not None and cp.polygon.contains(Point(pt.lon, pt.lat))
+        if is_inside and open_transit is None:
+            if not _in_cooldown(pt.time):
+                known_times.append(pt.time)
+                open_transit = {
+                    "time": pt.time,
+                    "chokepoint_id": cp.id,
+                    "mmsi": mmsi,
+                    "entry_time": pt.time,
+                    "exit_time": None,
+                    "direction": bearing_to_direction(pt.course),
+                    "transit_duration_min": None,
+                    "draft_on_entry": pt.draft if pt.draft is not None else vessel_draft,
+                    "detection_method": "polygon",
+                }
+        elif not is_inside and open_transit is not None:
+            duration_min = max(0.0, (pt.time - open_transit["entry_time"]).total_seconds() / 60.0)
+            open_transit["exit_time"] = pt.time
+            # Only record transit duration if exit happened within a plausible window
+            if duration_min <= max_gap_hours * 60.0:
+                open_transit["transit_duration_min"] = round(duration_min, 1)
+            known_times.append(pt.time)
+            if window_start is None or open_transit["entry_time"] >= window_start:
+                emitted.append(open_transit)
+            open_transit = None
+
+    # Emit any transit still open at the end of the track
+    if open_transit is not None:
+        if window_start is None or open_transit["entry_time"] >= window_start:
+            emitted.append(open_transit)
+
+    return emitted
+
+
 class ChokepointMonitor:
     """Monitors tanker traffic through maritime chokepoints."""
 
@@ -628,7 +736,293 @@ class ChokepointMonitor:
                 f"No new events. Active Transits: {len(_vessels_in_chokepoint)}"
             )
 
+    async def backfill_transits(
+        self,
+        *,
+        days: Optional[int] = 30,
+        replace_existing: bool = False,
+        dry_run: bool = False,
+        batch_size: int = 200,
+    ) -> dict:
+        """Recalculate historical chokepoint transits from stored `vessel_positions`.
+
+        Args:
+            days: Look back this many days from now (None = all available history).
+            replace_existing: If True, deletes existing `chokepoint_transits` in the
+                window and rebuilds them cleanly from scratch. If False (default),
+                keeps existing rows intact and only inserts missed transits
+                (idempotent via cooldown deduplication).
+            dry_run: If True, computes counts without writing or deleting rows.
+            batch_size: Number of tanker MMSIs processed per DB batch.
+        """
+        start_time = time.time()
+        now = datetime.now(timezone.utc)
+        max_gap_hours = float(settings.CHOKEPOINT_MAX_CROSSING_GAP_HOURS)
+        max_distance_km = float(settings.CHOKEPOINT_MAX_CROSSING_DISTANCE_KM)
+        max_implied_speed_knots = float(settings.CHOKEPOINT_MAX_IMPLIED_SPEED_KNOTS)
+        cooldown_hours = float(settings.CHOKEPOINT_TRANSIT_COOLDOWN_HOURS)
+
+        window_start = now - timedelta(days=days) if days is not None else None
+        # Fetch slightly earlier positions so dark crossings straddling window_start are caught
+        pos_fetch_start = (
+            window_start - timedelta(hours=max_gap_hours)
+            if window_start is not None
+            else None
+        )
+
+        stats: dict = {
+            "days": days,
+            "replace_existing": replace_existing,
+            "dry_run": dry_run,
+            "vessels_scanned": 0,
+            "positions_scanned": 0,
+            "deleted_existing": 0,
+            "inserted_total": 0,
+            "inserted_by_method": {"polygon": 0, "gate_crossing": 0, "polygon_segment": 0},
+            "inserted_by_chokepoint": {},
+        }
+
+        async with async_session() as session:
+            chokepoints = await self._load_chokepoints(session)
+            if not chokepoints:
+                return stats
+
+            # Precompute bounding boxes for fast per-vessel filtering
+            cp_bounds: dict[int, tuple[float, float, float, float]] = {}
+            for cp in chokepoints:
+                geoms = [g for g in (cp.polygon, cp.gate_line) if g is not None]
+                if not geoms:
+                    continue
+                minx = min(g.bounds[0] for g in geoms)
+                miny = min(g.bounds[1] for g in geoms)
+                maxx = max(g.bounds[2] for g in geoms)
+                maxy = max(g.bounds[3] for g in geoms)
+                cp_bounds[cp.id] = (minx, miny, maxx, maxy)
+
+            # Find all tankers that have positions in the target window
+            if pos_fetch_start is not None:
+                tanker_rows = (
+                    await session.execute(
+                        text("""
+                            SELECT DISTINCT v.mmsi, v.draft
+                            FROM vessels v
+                            JOIN vessel_positions vp ON vp.mmsi = v.mmsi
+                            WHERE v.ship_type = ANY(:tanker_types)
+                              AND vp.time >= :pos_fetch_start
+                        """),
+                        {
+                            "tanker_types": list(settings.AIS_TANKER_TYPES),
+                            "pos_fetch_start": pos_fetch_start,
+                        },
+                    )
+                ).all()
+            else:
+                tanker_rows = (
+                    await session.execute(
+                        text("""
+                            SELECT DISTINCT v.mmsi, v.draft
+                            FROM vessels v
+                            JOIN vessel_positions vp ON vp.mmsi = v.mmsi
+                            WHERE v.ship_type = ANY(:tanker_types)
+                        """),
+                        {"tanker_types": list(settings.AIS_TANKER_TYPES)},
+                    )
+                ).all()
+
+            stats["vessels_scanned"] = len(tanker_rows)
+            if not tanker_rows:
+                return stats
+
+            if replace_existing and not dry_run:
+                if window_start is not None:
+                    del_res = await session.execute(
+                        text("DELETE FROM chokepoint_transits WHERE entry_time >= :ws"),
+                        {"ws": window_start},
+                    )
+                else:
+                    del_res = await session.execute(text("DELETE FROM chokepoint_transits"))
+                stats["deleted_existing"] = del_res.rowcount or 0
+                await session.commit()
+
+            # Process tankers in batches to bound memory usage
+            for offset in range(0, len(tanker_rows), batch_size):
+                batch = tanker_rows[offset : offset + batch_size]
+                batch_mmsis = [r.mmsi for r in batch]
+                draft_by_mmsi = {r.mmsi: r.draft for r in batch}
+
+                if pos_fetch_start is not None:
+                    pos_rows = (
+                        await session.execute(
+                            text("""
+                                SELECT mmsi, time, latitude, longitude, course, draft
+                                FROM vessel_positions
+                                WHERE mmsi = ANY(:mmsis) AND time >= :pos_fetch_start
+                                ORDER BY mmsi, time ASC
+                            """),
+                            {"mmsis": batch_mmsis, "pos_fetch_start": pos_fetch_start},
+                        )
+                    ).all()
+                else:
+                    pos_rows = (
+                        await session.execute(
+                            text("""
+                                SELECT mmsi, time, latitude, longitude, course, draft
+                                FROM vessel_positions
+                                WHERE mmsi = ANY(:mmsis)
+                                ORDER BY mmsi, time ASC
+                            """),
+                            {"mmsis": batch_mmsis},
+                        )
+                    ).all()
+
+                stats["positions_scanned"] += len(pos_rows)
+                tracks: dict[int, list[TrackPoint]] = defaultdict(list)
+                for row in pos_rows:
+                    tracks[row.mmsi].append(
+                        TrackPoint(
+                            time=row.time,
+                            lat=row.latitude,
+                            lon=row.longitude,
+                            course=row.course,
+                            draft=row.draft,
+                        )
+                    )
+
+                # Load existing transits for cooldown deduplication when additive
+                existing_by_key: dict[tuple[int, int], list[datetime]] = defaultdict(list)
+                if not replace_existing:
+                    if pos_fetch_start is not None:
+                        ex_rows = (
+                            await session.execute(
+                                text("""
+                                    SELECT mmsi, chokepoint_id, entry_time
+                                    FROM chokepoint_transits
+                                    WHERE mmsi = ANY(:mmsis) AND entry_time >= :since
+                                """),
+                                {"mmsis": batch_mmsis, "since": pos_fetch_start},
+                            )
+                        ).all()
+                    else:
+                        ex_rows = (
+                            await session.execute(
+                                text("""
+                                    SELECT mmsi, chokepoint_id, entry_time
+                                    FROM chokepoint_transits
+                                    WHERE mmsi = ANY(:mmsis)
+                                """),
+                                {"mmsis": batch_mmsis},
+                            )
+                        ).all()
+                    for r in ex_rows:
+                        existing_by_key[(r.mmsi, r.chokepoint_id)].append(r.entry_time)
+
+                batch_inserts: list[ChokepointTransit] = []
+                for mmsi, v_track in tracks.items():
+                    if not v_track:
+                        continue
+                    t_min_lon = min(p.lon for p in v_track)
+                    t_max_lon = max(p.lon for p in v_track)
+                    t_min_lat = min(p.lat for p in v_track)
+                    t_max_lat = max(p.lat for p in v_track)
+
+                    for cp in chokepoints:
+                        bounds = cp_bounds.get(cp.id)
+                        if bounds is not None:
+                            minx, miny, maxx, maxy = bounds
+                            if (
+                                t_max_lon < minx
+                                or t_min_lon > maxx
+                                or t_max_lat < miny
+                                or t_min_lat > maxy
+                            ):
+                                continue
+
+                        new_rows = replay_historical_track(
+                            mmsi=mmsi,
+                            vessel_draft=draft_by_mmsi.get(mmsi),
+                            track=v_track,
+                            cp=cp,
+                            existing_transit_times=existing_by_key.get((mmsi, cp.id)),
+                            window_start=window_start,
+                            cooldown_hours=cooldown_hours,
+                            max_gap_hours=max_gap_hours,
+                            max_distance_km=max_distance_km,
+                            max_implied_speed_knots=max_implied_speed_knots,
+                        )
+                        for row_dict in new_rows:
+                            stats["inserted_total"] += 1
+                            method = row_dict["detection_method"]
+                            stats["inserted_by_method"][method] = (
+                                stats["inserted_by_method"].get(method, 0) + 1
+                            )
+                            stats["inserted_by_chokepoint"][cp.name] = (
+                                stats["inserted_by_chokepoint"].get(cp.name, 0) + 1
+                            )
+                            if not dry_run:
+                                batch_inserts.append(ChokepointTransit(**row_dict))
+
+                if batch_inserts and not dry_run:
+                    session.add_all(batch_inserts)
+                    await session.commit()
+
+        stats["duration_sec"] = round(time.time() - start_time, 2)
+        logger.info(
+            f"Chokepoint backfill complete in {stats['duration_sec']}s — "
+            f"vessels={stats['vessels_scanned']}, positions={stats['positions_scanned']}, "
+            f"deleted={stats['deleted_existing']}, inserted={stats['inserted_total']} "
+            f"({stats['inserted_by_method']})"
+        )
+        return stats
+
     @staticmethod
     def _determine_direction(course: float | None) -> str:
         """Determine compass direction from course angle."""
         return bearing_to_direction(course)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Backfill historical chokepoint transits using hybrid gate-line + polygon detection."
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Number of past days to replay (default: 30). Ignored if --all is set.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Replay all available vessel_positions history.",
+    )
+    parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Delete existing chokepoint_transits in the window before rebuilding.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute backfill stats without modifying the database.",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    async def _run_cli():
+        monitor = ChokepointMonitor()
+        res = await monitor.backfill_transits(
+            days=None if args.all else args.days,
+            replace_existing=args.replace_existing,
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(res, indent=2))
+
+    asyncio.run(_run_cli())
+

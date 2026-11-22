@@ -12,6 +12,7 @@ from app.services.chokepoint_monitor import (
     TrackPoint,
     detect_segment_crossing,
     evaluate_vessel_track,
+    replay_historical_track,
 )
 
 
@@ -308,3 +309,81 @@ def test_all_eight_chokepoint_default_gate_lines(name, p1_coords, p2_coords, exp
     assert match is not None, f"Gate line missed realistic dark transit for {name}"
     assert match.method == "gate_crossing"
     assert match.direction == expected_dir
+
+
+def test_historical_replay_round_trip_mixed_live_and_dark():
+    """Replay a 5-day track with 1 live-AIS Hormuz outbound pass and 1 dark-AIS inbound return."""
+    cp = _make_hormuz()
+    day1 = datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc)
+    day4 = day1 + timedelta(days=3)
+
+    track = [
+        # Day 1: Live AIS outbound through Hormuz polygon + gate
+        TrackPoint(time=day1, lat=26.50, lon=55.50, course=90.0, draft=14.5),
+        TrackPoint(time=day1 + timedelta(hours=2), lat=26.50, lon=56.10, course=90.0, draft=14.5),
+        TrackPoint(time=day1 + timedelta(hours=4), lat=26.50, lon=56.60, course=90.0, draft=14.5),
+        TrackPoint(time=day1 + timedelta(hours=6), lat=26.20, lon=57.30, course=105.0, draft=14.5),
+        # Day 4: Dark AIS inbound return from Fujairah to Dubai (skips polygon completely)
+        TrackPoint(time=day4, lat=25.10, lon=56.60, draft=9.5),
+        TrackPoint(time=day4 + timedelta(hours=18), lat=25.30, lon=55.20, draft=9.5),
+    ]
+
+    transits = replay_historical_track(
+        mmsi=412345678,
+        vessel_draft=14.5,
+        track=track,
+        cp=cp,
+    )
+    assert len(transits) == 2
+
+    # Transit 1: Live polygon pass
+    assert transits[0]["detection_method"] == "polygon"
+    assert transits[0]["direction"] == "eastbound"
+    assert transits[0]["transit_duration_min"] == 240.0
+
+    # Transit 2: Recovered dark-AIS gate crossing
+    assert transits[1]["detection_method"] == "gate_crossing"
+    assert transits[1]["direction"] == "westbound"
+    assert transits[1]["transit_duration_min"] is None
+    assert transits[1]["exit_time"] == transits[1]["entry_time"]
+
+
+def test_historical_replay_additive_idempotency():
+    """Additive backfill skips already-recorded transits while recovering missed dark crossings."""
+    cp = _make_hormuz()
+    day1 = datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc)
+    day4 = day1 + timedelta(days=3)
+
+    track = [
+        # Day 1 live transit (already in DB)
+        TrackPoint(time=day1, lat=26.50, lon=55.50, course=90.0),
+        TrackPoint(time=day1 + timedelta(hours=2), lat=26.50, lon=56.10, course=90.0),
+        TrackPoint(time=day1 + timedelta(hours=6), lat=26.20, lon=57.30, course=105.0),
+        # Day 4 dark transit (previously missed)
+        TrackPoint(time=day4, lat=25.10, lon=56.60),
+        TrackPoint(time=day4 + timedelta(hours=18), lat=25.30, lon=55.20),
+    ]
+
+    # Simulate Day 1 transit already existing in DB
+    existing_times = [day1 + timedelta(hours=2)]
+
+    newly_found = replay_historical_track(
+        mmsi=412345678,
+        vessel_draft=12.0,
+        track=track,
+        cp=cp,
+        existing_transit_times=existing_times,
+    )
+    assert len(newly_found) == 1
+    assert newly_found[0]["detection_method"] == "gate_crossing"
+    assert newly_found[0]["direction"] == "westbound"
+
+    # Running a second time with the newly inserted timestamp finds 0 duplicates
+    second_run = replay_historical_track(
+        mmsi=412345678,
+        vessel_draft=12.0,
+        track=track,
+        cp=cp,
+        existing_transit_times=existing_times + [newly_found[0]["entry_time"]],
+    )
+    assert len(second_run) == 0
