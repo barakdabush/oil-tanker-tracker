@@ -465,3 +465,20 @@ async def test_news_fetcher_429_cooldown_short_retry_after():
     assert not fetcher._is_in_cooldown("gdelt:chokepoints", now + timedelta(minutes=6))
 
 
+@pytest.mark.asyncio
+async def test_news_fetcher_403_sets_6h_cooldown():
+    from datetime import timedelta
+    import httpx
+    from app.services.news_fetcher import NewsFetcher
+
+    fetcher = NewsFetcher()
+    now = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
+    req = httpx.Request("GET", "https://www.rigzone.com/news/rss/rigzone_latest.aspx")
+    resp_403 = httpx.Response(403, request=req)
+    exc = httpx.HTTPStatusError("403 Forbidden", request=req, response=resp_403)
+
+    fetcher._handle_fetch_error("rss:Rigzone", "NewsFetcher RSS[Rigzone]", exc, now)
+    assert fetcher._is_in_cooldown("rss:Rigzone", now + timedelta(hours=5))
+    assert not fetcher._is_in_cooldown("rss:Rigzone", now + timedelta(hours=7))
+
+

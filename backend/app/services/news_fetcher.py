@@ -48,6 +48,7 @@ CLUSTER_SIMILARITY_THRESHOLD = 0.36
 NOVELTY_LOOKBACK_HOURS = 72
 GDELT_MIN_INTERVAL_SECONDS = 30 * 60
 RATE_LIMIT_COOLDOWN_SECONDS = 60 * 5
+HTTP_BLOCKED_COOLDOWN_SECONDS = 6 * 3600
 
 STRAITS_EVENTS_URL = "https://straits.live/api/v1/events?limit=200"
 GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -55,7 +56,6 @@ GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 # Curated free RSS feeds: (source_name, source_tier, url)
 RSS_FEEDS: list[tuple[str, int, str]] = [
     ("EIA Today in Energy", 1, "https://www.eia.gov/rss/todayinenergy.xml"),
-    ("OPEC Press Releases", 1, "https://www.opec.org/opec_web/en/press_room/28.htm?format=rss"),
     ("gCaptain", 2, "https://gcaptain.com/feed/"),
     ("Splash247", 2, "https://splash247.com/feed/"),
     ("OilPrice.com", 2, "https://oilprice.com/rss/main"),
@@ -337,12 +337,18 @@ class NewsFetcher:
         return items
 
     def _handle_fetch_error(self, source_key: str, label: str, exc: Exception, now: datetime) -> None:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
-            retry_after = self._parse_retry_after(exc.response)
-            self._set_cooldown(source_key, now, retry_after)
-            logger.warning(f"{label} rate-limited (429); cooling down for >=60m.")
-        else:
-            logger.warning(f"{label} failed: {type(exc).__name__}: {exc}")
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status == 429:
+                retry_after = self._parse_retry_after(exc.response)
+                self._set_cooldown(source_key, now, retry_after)
+                logger.warning(f"{label} rate-limited (429); cooling down.")
+                return
+            if status in (401, 403, 404, 410):
+                self._source_cooldowns[source_key] = now + timedelta(seconds=HTTP_BLOCKED_COOLDOWN_SECONDS)
+                logger.warning(f"{label} returned HTTP {status}; cooling down for 6h.")
+                return
+        logger.warning(f"{label} failed: {type(exc).__name__}: {exc}")
 
     async def fetch_and_store(self, timespan: str = "3d", include_rss: bool = True) -> dict[str, int]:
         """Fetch free news sources, deduplicate articles, and cluster into canonical events."""
