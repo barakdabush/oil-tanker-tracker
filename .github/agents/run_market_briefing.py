@@ -211,7 +211,7 @@ def call_llm_analyst(
     ctx: dict,
     provider: tuple[str, str, str],
     retry_delays: tuple[float, ...] = (8.0, 20.0),
-) -> str:
+) -> tuple[str, dict]:
     url, api_key, model = provider
     user_content = (
         "Analyze the following Oil Tanker Monitor intelligence snapshot and produce the briefing:\n\n"
@@ -241,7 +241,13 @@ def call_llm_analyst(
             choices = resp.get("choices") or []
             if not choices:
                 raise RuntimeError(f"LLM returned no choices: {resp}")
-            return str((choices[0].get("message") or {}).get("content") or "").strip()
+            content = str((choices[0].get("message") or {}).get("content") or "").strip()
+            usage = resp.get("usage") or {}
+            return content, {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "total_tokens": int(usage.get("total_tokens") or (int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))),
+            }
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -297,6 +303,7 @@ def main() -> int:
     model_used = "deterministic-fallback"
     markdown = ""
     structured: dict = {}
+    usage_stats: dict = {}
 
     if not providers:
         print(f"No LLM API key found for provider={args.provider}; using deterministic fallback.")
@@ -307,7 +314,7 @@ def main() -> int:
         for pname, url, api_key, model in providers:
             print(f"Calling AI Market Analyst [{pname}] ({model}) ...")
             try:
-                raw_reply = call_llm_analyst(prompt_md, ctx, (url, api_key, model))
+                raw_reply, usage_stats = call_llm_analyst(prompt_md, ctx, (url, api_key, model))
                 markdown, structured = parse_briefing_output(raw_reply)
                 model_used = model
                 succeeded = True
@@ -318,10 +325,17 @@ def main() -> int:
             print("All configured LLM providers failed; falling back to deterministic briefing.", file=sys.stderr)
             markdown, structured = build_deterministic_fallback(ctx)
 
+    tok_part = ""
+    if usage_stats.get("total_tokens"):
+        tok_part = (
+            f" · **Tokens:** `{usage_stats['total_tokens']:,}` "
+            f"(`{usage_stats['prompt_tokens']:,}` in / `{usage_stats['completion_tokens']:,}` out)"
+        )
+
     header = (
         f"## 🛢️ Oil Tanker Monitor — AI Market Briefing\n\n"
         f"**Bias:** `{structured['market_bias'].upper()}` · **Model:** `{model_used}` · "
-        f"**Window:** `{args.days}d` · **Generated:** `{ctx.get('generated_at', '')}`\n\n"
+        f"**Window:** `{args.days}d`{tok_part} · **Generated:** `{ctx.get('generated_at', '')}`\n\n"
     )
     full_md = header + markdown + "\n"
     Path(args.output).write_text(full_md, encoding="utf-8")

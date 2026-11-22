@@ -13,6 +13,11 @@ same session.
   `ops/`, `backend/migrations/`, Dockerfiles, docker-compose files, `.env*`, or deployment config.
 - Never add secrets, tokens, network calls to new hosts, or new dependencies.
 
+## Efficiency rules (keep turns minimal)
+- Check `<repo_context>` first — the suspect source file, matching test file, recent commits, and repo file list are pre-injected when available. Do **not** waste turns calling `list_dir` or re-reading files already provided there.
+- **Batch independent tool calls in parallel** in a single turn (e.g. read source + test together, or edit source + test together).
+- If you cannot identify a clean, safe root cause within 5 turns, stop early and return `fixable: false` (`needs-human`).
+
 ## Step 1: Triage & Risk Check
 1. Locate the code path that produced the error (search for the logger name / message text).
 2. Determine severity:
