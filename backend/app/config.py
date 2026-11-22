@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     STS_PROXIMITY_M: float = 250.0
     STS_MIN_DURATION_MIN: int = 30
     STS_PORT_DISTANCE_KM: float = 20.0
+    CHOKEPOINT_MAX_CROSSING_GAP_HOURS: int = 120
+    CHOKEPOINT_MAX_CROSSING_DISTANCE_KM: float = 1500.0
+    CHOKEPOINT_MAX_IMPLIED_SPEED_KNOTS: float = 35.0
+    CHOKEPOINT_TRANSIT_COOLDOWN_HOURS: int = 12
 
     # Tanker block coefficient for volume estimation
     BLOCK_COEFFICIENT: float = 0.85

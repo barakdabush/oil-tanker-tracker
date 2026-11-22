@@ -69,6 +69,11 @@ export function geojsonToLeaflet(geojson: any): [number, number][] {
   return geojson.coordinates[0].map((coord: [number, number]) => [coord[1], coord[0]]);
 }
 
+export function geojsonLineToLeaflet(geojson: any): [number, number][] {
+  if (!geojson || geojson.type !== "LineString" || !geojson.coordinates?.length) return [];
+  return geojson.coordinates.map((coord: [number, number]) => [coord[1], coord[0]]);
+}
+
 export function trailColor(idx: number, total: number): string {
   const t = total <= 1 ? 1 : idx / (total - 1);
   const r = Math.round(0 + t * 6);       // 0 -> 6

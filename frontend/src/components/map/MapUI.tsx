@@ -76,6 +76,12 @@ export function MapControlsAndLegend({ showPorts, setShowPorts, showChokepoints,
         <div className="legend-item"><div className="legend-dot" style={{ background: "#64748b" }}></div>Idle / Drifting</div>
         <div className="legend-item"><div className="legend-dot" style={{ background: "#1f2937", border: "1px solid #6b7280" }}></div>Dark (AIS off)</div>
         <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}><div className="legend-dot" style={{ background: "#3b82f6" }}></div>Oil Port / Terminal</div>
+        {showChokepoints && (
+          <div className="legend-item">
+            <div style={{ width: 18, height: 0, borderTop: "2.5px dashed #facc15", marginRight: 6 }}></div>
+            Chokepoint Gate Line
+          </div>
+        )}
         {selectedVessel && trailLatLngsCount > 0 && (
           <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
             <div style={{ width: 22, height: 4, background: "linear-gradient(to right, hsl(0, 90%, 52%), hsl(65, 90%, 52%), hsl(130, 90%, 52%))", borderRadius: 2, marginRight: 6 }}></div>

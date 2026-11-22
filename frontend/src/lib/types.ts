@@ -130,6 +130,7 @@ export interface Chokepoint {
   current_vessel_count: number;
   congestion_status: "normal" | "congested" | "low";
   boundary_geojson?: any;
+  gate_line_geojson?: any;
 }
 
 export interface ChokepointTransit {
@@ -141,6 +142,7 @@ export interface ChokepointTransit {
   direction: string | null;
   transit_duration_min: number | null;
   draft_on_entry: number | null;
+  detection_method?: "polygon" | "gate_crossing" | "polygon_segment" | string | null;
 }
 
 // ─── Analytics Types ────────────────────────────────────────────────────────

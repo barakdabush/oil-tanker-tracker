@@ -16,6 +16,7 @@ class ChokepointResponse(BaseModel):
     current_vessel_count: Optional[int] = 0
     congestion_status: Optional[str] = "normal"
     boundary_geojson: Optional[dict] = None
+    gate_line_geojson: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -30,6 +31,7 @@ class ChokepointTransitResponse(BaseModel):
     direction: Optional[str] = None
     transit_duration_min: Optional[float] = None
     draft_on_entry: Optional[float] = None
+    detection_method: Optional[str] = "polygon"
 
     class Config:
         from_attributes = True
