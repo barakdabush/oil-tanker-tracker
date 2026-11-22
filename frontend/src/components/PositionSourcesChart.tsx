@@ -32,6 +32,7 @@ const SOURCE_PALETTE = [
 function getSourceColor(source: string, idx: number): string {
   if (source === "aisstream") return "#06b6d4";
   if (source.startsWith("openwaters")) return "#10b981";
+  if (source === "hormuz_now") return "#f59e0b";
   if (source === "unknown") return "#64748b";
   return SOURCE_PALETTE[idx % SOURCE_PALETTE.length];
 }

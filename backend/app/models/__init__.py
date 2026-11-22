@@ -21,6 +21,7 @@ from app.models.news import (  # noqa: F401
     NewsImpactPrior,
     AIMarketBriefing,
 )
+from app.models.satellite import SatelliteScene, SatelliteDetection  # noqa: F401
 
 __all__ = [
     "Vessel",
@@ -47,4 +48,7 @@ __all__ = [
     "NewsEventPriceImpact",
     "NewsImpactPrior",
     "AIMarketBriefing",
+    "SatelliteScene",
+    "SatelliteDetection",
 ]
+

@@ -17,7 +17,8 @@ import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
 import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
-import type { STSEvent } from "@/lib/types";
+import { SatelliteLayer } from "./map/SatelliteLayer";
+import type { STSEvent, SatelliteDetection } from "@/lib/types";
 
 interface TrailPoint {
   time: string;
@@ -51,6 +52,9 @@ export default function MapView() {
   const [showPorts, setShowPorts] = useState(true);
   const [showChokepoints, setShowChokepoints] = useState(true);
   const [showTrails, setShowTrails] = useState(true);
+  const [showSatellite, setShowSatellite] = useState(true);
+  const [satelliteDetections, setSatelliteDetections] = useState<SatelliteDetection[]>([]);
+  const [satelliteDarkCount, setSatelliteDarkCount] = useState(0);
   const [trailHours, setTrailHours] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
@@ -319,6 +323,7 @@ export default function MapView() {
             onHighlightVessels={setStsHighlightedMmsis}
             onEnsureVessels={mergeVessels}
           />
+          {showSatellite && <SatelliteLayer detections={satelliteDetections} />}
           <VesselLayer
             vessels={vessels}
             selectedVessel={selectedVessel}
@@ -327,7 +332,20 @@ export default function MapView() {
           />
         </MapContainer>
 
-        <MapControlsAndLegend showPorts={showPorts} setShowPorts={setShowPorts} showChokepoints={showChokepoints} setShowChokepoints={setShowChokepoints} showTrails={showTrails} setShowTrails={setShowTrails} selectedVessel={selectedVessel} trailLatLngsCount={trailLatLngs.length} />
+        <MapControlsAndLegend
+          showPorts={showPorts}
+          setShowPorts={setShowPorts}
+          showChokepoints={showChokepoints}
+          setShowChokepoints={setShowChokepoints}
+          showTrails={showTrails}
+          setShowTrails={setShowTrails}
+          showSatellite={showSatellite}
+          setShowSatellite={setShowSatellite}
+          satelliteCount={satelliteDetections.length}
+          satelliteDarkCount={satelliteDarkCount}
+          selectedVessel={selectedVessel}
+          trailLatLngsCount={trailLatLngs.length}
+        />
       </div>
 
       {hasBottomPanel && (

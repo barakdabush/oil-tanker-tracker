@@ -28,6 +28,12 @@ from app.schemas.analytics import (  # noqa: F401
     PositionSourceStat,
 )
 from app.schemas.global_oil_features import MarketSnapshotResponse  # noqa: F401
+from app.schemas.satellite import (  # noqa: F401
+    SatelliteDetectionResponse,
+    SatelliteDetectionListResponse,
+    SatelliteSceneResponse,
+    SatelliteSummaryResponse,
+)
 
 __all__ = [
     "VesselBase",
@@ -50,4 +56,9 @@ __all__ = [
     "IngestionDataPoint",
     "PositionSourceStat",
     "MarketSnapshotResponse",
+    "SatelliteDetectionResponse",
+    "SatelliteDetectionListResponse",
+    "SatelliteSceneResponse",
+    "SatelliteSummaryResponse",
 ]
+

@@ -16,7 +16,21 @@ class Settings(BaseSettings):
     OPENWATERS_ENABLED: bool = True
     OPENWATERS_WS_URL: str = "wss://ais.openwaters.io/v1/stream"
     OPENWATERS_API_KEY: str = ""
+    HORMUZ_NOW_ENABLED: bool = True
+    HORMUZ_NOW_SNAPSHOT_URL: str = "https://hormuz.now/api/snapshot?format=compact"
+    HORMUZ_NOW_POLL_SECONDS: int = 60
     AIS_TANKER_TYPES: list[int] = list(range(80, 90))  # AIS ship types 80-89
+
+    # Open-source Satellite SAR vessel detection settings (Strait of Hormuz & chokepoints)
+    SENTINEL1_ENABLED: bool = True
+    CDSE_CLIENT_ID: str = ""  # Free Copernicus Data Space Ecosystem OAuth client ID
+    CDSE_CLIENT_SECRET: str = ""  # Free Copernicus Data Space Ecosystem OAuth client secret
+    SENTINEL1_LOOKBACK_DAYS: int = 14
+    SENTINEL1_RUN_INTERVAL_HOURS: int = 6
+    GFW_SAR_ENABLED: bool = True
+    GFW_API_TOKEN: str = ""  # Free Global Fishing Watch v3 API token
+    GFW_SAR_LOOKBACK_DAYS: int = 14
+    GFW_SAR_RUN_INTERVAL_HOURS: int = 12
 
     # Detection engine settings
     PORT_PROXIMITY_KM: float = 5.0

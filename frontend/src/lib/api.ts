@@ -107,3 +107,28 @@ export const getIngestionData = (hours = 24) =>
 export const getPositionSources = (hours = 24) =>
   fetchJSON<import("./types").PositionSourceStat[]>(`/api/analytics/position-sources?hours=${hours}`);
 
+// ─── Satellite SAR Detections ───────────────────────────────────────────────
+
+export const getSatelliteDetections = (params?: {
+  hours?: number;
+  source?: string;
+  chokepoint?: string;
+  dark_only?: boolean;
+  limit?: number;
+}) => {
+  const q = new URLSearchParams();
+  if (params?.hours) q.set("hours", String(params.hours));
+  if (params?.source) q.set("source", params.source);
+  if (params?.chokepoint) q.set("chokepoint", params.chokepoint);
+  if (params?.dark_only) q.set("dark_only", "true");
+  if (params?.limit) q.set("limit", String(params.limit));
+  return fetchJSON<import("./types").SatelliteDetectionListResponse>(`/api/satellite/detections?${q}`);
+};
+
+export const getSatelliteScenes = (chokepoint = "Strait of Hormuz", limit = 20) =>
+  fetchJSON<import("./types").SatelliteScene[]>(
+    `/api/satellite/scenes?chokepoint=${encodeURIComponent(chokepoint)}&limit=${limit}`
+  );
+
+export const getSatelliteSummary = (hours = 336) =>
+  fetchJSON<import("./types").SatelliteSummary>(`/api/satellite/summary?hours=${hours}`);
