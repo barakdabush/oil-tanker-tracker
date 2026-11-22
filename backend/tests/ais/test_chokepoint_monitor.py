@@ -387,3 +387,12 @@ def test_historical_replay_additive_idempotency():
         existing_transit_times=existing_times + [newly_found[0]["entry_time"]],
     )
     assert len(second_run) == 0
+
+
+def test_backend_app_and_chokepoints_recalculate_route_import():
+    """Regression test for #48: app.main and chokepoints router must import cleanly."""
+    from app.main import app
+
+    route_paths = {route.path for route in app.routes}
+    assert "/api/chokepoints/recalculate" in route_paths
+
