@@ -53,8 +53,52 @@ jobs:
             --jq '"Title: " + .title + "\n\n" + .body' > "$RUNNER_TEMP/issue.md"
           TITLE=$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title | tr -cd '[:alnum:] _-' | cut -c1-60)
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+          # Pre-inject repo file list, recent commits, and suspect source/test file from Logger
+          python3 - "$RUNNER_TEMP/issue.md" "$RUNNER_TEMP/repo_ctx.md" <<'PYEOF'
+          import re, subprocess, sys
+          from pathlib import Path
+
+          issue_text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          out_parts = ["<repo_context>"]
+
+          # Compact file list
+          files = sorted(
+              str(p) for p in list(Path("backend/app").rglob("*.py")) + list(Path("backend/tests/ais").rglob("*.py"))
+              if "__pycache__" not in p.parts
+          )
+          out_parts.append("### Backend files\n" + "\n".join(files[:120]))
+
+          # Recent commits
+          git_log = subprocess.run(["git", "log", "-n", "5", "--oneline"], capture_output=True, text=True).stdout.strip()
+          if git_log:
+              out_parts.append("### Recent commits\n" + git_log)
+
+          # Resolve Logger (e.g. app.services.news_fetcher -> backend/app/services/news_fetcher.py)
+          m = re.search(r"\*\*Logger\*\*\s*\|\s*`([^`]+)`", issue_text)
+          if m:
+              logger_name = m.group(1).strip()
+              rel_py = Path("backend") / (logger_name.replace(".", "/") + ".py")
+              if rel_py.is_file():
+                  lines = rel_py.read_text(encoding="utf-8", errors="replace").splitlines()
+                  numbered = "\n".join(f"{i}: {l}" for i, l in enumerate(lines[:500], 1))
+                  out_parts.append(f"### Pre-loaded suspect file: {rel_py}\n```python\n{numbered[:22000]}\n```")
+                  # Also pre-load matching test file if present
+                  stem = rel_py.stem
+                  for tp in sorted(Path("backend/tests/ais").glob(f"*{stem}*.py")):
+                      tlines = tp.read_text(encoding="utf-8", errors="replace").splitlines()
+                      tnum = "\n".join(f"{i}: {l}" for i, l in enumerate(tlines[:300], 1))
+                      out_parts.append(f"### Pre-loaded test file: {tp}\n```python\n{tnum[:12000]}\n```")
+                      break
+
+          out_parts.append("</repo_context>")
+          Path(sys.argv[2]).write_text("\n\n".join(out_parts), encoding="utf-8")
+          PYEOF
+
           {
             cat .github/agents/triage_and_fix.md
+            echo
+            cat "$RUNNER_TEMP/repo_ctx.md"
             echo
             echo "<incident_issue number=\"$ISSUE_NUMBER\">"
             cat "$RUNNER_TEMP/issue.md"
@@ -72,8 +116,10 @@ jobs:
         run: |
           python3 .github/agents/run_agent.py \
             --mode fix \
+            --max-turns 15 \
             --prompt-file "$RUNNER_TEMP/prompt.md" \
-            --output "$RUNNER_TEMP/summary.md"
+            --output "$RUNNER_TEMP/summary.md" \
+            --stats-output "$RUNNER_TEMP/agent_stats.json"
 
       - name: Parse triage verdict
         id: verdict
@@ -217,9 +263,16 @@ jobs:
                   ? '🤷 **no-op**: marked fixable, but no code changes were produced (`needs-human`).'
                   : '🧑‍🔧 **needs-human**: blocked from auto-fix (complicated or dangerous change).');
 
+            let statsLine = '';
+            try {
+              const st = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/agent_stats.json`, 'utf8'));
+              const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+              statsLine = `\n📊 **Agent usage:** ${st.turns}/${st.max_turns} turns · ${fmt(st.total_tokens)} tokens (${fmt(st.prompt_tokens)} in / ${fmt(st.completion_tokens)} out) · model: \`${st.model || 'unknown'}\``;
+            } catch (_) {}
+
             await github.rest.issues.createComment({
               ...context.repo, issue_number,
-              body: `## 🤖 Incident Triage & Fix\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}`,
+              body: `## 🤖 Incident Triage & Fix\n\n${summary || '_No analysis produced._'}\n\n---\n**Severity:** ${severity} · ${verdict}${statsLine}`,
             });
             await github.rest.issues.addLabels({
               ...context.repo, issue_number,

@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from pathlib import Path
 
 REPO_ROOT = Path.cwd().resolve()
-MAX_FILE_CHARS = 24000
+MAX_FILE_CHARS = 36000
 MAX_CMD_CHARS = 12000
 LLM_WALL_TIMEOUT_SECONDS = 120
 AGENT_WALL_BUDGET_SECONDS = 20 * 60
@@ -117,7 +117,7 @@ def tool_grep_search(pattern: str, path: str = ".") -> str:
     return "\n".join(cleaned) or "No matches."
 
 
-def tool_read_file(path: str, start_line: int = 1, end_line: int = 300) -> str:
+def tool_read_file(path: str, start_line: int = 1, end_line: int = 600) -> str:
     p = _safe_path(path)
     if not p.is_file():
         return f"File not found: {path}"
@@ -212,7 +212,7 @@ READ_TOOLS = [
                 "properties": {
                     "path": {"type": "string"},
                     "start_line": {"type": "integer", "default": 1},
-                    "end_line": {"type": "integer", "default": 300},
+                    "end_line": {"type": "integer", "default": 600},
                 },
                 "required": ["path"],
             },
@@ -357,13 +357,14 @@ def main():
     parser.add_argument("--mode", choices=["triage", "fix"], required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--stats-output", default="", help="Optional JSON file path for turn/token usage stats")
     parser.add_argument("--max-turns", type=int, default=None)
     args = parser.parse_args()
 
     providers = _resolve_providers()
     allow_write = args.mode == "fix"
     tools = READ_TOOLS + (WRITE_TOOLS if allow_write else [])
-    max_turns = args.max_turns or (35 if allow_write else 20)
+    max_turns = args.max_turns or (15 if allow_write else 12)
 
     prompt_text = Path(args.prompt_file).read_text(encoding="utf-8")
     messages: list[dict] = [{"role": "user", "content": prompt_text}]
@@ -372,11 +373,27 @@ def main():
 
     deadline = time.monotonic() + AGENT_WALL_BUDGET_SECONDS
     final_text = ""
+    turns_used = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    last_model = model
+
     for turn in range(1, max_turns + 1):
         if time.monotonic() >= deadline:
             print(f"Stopping at turn {turn}: reached {AGENT_WALL_BUDGET_SECONDS}s wall-clock budget.", file=sys.stderr)
             break
         resp, used_model = _chat(providers, messages, tools)
+        turns_used = turn
+        last_model = used_model
+        usage = resp.get("usage") or {}
+        p_tok = int(usage.get("prompt_tokens") or 0)
+        c_tok = int(usage.get("completion_tokens") or 0)
+        t_tok = int(usage.get("total_tokens") or (p_tok + c_tok))
+        prompt_tokens += p_tok
+        completion_tokens += c_tok
+        total_tokens += t_tok
+
         msg = resp["choices"][0]["message"]
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
@@ -395,9 +412,20 @@ def main():
                 "tool_call_id": tc["id"],
                 "content": result,
             })
-        print(f"Turn {turn} ({used_model}): executed {len(tool_calls)} tool(s)", file=sys.stderr)
+        print(f"Turn {turn} ({used_model}): executed {len(tool_calls)} tool(s), +{t_tok} tok", file=sys.stderr)
 
     Path(args.output).write_text(final_text, encoding="utf-8")
+    stats = {
+        "turns": turns_used,
+        "max_turns": max_turns,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "model": last_model,
+    }
+    print(f"Agent finished: {json.dumps(stats)}", file=sys.stderr)
+    if args.stats_output:
+        Path(args.stats_output).write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
