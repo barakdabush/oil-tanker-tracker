@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,30 +43,51 @@ def resolve_api_base_url(explicit: str = "") -> str:
     return ""
 
 
-def resolve_llm_provider() -> Optional[tuple[str, str, str]]:
-    """Resolve (url, api_key, model) using the same env vars as .github/agents/run_agent.py."""
+def resolve_llm_providers(preferred: str = "auto") -> list[tuple[str, str, str, str]]:
+    """Return ordered list of (provider_name, url, api_key, model) candidates.
+
+    Priority in ``auto`` mode: Gemini (paid/funded) -> OpenRouter -> Groq.
+    If ``preferred`` is a specific provider name, only that provider is returned.
+    """
     explicit_url = os.getenv("AGENT_BASE_URL", "").strip()
     explicit_model = os.getenv("AGENT_MODEL", "").strip()
+    pref = (preferred or "auto").lower().strip()
 
+    candidates: list[tuple[str, str, str, str]] = []
+    if os.getenv("GEMINI_API_KEY", "").strip():
+        candidates.append((
+            "gemini",
+            explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            os.getenv("GEMINI_API_KEY", "").strip(),
+            explicit_model or "gemini-2.5-flash",
+        ))
     if os.getenv("OPENROUTER_API_KEY", "").strip():
-        return (
+        candidates.append((
+            "openrouter",
             explicit_url or "https://openrouter.ai/api/v1/chat/completions",
             os.getenv("OPENROUTER_API_KEY", "").strip(),
             explicit_model or "openrouter/free",
-        )
+        ))
     if os.getenv("GROQ_API_KEY", "").strip():
-        return (
+        candidates.append((
+            "groq",
             explicit_url or "https://api.groq.com/openai/v1/chat/completions",
             os.getenv("GROQ_API_KEY", "").strip(),
             explicit_model or "llama-3.3-70b-versatile",
-        )
-    if os.getenv("GEMINI_API_KEY", "").strip():
-        return (
-            explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            os.getenv("GEMINI_API_KEY", "").strip(),
-            explicit_model or "gemini-2.0-flash",
-        )
-    return None
+        ))
+
+    if pref != "auto":
+        return [c for c in candidates if c[0] == pref]
+    return candidates
+
+
+def resolve_llm_provider() -> Optional[tuple[str, str, str]]:
+    """Backwards-compatible helper returning the top (url, api_key, model) provider."""
+    providers = resolve_llm_providers("auto")
+    if not providers:
+        return None
+    _, url, key, model = providers[0]
+    return (url, key, model)
 
 
 def http_json(
@@ -184,7 +206,12 @@ def build_deterministic_fallback(ctx: dict) -> tuple[str, dict]:
     }
 
 
-def call_llm_analyst(prompt_md: str, ctx: dict, provider: tuple[str, str, str]) -> str:
+def call_llm_analyst(
+    prompt_md: str,
+    ctx: dict,
+    provider: tuple[str, str, str],
+    retry_delays: tuple[float, ...] = (8.0, 20.0),
+) -> tuple[str, dict]:
     url, api_key, model = provider
     user_content = (
         "Analyze the following Oil Tanker Monitor intelligence snapshot and produce the briefing:\n\n"
@@ -192,24 +219,60 @@ def call_llm_analyst(prompt_md: str, ctx: dict, provider: tuple[str, str, str]) 
         + json.dumps(ctx, indent=2, default=str)[:28000]
         + "\n</market_intel_context>"
     )
-    resp = http_json(
-        url,
-        method="POST",
-        headers={"Authorization": f"Bearer {api_key}"},
-        payload={
-            "model": model,
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": prompt_md},
-                {"role": "user", "content": user_content},
-            ],
-        },
-        timeout=90,
-    )
-    choices = resp.get("choices") or []
-    if not choices:
-        raise RuntimeError(f"LLM returned no choices: {resp}")
-    return str((choices[0].get("message") or {}).get("content") or "").strip()
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": prompt_md},
+            {"role": "user", "content": user_content},
+        ],
+    }
+
+    last_err: Optional[Exception] = None
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            resp = http_json(
+                url,
+                method="POST",
+                headers={"Authorization": f"Bearer {api_key}"},
+                payload=payload,
+                timeout=90,
+            )
+            choices = resp.get("choices") or []
+            if not choices:
+                raise RuntimeError(f"LLM returned no choices: {resp}")
+            content = str((choices[0].get("message") or {}).get("content") or "").strip()
+            usage = resp.get("usage") or {}
+            return content, {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "total_tokens": int(usage.get("total_tokens") or (int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))),
+            }
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            last_err = RuntimeError(f"HTTP {e.code} {e.reason}: {err_body}")
+            if e.code in (429, 500, 502, 503, 504) and attempt < len(retry_delays):
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait_s = min(max(float(retry_after), 2.0), 45.0) if retry_after else retry_delays[attempt]
+                except (TypeError, ValueError):
+                    wait_s = retry_delays[attempt]
+                print(f"Transient HTTP {e.code} from {model}; retrying in {wait_s:.0f}s ...", file=sys.stderr)
+                time.sleep(wait_s)
+                continue
+            raise last_err from e
+        except Exception as e:
+            last_err = e
+            if attempt < len(retry_delays):
+                time.sleep(retry_delays[attempt])
+                continue
+            raise
+    assert last_err is not None
+    raise last_err
 
 
 def main() -> int:
@@ -217,6 +280,7 @@ def main() -> int:
     parser.add_argument("--api-base-url", default="", help="Backend base URL (e.g. http://<host>:8000)")
     parser.add_argument("--days", type=int, default=14, help="Lookback window in days")
     parser.add_argument("--top-events", type=int, default=15, help="Top ranked news events to include")
+    parser.add_argument("--provider", default="auto", choices=["auto", "gemini", "openrouter", "groq"])
     parser.add_argument("--prompt-file", default=".github/agents/market_analyst.md")
     parser.add_argument("--output", default="briefing.md")
     parser.add_argument("--post-briefing", action="store_true", help="POST briefing back to /api/agent-intel/briefings")
@@ -235,22 +299,43 @@ def main() -> int:
     print(f"Fetching intelligence context from {ctx_url} ...")
     ctx = http_json(ctx_url, method="GET", timeout=45)
 
-    provider = resolve_llm_provider()
+    providers = resolve_llm_providers(args.provider)
     model_used = "deterministic-fallback"
-    if provider is None:
-        print("No LLM API key found (OPENROUTER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY); using deterministic fallback.")
+    markdown = ""
+    structured: dict = {}
+    usage_stats: dict = {}
+
+    if not providers:
+        print(f"No LLM API key found for provider={args.provider}; using deterministic fallback.")
         markdown, structured = build_deterministic_fallback(ctx)
     else:
-        _, _, model_used = provider
-        print(f"Calling AI Market Analyst ({model_used}) ...")
         prompt_md = Path(args.prompt_file).read_text(encoding="utf-8")
-        raw_reply = call_llm_analyst(prompt_md, ctx, provider)
-        markdown, structured = parse_briefing_output(raw_reply)
+        succeeded = False
+        for pname, url, api_key, model in providers:
+            print(f"Calling AI Market Analyst [{pname}] ({model}) ...")
+            try:
+                raw_reply, usage_stats = call_llm_analyst(prompt_md, ctx, (url, api_key, model))
+                markdown, structured = parse_briefing_output(raw_reply)
+                model_used = model
+                succeeded = True
+                break
+            except Exception as e:
+                print(f"Provider [{pname}] ({model}) failed: {e}", file=sys.stderr)
+        if not succeeded:
+            print("All configured LLM providers failed; falling back to deterministic briefing.", file=sys.stderr)
+            markdown, structured = build_deterministic_fallback(ctx)
+
+    tok_part = ""
+    if usage_stats.get("total_tokens"):
+        tok_part = (
+            f" · **Tokens:** `{usage_stats['total_tokens']:,}` "
+            f"(`{usage_stats['prompt_tokens']:,}` in / `{usage_stats['completion_tokens']:,}` out)"
+        )
 
     header = (
         f"## 🛢️ Oil Tanker Monitor — AI Market Briefing\n\n"
         f"**Bias:** `{structured['market_bias'].upper()}` · **Model:** `{model_used}` · "
-        f"**Window:** `{args.days}d` · **Generated:** `{ctx.get('generated_at', '')}`\n\n"
+        f"**Window:** `{args.days}d`{tok_part} · **Generated:** `{ctx.get('generated_at', '')}`\n\n"
     )
     full_md = header + markdown + "\n"
     Path(args.output).write_text(full_md, encoding="utf-8")
