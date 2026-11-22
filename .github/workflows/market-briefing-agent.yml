@@ -7,14 +7,24 @@ name: AI Market Briefing Agent
 
 on:
   schedule:
-    # Twice daily: 07:00 UTC (Europe open) and 19:00 UTC (US close)
-    - cron: "0 7,19 * * *"
+    # Twice daily (offset off :00 to avoid top-of-hour free-tier spikes)
+    - cron: "17 7,19 * * *"
   workflow_dispatch:
     inputs:
       days:
         description: "Lookback window in days (1-90)"
         required: false
         default: "14"
+      provider:
+        description: "LLM provider (auto tries Gemini -> OpenRouter -> Groq)"
+        type: choice
+        required: false
+        default: "auto"
+        options:
+          - auto
+          - gemini
+          - openrouter
+          - groq
       post_issue:
         description: "Also publish the briefing as a GitHub Issue"
         type: boolean
@@ -56,10 +66,12 @@ jobs:
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
           LOOKBACK_DAYS: ${{ inputs.days || '14' }}
+          LLM_PROVIDER: ${{ inputs.provider || 'auto' }}
         run: |
           python3 .github/agents/run_market_briefing.py \
             --days "$LOOKBACK_DAYS" \
             --top-events 15 \
+            --provider "$LLM_PROVIDER" \
             --prompt-file .github/agents/market_analyst.md \
             --output "$RUNNER_TEMP/market_briefing.md" \
             --post-briefing
