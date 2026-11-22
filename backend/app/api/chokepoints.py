@@ -240,6 +240,12 @@ async def recalculate_chokepoint_transits(
         False,
         description="If true (and not dry_run), also recalculate daily oil_market_snapshots for the backfilled window",
     ),
+    max_gap_hours: Optional[int] = Query(
+        None,
+        ge=1,
+        le=2160,
+        description="Optional override for max AIS gap hours between consecutive points (defaults to CHOKEPOINT_MAX_CROSSING_GAP_HOURS=720)",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Recalculate historical chokepoint transits using the hybrid polygon + gate-line algorithm."""
@@ -251,6 +257,7 @@ async def recalculate_chokepoint_transits(
         days=effective_days,
         replace_existing=replace_existing,
         dry_run=dry_run,
+        max_gap_hours=float(max_gap_hours) if max_gap_hours is not None else None,
     )
 
     snapshots_recalculated = 0

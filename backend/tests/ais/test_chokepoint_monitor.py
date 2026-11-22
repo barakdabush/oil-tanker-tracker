@@ -451,10 +451,19 @@ def test_rejection_diagnostics_track_reasons():
     )
     assert rejected.get("speed_too_high") == 1
 
-    # Gap too long (20 days > 14d default)
-    detect_segment_crossing(
+    # 20-day dark transit across Hormuz is accepted under 30d (720h) default
+    m_20d = detect_segment_crossing(
         TrackPoint(time=t0, lat=26.50, lon=54.50),
         TrackPoint(time=t0 + timedelta(days=20), lat=25.50, lon=58.50),
+        cp,
+        rejected_counts=rejected,
+    )
+    assert m_20d is not None and m_20d.method == "gate_crossing"
+
+    # Gap too long (35 days > 30d default)
+    detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.50, lon=54.50),
+        TrackPoint(time=t0 + timedelta(days=35), lat=25.50, lon=58.50),
         cp,
         rejected_counts=rejected,
     )
