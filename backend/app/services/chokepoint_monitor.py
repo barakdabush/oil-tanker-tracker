@@ -50,6 +50,41 @@ DEFAULT_GATE_LINES_WKT: dict[str, str] = {
     "Panama Canal": "LINESTRING(-80.30 8.90, -79.20 9.35)",
 }
 
+# Closed-basin definitions for chokepoints that are the sole maritime exit of an
+# enclosed sea. If a vessel's consecutive positions have one point inside the
+# basin and one outside (regardless of distance), it MUST have transited the
+# chokepoint.
+CLOSED_BASIN_CONFIG: dict[str, dict] = {
+    "Strait of Hormuz": {
+        "polygon": Polygon([
+            (47.50, 30.60),
+            (50.50, 30.60),
+            (56.45, 27.35),
+            (56.35, 26.40),
+            (56.05, 25.70),
+            (55.75, 24.50),
+            (51.50, 23.50),
+            (47.50, 27.50),
+            (47.50, 30.60),
+        ]),
+        "center": (26.40, 56.35),  # (lat, lon) of strait throat
+        "outbound_direction": "eastbound",
+        "inbound_direction": "westbound",
+    },
+    "Turkish Straits (Bosporus)": {
+        "polygon": Polygon([
+            (27.00, 41.15),
+            (42.50, 41.15),
+            (42.50, 47.50),
+            (27.00, 47.50),
+            (27.00, 41.15),
+        ]),
+        "center": (41.12, 29.05),
+        "outbound_direction": "southbound",
+        "inbound_direction": "northbound",
+    },
+}
+
 # Track which vessels are currently inside each chokepoint
 # Key: (mmsi, chokepoint_id), Value: transit_start_time
 _vessels_in_chokepoint: dict[tuple[int, int], datetime] = {}
@@ -64,6 +99,10 @@ class ChokepointGeometry:
     congestion_threshold: int
     polygon: Optional[Polygon]
     gate_line: Optional[LineString]
+    basin_polygon: Optional[Polygon] = None
+    basin_center: Optional[tuple[float, float]] = None  # (lat, lon)
+    basin_outbound_direction: str = "eastbound"
+    basin_inbound_direction: str = "westbound"
 
 
 @dataclass(frozen=True)
@@ -83,7 +122,7 @@ class CrossingMatch:
 
     crossing_time: datetime
     direction: str
-    method: str  # "gate_crossing" | "polygon_segment"
+    method: str  # "gate_crossing" | "polygon_segment" | "basin_transition"
     fraction: float
     p1: TrackPoint
     p2: TrackPoint
@@ -111,25 +150,61 @@ def detect_segment_crossing(
     """Determine whether the movement segment (p1 -> p2) crossed chokepoint `cp`.
 
     Applies temporal, spatial, and physical-speed safeguards to reject GPS
-    spoofing / teleport glitches and stale cross-ocean gaps.
+    spoofing / teleport glitches and stale cross-ocean gaps. For enclosed sea
+    basins (e.g. Persian Gulf -> Strait of Hormuz), transitioning into or out
+    of the basin guarantees a transit regardless of distance between AIS boxes.
     """
     dt_seconds = (p2.time - p1.time).total_seconds()
     if dt_seconds <= 0:
         return None
 
-    # Check geometry first only if we need rejection diagnostics; otherwise
-    # check cheap scalar guards first.
     dt_hours = dt_seconds / 3600.0
     dist_km = haversine_km(p1.lat, p1.lon, p2.lat, p2.lon)
     if dist_km < 0.05:
         return None
+
+    speed_too_high = (
+        dt_hours >= 0.05 and ((dist_km / 1.852) / dt_hours) > max_implied_speed_knots
+    )
+
+    # Check 0: Closed-basin transition (sole maritime exit, e.g. Persian Gulf <-> Hormuz).
+    # Catches tankers going dark in the Gulf and reappearing in Malacca, Red Sea, or Cape
+    # without any false positives from cross-continental chords.
+    if cp.basin_polygon is not None:
+        p1_in_basin = cp.basin_polygon.contains(Point(p1.lon, p1.lat))
+        p2_in_basin = cp.basin_polygon.contains(Point(p2.lon, p2.lat))
+        if p1_in_basin != p2_in_basin:
+            if speed_too_high:
+                if rejected_counts is not None:
+                    rejected_counts["speed_too_high"] = rejected_counts.get("speed_too_high", 0) + 1
+                return None
+            if cp.basin_center is not None:
+                c_lat, c_lon = cp.basin_center
+                d1 = haversine_km(p1.lat, p1.lon, c_lat, c_lon)
+                d2 = haversine_km(c_lat, c_lon, p2.lat, p2.lon)
+                frac = d1 / (d1 + d2) if (d1 + d2) > 0 else 0.5
+            else:
+                frac = 0.5
+            frac = max(0.0, min(1.0, float(frac)))
+            crossing_time = p1.time + timedelta(seconds=frac * dt_seconds)
+            direction = (
+                cp.basin_outbound_direction if p1_in_basin else cp.basin_inbound_direction
+            )
+            return CrossingMatch(
+                crossing_time=crossing_time,
+                direction=direction,
+                method="basin_transition",
+                fraction=frac,
+                p1=p1,
+                p2=p2,
+            )
 
     rejection_reason: Optional[str] = None
     if dt_hours > max_gap_hours:
         rejection_reason = "gap_too_long"
     elif dist_km > max_distance_km:
         rejection_reason = "distance_too_far"
-    elif dt_hours >= 0.05 and ((dist_km / 1.852) / dt_hours) > max_implied_speed_knots:
+    elif speed_too_high:
         rejection_reason = "speed_too_high"
 
     if rejection_reason is not None:
@@ -483,6 +558,7 @@ class ChokepointMonitor:
             polygon = shapely_wkt.loads(row.poly_wkt) if row.poly_wkt else None
             gate_wkt = row.gate_wkt or DEFAULT_GATE_LINES_WKT.get(row.name)
             gate_line = shapely_wkt.loads(gate_wkt) if gate_wkt else None
+            basin_cfg = CLOSED_BASIN_CONFIG.get(row.name)
             geoms.append(
                 ChokepointGeometry(
                     id=row.id,
@@ -490,6 +566,10 @@ class ChokepointMonitor:
                     congestion_threshold=row.congestion_threshold or 20,
                     polygon=polygon,
                     gate_line=gate_line,
+                    basin_polygon=basin_cfg["polygon"] if basin_cfg else None,
+                    basin_center=basin_cfg["center"] if basin_cfg else None,
+                    basin_outbound_direction=basin_cfg["outbound_direction"] if basin_cfg else "eastbound",
+                    basin_inbound_direction=basin_cfg["inbound_direction"] if basin_cfg else "westbound",
                 )
             )
         return geoms
@@ -798,7 +878,12 @@ class ChokepointMonitor:
             "positions_scanned": 0,
             "deleted_existing": 0,
             "inserted_total": 0,
-            "inserted_by_method": {"polygon": 0, "gate_crossing": 0, "polygon_segment": 0},
+            "inserted_by_method": {
+                "polygon": 0,
+                "gate_crossing": 0,
+                "polygon_segment": 0,
+                "basin_transition": 0,
+            },
             "inserted_by_chokepoint": {},
             "rejected_crossings": {},
         }
@@ -811,7 +896,9 @@ class ChokepointMonitor:
             # Precompute bounding boxes for fast per-vessel filtering
             cp_bounds: dict[int, tuple[float, float, float, float]] = {}
             for cp in chokepoints:
-                geoms = [g for g in (cp.polygon, cp.gate_line) if g is not None]
+                geoms = [
+                    g for g in (cp.polygon, cp.gate_line, cp.basin_polygon) if g is not None
+                ]
                 if not geoms:
                     continue
                 minx = min(g.bounds[0] for g in geoms)
