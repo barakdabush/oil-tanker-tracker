@@ -103,7 +103,7 @@ def detect_segment_crossing(
     p2: TrackPoint,
     cp: ChokepointGeometry,
     *,
-    max_gap_hours: float = 336.0,
+    max_gap_hours: float = 720.0,
     max_distance_km: float = 2500.0,
     max_implied_speed_knots: float = 35.0,
     rejected_counts: Optional[dict[str, int]] = None,
@@ -324,7 +324,7 @@ def replay_historical_track(
     existing_transit_times: Optional[list[datetime]] = None,
     window_start: Optional[datetime] = None,
     cooldown_hours: float = 12.0,
-    max_gap_hours: float = 336.0,
+    max_gap_hours: float = 720.0,
     max_distance_km: float = 2500.0,
     max_implied_speed_knots: float = 35.0,
     rejected_counts: Optional[dict[str, int]] = None,
@@ -756,6 +756,7 @@ class ChokepointMonitor:
         replace_existing: bool = False,
         dry_run: bool = False,
         batch_size: int = 200,
+        max_gap_hours: Optional[float] = None,
     ) -> dict:
         """Recalculate historical chokepoint transits from stored `vessel_positions`.
 
@@ -767,10 +768,16 @@ class ChokepointMonitor:
                 (idempotent via cooldown deduplication).
             dry_run: If True, computes counts without writing or deleting rows.
             batch_size: Number of tanker MMSIs processed per DB batch.
+            max_gap_hours: Optional override for max AIS gap hours between consecutive points.
         """
         start_time = time.time()
         now = datetime.now(timezone.utc)
-        max_gap_hours = float(settings.CHOKEPOINT_MAX_CROSSING_GAP_HOURS)
+        effective_max_gap_hours = (
+            float(max_gap_hours)
+            if max_gap_hours is not None
+            else float(settings.CHOKEPOINT_MAX_CROSSING_GAP_HOURS)
+        )
+        max_gap_hours = effective_max_gap_hours
         max_distance_km = float(settings.CHOKEPOINT_MAX_CROSSING_DISTANCE_KM)
         max_implied_speed_knots = float(settings.CHOKEPOINT_MAX_IMPLIED_SPEED_KNOTS)
         cooldown_hours = float(settings.CHOKEPOINT_TRANSIT_COOLDOWN_HOURS)
