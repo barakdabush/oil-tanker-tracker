@@ -122,4 +122,5 @@ jobs:
     uses: ./.github/workflows/incident-fix.yml
     with:
       issue_number: ${{ needs.triage.outputs.issue_number }}
+      auto_triggered: true
     secrets: inherit

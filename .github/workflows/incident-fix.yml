@@ -12,6 +12,11 @@ on:
         description: "Issue number to attempt a fix for"
         required: true
         type: string
+      auto_triggered:
+        description: "True when invoked via workflow_call from triage"
+        required: false
+        type: boolean
+        default: false
   issues:
     types: [labeled]
   workflow_dispatch:
@@ -32,7 +37,7 @@ permissions:
 jobs:
   fix:
     if: >-
-      github.event_name == 'workflow_call' ||
+      inputs.auto_triggered == true ||
       github.event_name == 'workflow_dispatch' ||
       (github.event.label.name == 'agent-fix' && contains(github.event.issue.labels.*.name, 'auto-incident'))
     runs-on: ubuntu-latest
