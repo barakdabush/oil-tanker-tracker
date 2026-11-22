@@ -38,6 +38,20 @@ CHOKEPOINT_BBOXES = [
     (7.5, -80.5, 10.5, -77.5),    # Panama Canal (Pacific + Caribbean approaches)
 ]
 
+# Additional coastal oil-corridor & major hub bounding boxes subscribed on
+# aisstream.io (Open Waters stays on the 8 core CHOKEPOINT_BBOXES due to its
+# area limit). Bridges key blind spots between chokepoints without global noise.
+CORRIDOR_BBOXES = [
+    (5.0, 66.0, 23.5, 82.0),      # West India & Sri Lanka (Jamnagar, Mumbai, Colombo — Hormuz <-> Malacca)
+    (30.5, 22.0, 38.0, 36.5),     # Eastern Mediterranean & Aegean (Suez <-> Bosporus + Laconian Gulf STS)
+    (34.5, -9.0, 38.5, 3.0),      # Strait of Gibraltar & Western Med approach
+    (49.0, -5.5, 54.0, 6.5),      # English Channel & Rotterdam / ARA refining hub
+    (21.0, 113.0, 33.0, 125.0),   # East / South China Sea (Zhoushan, Ningbo, Taiwan Strait)
+    (25.0, -98.0, 30.5, -87.0),   # US Gulf Coast (Houston, Corpus Christi, LOOP crude exports)
+]
+
+AISSTREAM_BBOXES = CHOKEPOINT_BBOXES + CORRIDOR_BBOXES
+
 POSITION_MSG_TYPES = (
     "PositionReport",
     "StandardClassBPositionReport",
@@ -46,8 +60,8 @@ POSITION_MSG_TYPES = (
 )
 STATIC_MSG_TYPES = ("ShipStaticData", "StaticDataReport")
 
-MAX_PENDING_POSITIONS = 5000
-MAX_KNOWN_NON_TANKERS = 50000
+MAX_PENDING_POSITIONS = 10000
+MAX_KNOWN_NON_TANKERS = 150000
 SUSPECT_POSITION_QUORUM = 3
 
 # Regex for Go time.String() format used by aisstream.io, e.g. "2026-04-23 18:42:33.749439468 +0000 UTC"
@@ -216,7 +230,7 @@ async def _connect_and_consume_aisstream():
         "APIKey": settings.AIS_API_KEY,
         "BoundingBoxes": [
             [[max_lat, min_lon], [min_lat, max_lon]]
-            for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES
+            for (min_lat, min_lon, max_lat, max_lon) in AISSTREAM_BBOXES
         ],
         "FilterMessageTypes": list(POSITION_MSG_TYPES + STATIC_MSG_TYPES),
     }
@@ -230,7 +244,10 @@ async def _connect_and_consume_aisstream():
         open_timeout=30,
     ) as ws:
         await ws.send(json.dumps(subscribe_msg))
-        logger.info("✅ Connected to aisstream.io — receiving AIS data")
+        logger.info(
+            f"✅ Connected to aisstream.io — receiving AIS data across "
+            f"{len(AISSTREAM_BBOXES)} zones ({len(CHOKEPOINT_BBOXES)} chokepoints + {len(CORRIDOR_BBOXES)} oil corridors)"
+        )
 
         async for raw_msg in ws:
             try:
