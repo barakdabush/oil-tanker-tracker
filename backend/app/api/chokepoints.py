@@ -20,8 +20,12 @@ async def list_chokepoints(
 ):
     """List all chokepoints and calculate their dynamic congestion status based on recent transits."""
     
-    # Get all chokepoints with their GeoJSON boundaries
-    chokepoints_stmt = text("SELECT id, name, region, avg_daily_oil_flow_mbd, congestion_threshold, ST_AsGeoJSON(boundary_polygon) as geojson FROM chokepoints")
+    # Get all chokepoints with their GeoJSON boundaries and gate lines
+    chokepoints_stmt = text(
+        "SELECT id, name, region, avg_daily_oil_flow_mbd, congestion_threshold, "
+        "ST_AsGeoJSON(boundary_polygon) as geojson, ST_AsGeoJSON(gate_line) as gate_geojson "
+        "FROM chokepoints"
+    )
     chokepoints_result = await db.execute(chokepoints_stmt)
     chokepoints = chokepoints_result.all()
     
@@ -76,7 +80,8 @@ async def list_chokepoints(
                 congestion_threshold=cp.congestion_threshold,
                 current_vessel_count=count,
                 congestion_status=status,
-                boundary_geojson=json.loads(cp.geojson) if cp.geojson else None
+                boundary_geojson=json.loads(cp.geojson) if cp.geojson else None,
+                gate_line_geojson=json.loads(cp.gate_geojson) if cp.gate_geojson else None,
             )
         )
         

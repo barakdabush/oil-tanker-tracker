@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, Polygon, Rectangle, Tooltip, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Polygon, Polyline, Rectangle, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, getVesselColor } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import type { STSEvent } from "@/lib/types";
 
@@ -261,16 +261,33 @@ export default function MapView() {
 
           {showChokepoints && dynamicChokepoints.map((cp) => {
             const pos = geojsonToLeaflet(cp.boundary_geojson);
-            if (pos.length === 0) return null;
+            const gatePos = geojsonLineToLeaflet(cp.gate_line_geojson);
+            if (pos.length === 0 && gatePos.length === 0) return null;
             return (
-              <Polygon key={`cp-${cp.id}`} positions={pos} interactive={false} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
-                <Tooltip permanent direction="center" className="chokepoint-tooltip">
-                  <div style={{ textAlign: "center", fontSize: 11 }}>
-                    <strong>{cp.name}</strong><br />
-                    <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / 24h`}</span>
-                  </div>
-                </Tooltip>
-              </Polygon>
+              <React.Fragment key={`cp-${cp.id}`}>
+                {pos.length > 0 && (
+                  <Polygon positions={pos} interactive={false} pathOptions={{ color: getCongestionColor(cp.congestion_status), weight: 2, fillOpacity: 0.15, dashArray: "5 5" }}>
+                    <Tooltip permanent direction="center" className="chokepoint-tooltip">
+                      <div style={{ textAlign: "center", fontSize: 11 }}>
+                        <strong>{cp.name}</strong><br />
+                        <span style={{ color: getCongestionColor(cp.congestion_status) }}>{`${cp.current_vessel_count || 0} vessels / 24h`}</span>
+                      </div>
+                    </Tooltip>
+                  </Polygon>
+                )}
+                {gatePos.length >= 2 && (
+                  <Polyline
+                    positions={gatePos}
+                    pathOptions={{ color: "#facc15", weight: 2.5, opacity: 0.9, dashArray: "8 6" }}
+                  >
+                    <Tooltip sticky>
+                      <div style={{ fontSize: 11 }}>
+                        <strong>{cp.name}</strong> — Gate Line
+                      </div>
+                    </Tooltip>
+                  </Polyline>
+                )}
+              </React.Fragment>
             );
           })}
 

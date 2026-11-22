@@ -28,6 +28,7 @@ class Chokepoint(Base):
     name = Column(String(255), nullable=False, unique=True)
     region = Column(String(255), nullable=True)
     boundary_polygon = Column(Geometry("POLYGON", srid=4326), nullable=True)
+    gate_line = Column(Geometry("LINESTRING", srid=4326), nullable=True)
     avg_daily_oil_flow_mbd = Column(Float, nullable=True)
     congestion_threshold = Column(Integer, nullable=True)
 
@@ -46,6 +47,7 @@ class ChokepointTransit(Base):
     direction = Column(String(50), nullable=True)
     transit_duration_min = Column(Float, nullable=True)
     draft_on_entry = Column(Float, nullable=True)
+    detection_method = Column(String(32), nullable=True, server_default=text("'polygon'"))
 
     chokepoint = relationship("Chokepoint", back_populates="transits")
 
