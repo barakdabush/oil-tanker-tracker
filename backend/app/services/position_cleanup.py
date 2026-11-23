@@ -9,9 +9,11 @@ Usage (CLI):
 import argparse
 import asyncio
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
@@ -30,9 +32,20 @@ logger = logging.getLogger(__name__)
 DELETE_BATCH_SIZE = 500
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _is_compressed_chunk_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "compressed" in msg or "hypertable" in msg
+
+
 def _vessel_last_position_needs_repair(
     vessel: Vessel,
-    latest_clean: VesselPosition,
+    latest_clean: Any,
     *,
     max_speed_knots: float = MAX_PLAUSIBLE_TANKER_SPEED_KNOTS,
     jitter_km: float = POSITION_JITTER_GRACE_KM,
@@ -52,7 +65,7 @@ def _vessel_last_position_needs_repair(
     if dist_km <= jitter_km:
         return False
 
-    if vessel.last_seen <= latest_clean.time:
+    if _ensure_utc(vessel.last_seen) <= _ensure_utc(latest_clean.time):
         return True
 
     return not is_plausible_move(
@@ -65,6 +78,59 @@ def _vessel_last_position_needs_repair(
         max_speed_knots=max_speed_knots,
         jitter_km=jitter_km,
     )
+
+
+async def _delete_rejected_times(
+    db: AsyncSession,
+    mmsi: int,
+    rejected_times: list[datetime],
+) -> tuple[int, int]:
+    """Delete rejected position rows in batches, safely handling TimescaleDB compressed chunks.
+
+    Returns ``(deleted_count, skipped_compressed_count)``.
+    """
+    deleted = 0
+    skipped_compressed = 0
+
+    for i in range(0, len(rejected_times), DELETE_BATCH_SIZE):
+        batch_times = rejected_times[i : i + DELETE_BATCH_SIZE]
+        stmt = (
+            delete(VesselPosition)
+            .where(
+                VesselPosition.mmsi == mmsi,
+                VesselPosition.time.in_(batch_times),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            async with db.begin_nested():
+                await db.execute(stmt)
+            deleted += len(batch_times)
+        except DBAPIError as exc:
+            if not _is_compressed_chunk_error(exc):
+                raise
+            # Batch touched at least one compressed TimescaleDB chunk: retry row-by-row
+            # so all uncompressed rows are still deleted cleanly without aborting the tx.
+            for ts in batch_times:
+                single_stmt = (
+                    delete(VesselPosition)
+                    .where(
+                        VesselPosition.mmsi == mmsi,
+                        VesselPosition.time == ts,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                try:
+                    async with db.begin_nested():
+                        await db.execute(single_stmt)
+                    deleted += 1
+                except DBAPIError as row_exc:
+                    if _is_compressed_chunk_error(row_exc):
+                        skipped_compressed += 1
+                    else:
+                        raise
+
+    return deleted, skipped_compressed
 
 
 async def cleanup_corrupted_positions(
@@ -87,34 +153,39 @@ async def cleanup_corrupted_positions(
     vessels_scanned = 0
     vessels_affected = 0
     positions_deleted = 0
+    positions_skipped_compressed = 0
     vessels_repaired = 0
     affected_mmsis: list[int] = []
 
     for vessel in vessels:
         vessels_scanned += 1
         pos_result = await db.execute(
-            select(VesselPosition)
+            select(
+                VesselPosition.time,
+                VesselPosition.latitude,
+                VesselPosition.longitude,
+                VesselPosition.speed,
+                VesselPosition.course,
+                VesselPosition.source,
+            )
             .where(VesselPosition.mmsi == vessel.mmsi)
             .order_by(VesselPosition.time.asc())
         )
-        rows = list(pos_result.scalars().all())
+        rows = list(pos_result.all())
 
         clean, rejected = despike_positions(rows, max_speed_knots=max_speed_knots)
         vessel_changed = False
 
         if rejected:
             vessel_changed = True
-            positions_deleted += len(rejected)
-            if not dry_run:
-                rejected_times = [r.time for r in rejected]
-                for i in range(0, len(rejected_times), DELETE_BATCH_SIZE):
-                    batch_times = rejected_times[i : i + DELETE_BATCH_SIZE]
-                    await db.execute(
-                        delete(VesselPosition).where(
-                            VesselPosition.mmsi == vessel.mmsi,
-                            VesselPosition.time.in_(batch_times),
-                        )
-                    )
+            if dry_run:
+                positions_deleted += len(rejected)
+            else:
+                deleted, skipped = await _delete_rejected_times(
+                    db, vessel.mmsi, [r.time for r in rejected]
+                )
+                positions_deleted += deleted
+                positions_skipped_compressed += skipped
 
         if clean:
             latest_clean = clean[-1]
@@ -154,6 +225,7 @@ async def cleanup_corrupted_positions(
         "vessels_scanned": vessels_scanned,
         "vessels_affected": vessels_affected,
         "positions_deleted": positions_deleted,
+        "positions_skipped_compressed": positions_skipped_compressed,
         "vessels_repaired": vessels_repaired,
         "affected_mmsis_sample": affected_mmsis,
     }

@@ -1,7 +1,7 @@
 """Geographic utility functions."""
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional, TypeVar
 
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
@@ -13,6 +13,13 @@ POSITION_JITTER_GRACE_KM = 5.0
 NULL_ISLAND_EPSILON_DEG = 0.001
 
 T = TypeVar("T")
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Return a timezone-aware UTC datetime so naive/aware subtractions never raise TypeError."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def is_valid_coordinate(lat: Optional[float], lon: Optional[float]) -> bool:
@@ -47,7 +54,7 @@ def is_plausible_move(
     dist_km = haversine_km(prev_lat, prev_lon, lat, lon)
     if dist_km <= jitter_km:
         return True
-    dt_seconds = (timestamp - prev_time).total_seconds()
+    dt_seconds = (_ensure_utc(timestamp) - _ensure_utc(prev_time)).total_seconds()
     if dt_seconds <= 0:
         return False
     dt_hours = max(dt_seconds, 1.0) / 3600.0
@@ -146,6 +153,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    a = min(1.0, max(0.0, a))
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
