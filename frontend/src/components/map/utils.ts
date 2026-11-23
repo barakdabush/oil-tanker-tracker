@@ -85,3 +85,34 @@ export function trailColor(idx: number, total: number): string {
   const b = Math.round(255);             // 255
   return `rgb(${r},${g},${b})`;
 }
+
+export const TRAIL_BREAK_DISTANCE_KM = 1500;
+
+export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, a))));
+}
+
+/** Split a chronological trail into contiguous segments whenever consecutive points exceed maxGapKm. */
+export function splitTrailSegments<T extends { latitude: number; longitude: number }>(
+  points: T[],
+  maxGapKm: number = TRAIL_BREAK_DISTANCE_KM
+): T[][] {
+  if (points.length === 0) return [];
+  const segments: T[][] = [[points[0]]];
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    if (haversineKm(prev.latitude, prev.longitude, curr.latitude, curr.longitude) > maxGapKm) {
+      segments.push([curr]);
+    } else {
+      segments[segments.length - 1].push(curr);
+    }
+  }
+  return segments;
+}
