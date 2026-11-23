@@ -56,7 +56,7 @@ def _to_vessel_response(v: Vessel, by_imo: dict[int, str], by_mmsi: dict[int, st
 
 @router.get("", response_model=VesselListResponse)
 async def list_vessels(
-    limit: int = Query(500, ge=1, le=2000),
+    limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="Filter: in_transit, at_port, dark"),

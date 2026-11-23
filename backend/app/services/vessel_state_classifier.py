@@ -173,6 +173,7 @@ class VesselStateClassifier:
                     await session.execute(
                         select(AISGap.mmsi).where(
                             AISGap.mmsi.in_(mmsis),
+                            AISGap.gap_end.is_(None),
                             AISGap.status.in_(["dark", "extended_dark"]),
                         )
                     )
@@ -259,7 +260,7 @@ class VesselStateClassifier:
                     speed=v.last_speed,
                     nav_status=nav_by_mmsi.get(v.mmsi),
                     cargo_status=cargo_status,
-                    is_dark=v.mmsi in dark_mmsis,
+                    is_dark=(v.mmsi in dark_mmsis and age_hours >= DARK_AGE_HOURS),
                     in_active_sts=v.mmsi in sts_mmsis,
                     nearest_port_id=nearest_port_id,
                     nearest_port_dist_km=nearest_dist_km,

@@ -35,7 +35,7 @@ export function getVesselColor(v: Vessel): string {
     : 999;
 
   if (hoursSinceLastSeen > 6) return STATE_COLORS.dark;
-  if (v.operational_state && STATE_COLORS[v.operational_state]) {
+  if (v.operational_state && v.operational_state !== "dark" && STATE_COLORS[v.operational_state]) {
     return STATE_COLORS[v.operational_state];
   }
   if ((v.last_speed || 0) <= 1) return STATE_COLORS.at_port;
@@ -50,7 +50,7 @@ export function getVesselStatus(v: Vessel): string {
 
   if (hoursSinceLastSeen > 24) return "EXTENDED DARK";
   if (hoursSinceLastSeen > 6) return "DARK";
-  if (v.operational_state && STATE_LABELS[v.operational_state]) {
+  if (v.operational_state && v.operational_state !== "dark" && STATE_LABELS[v.operational_state]) {
     return STATE_LABELS[v.operational_state];
   }
   if ((v.last_speed || 0) <= 1) return "At Port";
