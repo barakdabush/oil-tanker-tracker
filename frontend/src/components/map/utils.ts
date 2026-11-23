@@ -8,14 +8,18 @@ export const timeLabelMap: Record<number, string> = {
 };
 
 export const STATE_COLORS: Record<string, string> = {
-  dark: "#1f2937",
-  sts_transfer: "#a855f7",
-  at_port: "#f59e0b",
-  anchored_waiting: "#f97316",
-  floating_storage: "#ec4899",
-  in_transit_laden: "#ef4444",
+  // Moving / In Transit -> Green
+  in_transit_laden: "#10b981",
   in_transit_ballast: "#10b981",
-  idle_drifting: "#64748b",
+  // Stationary / Waiting (Port, Anchored, Idle/Drifting) -> Amber
+  at_port: "#f59e0b",
+  anchored_waiting: "#f59e0b",
+  idle_drifting: "#f59e0b",
+  // Special Offshore Ops (STS / Floating Storage) -> Purple
+  sts_transfer: "#a855f7",
+  floating_storage: "#a855f7",
+  // Dark / AIS Off -> Red
+  dark: "#ef4444",
 };
 
 export const STATE_LABELS: Record<string, string> = {
