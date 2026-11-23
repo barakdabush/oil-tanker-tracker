@@ -40,6 +40,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
+      ADMIN_DEBUG_TOKEN: ${ADMIN_DEBUG_TOKEN:-}
       CDSE_CLIENT_ID: ${CDSE_CLIENT_ID:-}
       CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
       GFW_API_TOKEN: ${GFW_API_TOKEN:-}

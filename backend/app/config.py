@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     NEWS_LLM_MIN_RANK: float = 45.0
     NEWS_LLM_MAX_EVENTS_PER_DAY: int = 30
     AGENT_BRIEFING_TOKEN: str = ""  # optional bearer token for POST /api/agent-intel/briefings
+    ADMIN_DEBUG_TOKEN: str = ""     # required bearer token to enable /api/debug/* diagnostic endpoints
 
     class Config:
         env_file = ".env"

@@ -49,6 +49,7 @@ services:
       CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
       GFW_API_TOKEN: ${GFW_API_TOKEN:-}
       HORMUZ_NOW_ENABLED: ${HORMUZ_NOW_ENABLED:-true}
+      ADMIN_DEBUG_TOKEN: ${ADMIN_DEBUG_TOKEN:-}
     ports:
       - "8000:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
