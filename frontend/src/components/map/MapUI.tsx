@@ -98,14 +98,10 @@ export function MapControlsAndLegend({
       {/* Legend */}
       <div className="map-legend">
         <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: "var(--text-primary)" }}>Vessel State</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#ef4444" }}></div>In Transit (Laden)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#10b981" }}></div>In Transit (Ballast)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#f59e0b" }}></div>At Port (Berthed)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#f97316" }}></div>Anchored (Waiting)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#ec4899" }}></div>Floating Storage</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#a855f7" }}></div>STS Transfer</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#64748b" }}></div>Idle / Drifting</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#1f2937", border: "1px solid #6b7280" }}></div>Dark (AIS off)</div>
+        <div className="legend-item"><div className="legend-dot" style={{ background: "#10b981" }}></div>In Transit (Moving)</div>
+        <div className="legend-item"><div className="legend-dot" style={{ background: "#f59e0b" }}></div>Stationary (Port / Anchored / Idle)</div>
+        <div className="legend-item"><div className="legend-dot" style={{ background: "#a855f7" }}></div>STS / Floating Storage</div>
+        <div className="legend-item"><div className="legend-dot" style={{ background: "#ef4444" }}></div>Dark (AIS off &gt; 6h)</div>
         {showSatellite && (
           <>
             <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
