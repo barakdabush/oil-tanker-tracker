@@ -199,14 +199,26 @@ async def start_ais_ingestion():
 async def _run_stream_loop(source_name: str, connect_fn):
     """Reconnect loop with exponential backoff for a single AIS stream source."""
     backoff = 5
+    consecutive_drops = 0
     while True:
         try:
             await connect_fn()
             backoff = 5
+            consecutive_drops = 0
         except asyncio.CancelledError:
             logger.info(f"AIS ingestion ({source_name}) cancelled")
             break
+        except websockets.ConnectionClosed as e:
+            consecutive_drops += 1
+            log_fn = logger.info if consecutive_drops < 3 else logger.warning
+            log_fn(
+                f"AIS ({source_name}) connection closed ({e.__class__.__name__}: {e}). "
+                f"Reconnecting in {backoff}s..."
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 60)
         except (TimeoutError, ConnectionRefusedError):
+            consecutive_drops += 1
             logger.warning(f"AIS ({source_name}) connection timeout/refused. Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)

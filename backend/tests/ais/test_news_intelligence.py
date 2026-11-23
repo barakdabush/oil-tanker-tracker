@@ -482,3 +482,34 @@ async def test_news_fetcher_403_sets_6h_cooldown():
     assert not fetcher._is_in_cooldown("rss:Rigzone", now + timedelta(hours=7))
 
 
+@pytest.mark.asyncio
+async def test_shared_gdelt_cooldown_and_google_news_rss():
+    import httpx
+    from unittest.mock import AsyncMock
+    from app.services.news_fetcher import RSS_FEEDS
+    from app.utils import gdelt
+
+    # Rigzone (403-blocked) removed; Google News RSS added
+    names = [name for name, _, _ in RSS_FEEDS]
+    assert "Rigzone" not in names
+    assert any("Google News" in n for n in names)
+
+    gdelt.reset_gdelt_state()
+    req = httpx.Request("GET", gdelt.GDELT_DOC_URL)
+    resp_429 = httpx.Response(429, request=req)
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=resp_429)
+
+    # Persistent 429 returns None and activates shared IP cooldown
+    res = await gdelt.gdelt_get_json(client, {"query": "test"}, backoff_delays=())
+    assert res is None
+    assert gdelt.is_gdelt_in_cooldown()
+
+    # Subsequent call during cooldown skips HTTP request entirely
+    client.get.reset_mock()
+    res2 = await gdelt.gdelt_get_json(client, {"query": "test"}, backoff_delays=())
+    assert res2 is None
+    client.get.assert_not_awaited()
+    gdelt.reset_gdelt_state()
+
+

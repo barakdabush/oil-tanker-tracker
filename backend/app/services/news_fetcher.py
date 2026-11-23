@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 CLUSTER_WINDOW_HOURS = 36
 CLUSTER_SIMILARITY_THRESHOLD = 0.36
 NOVELTY_LOOKBACK_HOURS = 72
-GDELT_MIN_INTERVAL_SECONDS = 30 * 60
+GDELT_MIN_INTERVAL_SECONDS = 60 * 60
 RATE_LIMIT_COOLDOWN_SECONDS = 60 * 5
 HTTP_BLOCKED_COOLDOWN_SECONDS = 6 * 3600
 
@@ -60,7 +60,16 @@ RSS_FEEDS: list[tuple[str, int, str]] = [
     ("Splash247", 2, "https://splash247.com/feed/"),
     ("OilPrice.com", 2, "https://oilprice.com/rss/main"),
     ("Hellenic Shipping News", 2, "https://www.hellenicshippingnews.com/category/shipping-news/tanker-shipping-news/feed/"),
-    ("Rigzone", 2, "https://www.rigzone.com/news/rss/rigzone_latest.aspx"),
+    (
+        "Google News - Oil & OPEC",
+        2,
+        "https://news.google.com/rss/search?q=(OPEC+OR+%22Brent+crude%22+OR+%22crude+oil%22)+AND+(cut+OR+sanction+OR+outage+OR+tanker)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "Google News - Maritime Chokepoints",
+        2,
+        "https://news.google.com/rss/search?q=(%22Strait+of+Hormuz%22+OR+%22Bab+el-Mandeb%22+OR+%22Suez+Canal%22+OR+%22Red+Sea%22)+AND+(tanker+OR+oil+OR+shipping)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
 ]
 
 # Focused GDELT DOC 2.0 queries (spaced >= 6s apart to respect GDELT's ~1 req / 5s limit)
@@ -290,6 +299,8 @@ class NewsFetcher:
     async def _fetch_gdelt_articles(
         self, client: httpx.AsyncClient, query: str, timespan: str = "3d", max_records: int = 75
     ) -> list[RawNewsItem]:
+        from app.utils.gdelt import gdelt_get_json
+
         params = {
             "query": query,
             "mode": "artlist",
@@ -298,10 +309,9 @@ class NewsFetcher:
             "format": "json",
             "sort": "DateDesc",
         }
-        resp = await self._get_with_rate_limit_retry(
-            client, GDELT_DOC_URL, params=params, backoff_delays=(10.0, 20.0, 40.0)
-        )
-        data = resp.json()
+        data = await gdelt_get_json(client, params, label="NewsFetcher GDELT")
+        if not data:
+            return []
         items: list[RawNewsItem] = []
         for art in data.get("articles") or []:
             url = (art.get("url") or "").strip()

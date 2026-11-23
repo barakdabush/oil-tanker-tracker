@@ -115,6 +115,8 @@ async def test_gdelt_retries_on_429():
     by_date = defaultdict(dict)
 
     with patch("app.services.strait_risk_fetcher.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        from app.utils.gdelt import reset_gdelt_state
+        reset_gdelt_state()
         fetcher = StraitRiskFetcher()
         await fetcher._fetch_gdelt_series(mock_client, "timelinevol", "gdelt_strait_risk_vol", by_date)
 
