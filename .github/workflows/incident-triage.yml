@@ -1,10 +1,12 @@
 name: Incident Triage & Auto-Fix Agent
 
-# Manual fallback workflow (automatic incident triage & fix now runs via Antigravity /automation).
-# Combines triage + fix in a single LLM session.
-# Blocks complicated/dangerous changes (`needs-human`); otherwise tests & opens a PR.
+# Runs automatically when an `auto-incident` issue is opened (or manually via workflow_dispatch).
+# Combines triage + fix in a single LLM session (Gemini primary, Groq/OpenRouter fallback).
+# Blocks complicated/dangerous changes (`needs-human`); otherwise tests & opens a PR immediately.
 
 on:
+  issues:
+    types: [opened]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -12,7 +14,7 @@ on:
         required: true
 
 concurrency:
-  group: incident-triage-${{ inputs.issue_number }}
+  group: incident-triage-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: false
 
 permissions:
@@ -22,10 +24,13 @@ permissions:
 
 jobs:
   triage-and-fix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.issue.labels.*.name, 'auto-incident')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
       PYTHONPATH: backend
     steps:
       - name: Checkout
