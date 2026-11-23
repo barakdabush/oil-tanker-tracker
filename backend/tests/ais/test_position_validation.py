@@ -291,3 +291,28 @@ async def test_cleanup_handles_timescaledb_compressed_chunk_errors_gracefully():
     assert vessel.last_lat == pytest.approx(26.0332)
     assert vessel.last_lon == pytest.approx(55.9168)
     db.commit.assert_awaited_once()
+
+
+def test_despike_removes_intan_glory_multi_day_danish_straits_v_spike():
+    """Exact prod case for MMSI 352002032: 7-day gap Hormuz -> Danish Straits (16.5 kn straight-line) -> Hormuz."""
+    track = [
+        SimpleNamespace(time=datetime(2026, 10, 22, 3, 21, 42, tzinfo=timezone.utc), latitude=25.45692, longitude=55.22930),
+        SimpleNamespace(time=datetime(2026, 10, 29, 2, 39, 46, tzinfo=timezone.utc), latitude=57.31438, longitude=11.51662),
+        SimpleNamespace(time=datetime(2026, 11, 22, 15, 34, 21, tzinfo=timezone.utc), latitude=26.03318, longitude=55.91668),
+        SimpleNamespace(time=datetime(2026, 11, 23, 8, 49, 58, tzinfo=timezone.utc), latitude=26.03510, longitude=55.91800),
+    ]
+    clean, rejected = despike_positions(track)
+    assert len(rejected) == 1
+    assert rejected[0].latitude == pytest.approx(57.31438)
+    assert len(clean) == 3
+    assert all(25.0 < p.latitude < 27.0 for p in clean)
+
+    # Legitimate one-way long voyage (Hormuz -> Malacca -> Japan) must NOT be rejected
+    one_way = [
+        SimpleNamespace(time=datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc), latitude=26.0, longitude=56.0),
+        SimpleNamespace(time=datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc), latitude=1.3, longitude=103.8),
+        SimpleNamespace(time=datetime(2026, 10, 25, 0, 0, tzinfo=timezone.utc), latitude=35.0, longitude=139.7),
+    ]
+    clean_ow, rejected_ow = despike_positions(one_way)
+    assert len(rejected_ow) == 0
+    assert len(clean_ow) == 3
