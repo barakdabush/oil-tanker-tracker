@@ -21,9 +21,14 @@ export function ViewportFetcher({
       const prev = lastBoundsRef.current;
       const latSpan = Math.abs(bounds.getNorth() - bounds.getSouth());
       const lonSpan = Math.abs(bounds.getEast() - bounds.getWest());
+      const prevLatSpan = Math.abs(prev.getNorth() - prev.getSouth());
+      const prevLonSpan = Math.abs(prev.getEast() - prev.getWest());
       const latDiff = Math.abs(bounds.getCenter().lat - prev.getCenter().lat);
       const lonDiff = Math.abs(bounds.getCenter().lng - prev.getCenter().lng);
-      if (latDiff < latSpan * 0.15 && lonDiff < lonSpan * 0.15) return;
+      const spanChanged =
+        Math.abs(latSpan - prevLatSpan) > prevLatSpan * 0.15 ||
+        Math.abs(lonSpan - prevLonSpan) > prevLonSpan * 0.15;
+      if (!spanChanged && latDiff < latSpan * 0.15 && lonDiff < lonSpan * 0.15) return;
     }
 
     lastBoundsRef.current = bounds;
@@ -34,7 +39,7 @@ export function ViewportFetcher({
       lat_max: bounds.getNorth().toFixed(5),
       lon_max: bounds.getEast().toFixed(5),
       seen_within_hours: "48",
-      limit: "1000",
+      limit: "3000",
     });
 
     try {

@@ -183,3 +183,62 @@ async def test_classify_all_active_sts_uses_vessel_a_and_b_mmsi(monkeypatch):
     session.add.assert_called_once()
     session.commit.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_classify_all_ignores_stale_dark_gap_for_fresh_vessel(monkeypatch):
+    """A vessel seen 1 minute ago must not stay 'dark' while awaiting DarkFleetDetector resolution."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    import app.services.vessel_state_classifier as vsc
+
+    now = datetime.now(timezone.utc)
+    vessel = SimpleNamespace(
+        mmsi=987654321,
+        last_lat=26.2,
+        last_lon=56.4,
+        last_speed=11.0,
+        last_seen=now - timedelta(minutes=1),
+        draft=14.0,
+        min_draft=9.0,
+        max_draft=15.0,
+        cargo_status=None,
+        operational_state="dark",
+        state_since=now - timedelta(hours=8),
+        current_port_id=None,
+    )
+
+    def make_result(rows):
+        res = MagicMock()
+        res.all.return_value = rows
+        res.scalars.return_value.all.return_value = rows
+        return res
+
+    # Vessel still appears in dark_mmsis (unresolved AISGap), but last_seen is 1m ago
+    execute_results = [
+        make_result([]),
+        make_result([vessel]),
+        make_result([987654321]),
+        make_result([]),
+        make_result([]),
+        make_result([]),
+        make_result([]),
+    ]
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=execute_results)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr(vsc, "async_session", lambda: session_ctx)
+
+    result = await vsc.VesselStateClassifier().classify_all()
+
+    assert result == {"classified": 1, "transitions": 1}
+    assert vessel.operational_state == "in_transit_laden"
+
+
