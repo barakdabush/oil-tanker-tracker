@@ -1,6 +1,7 @@
 """Vessel API endpoints."""
 
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -11,7 +12,7 @@ from app.database import get_db
 from app.models import Vessel, VesselPosition, CargoEvent, OfacSanctionedVessel
 from app.schemas import VesselResponse, VesselListResponse, PositionResponse, TrailResponse, CargoEventResponse
 from app.services.position_cleanup import cleanup_corrupted_positions
-from app.utils.geo import MAX_PLAUSIBLE_TANKER_SPEED_KNOTS, despike_positions
+from app.utils.geo import MAX_PLAUSIBLE_TANKER_SPEED_KNOTS, _ensure_utc, despike_positions
 
 router = APIRouter()
 
@@ -160,6 +161,7 @@ async def get_vessel_trail(
         VesselPosition.source,
     ).where(VesselPosition.mmsi == mmsi)
 
+    cutoff: Optional[datetime] = None
     if start_time and end_time:
         query = query.where(VesselPosition.time.between(start_time, end_time))
     elif hours > 0:
@@ -171,6 +173,27 @@ async def get_vessel_trail(
     result = await db.execute(query)
     rows = list(result.all())
     rows.reverse()
+
+    # Include the vessel's latest position from vessels table (updated every ~60s vs 30m/10km in vessel_positions)
+    vessel_row = (await db.execute(
+        select(
+            Vessel.last_seen, Vessel.last_lat, Vessel.last_lon,
+            Vessel.last_speed, Vessel.last_course, Vessel.draft, Vessel.last_source,
+        ).where(Vessel.mmsi == mmsi)
+    )).one_or_none()
+
+    if vessel_row and vessel_row.last_seen and vessel_row.last_lat is not None and vessel_row.last_lon is not None:
+        v_time = _ensure_utc(vessel_row.last_seen)
+        in_window = (
+            (_ensure_utc(start_time) <= v_time <= _ensure_utc(end_time)) if (start_time and end_time)
+            else (v_time > cutoff if cutoff is not None else True)
+        )
+        if in_window and (not rows or v_time > _ensure_utc(rows[-1].time)):
+            rows.append(SimpleNamespace(
+                time=v_time, mmsi=mmsi, latitude=vessel_row.last_lat, longitude=vessel_row.last_lon,
+                speed=vessel_row.last_speed, course=vessel_row.last_course, heading=None,
+                draft=vessel_row.draft, source=vessel_row.last_source,
+            ))
 
     # Filter out invalid coordinates and physically impossible teleport/spoofing spikes
     rows, _ = despike_positions(rows)

@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, splitTrailSegments } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, splitTrailSegments, haversineKm, TRAIL_BREAK_DISTANCE_KM } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import { SatelliteLayer } from "./map/SatelliteLayer";
 import type { STSEvent, SatelliteDetection } from "@/lib/types";
@@ -214,10 +214,24 @@ export default function MapView() {
   }, [searchQuery, API]);
 
   const currentTrail = selectedVessel ? (vesselTrails[selectedVessel.mmsi] || []) : [];
-  const validTrailPoints = useMemo(
-    () => currentTrail.filter(p => p.latitude && p.longitude),
-    [currentTrail]
-  );
+  const validTrailPoints = useMemo(() => {
+    const pts = currentTrail.filter(p => p.latitude != null && p.longitude != null);
+    if (selectedVessel?.last_lat != null && selectedVessel?.last_lon != null && pts.length > 0) {
+      const last = pts[pts.length - 1];
+      if (last.latitude !== selectedVessel.last_lat || last.longitude !== selectedVessel.last_lon) {
+        return [
+          ...pts,
+          {
+            time: selectedVessel.last_seen || new Date().toISOString(),
+            latitude: selectedVessel.last_lat,
+            longitude: selectedVessel.last_lon,
+            speed: selectedVessel.last_speed,
+          },
+        ];
+      }
+    }
+    return pts;
+  }, [currentTrail, selectedVessel?.last_lat, selectedVessel?.last_lon, selectedVessel?.last_seen, selectedVessel?.last_speed]);
   const trailLatLngs: [number, number][] = useMemo(
     () => validTrailPoints.map(p => [p.latitude, p.longitude]),
     [validTrailPoints]
