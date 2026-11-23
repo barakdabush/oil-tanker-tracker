@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, splitTrailSegments } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import { SatelliteLayer } from "./map/SatelliteLayer";
 import type { STSEvent, SatelliteDetection } from "@/lib/types";
@@ -55,7 +55,7 @@ export default function MapView() {
   const [showSatellite, setShowSatellite] = useState(true);
   const [satelliteDetections, setSatelliteDetections] = useState<SatelliteDetection[]>([]);
   const [satelliteDarkCount, setSatelliteDarkCount] = useState(0);
-  const [trailHours, setTrailHours] = useState(0);
+  const [trailHours, setTrailHours] = useState(168);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});
@@ -222,6 +222,11 @@ export default function MapView() {
     () => validTrailPoints.map(p => [p.latitude, p.longitude]),
     [validTrailPoints]
   );
+  const focusTrailLatLngs: [number, number][] = useMemo(() => {
+    const segments = splitTrailSegments(validTrailPoints);
+    const latest = segments.length > 0 ? segments[segments.length - 1] : [];
+    return latest.map(p => [p.latitude, p.longitude]);
+  }, [validTrailPoints]);
 
   const showVesselDock = activeDetail === "vessel" && selectedVessel !== null;
   const showStsDock = !showVesselDock && selectedStsEvent !== null;
@@ -250,7 +255,7 @@ export default function MapView() {
           <MapResizeHandler hasBottomPanel={hasBottomPanel} />
           <NavigationControls />
           <KeyboardNavigation />
-          <MapUpdater selectedVessel={selectedVessel} trailLatLngs={trailLatLngs} />
+          <MapUpdater selectedVessel={selectedVessel} trailLatLngs={focusTrailLatLngs} />
           <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
           <TileLayer
             attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
