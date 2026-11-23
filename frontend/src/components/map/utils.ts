@@ -8,14 +8,18 @@ export const timeLabelMap: Record<number, string> = {
 };
 
 export const STATE_COLORS: Record<string, string> = {
-  dark: "#1f2937",
-  sts_transfer: "#a855f7",
-  at_port: "#f59e0b",
-  anchored_waiting: "#f97316",
-  floating_storage: "#ec4899",
-  in_transit_laden: "#ef4444",
+  // Moving / In Transit -> Green
+  in_transit_laden: "#10b981",
   in_transit_ballast: "#10b981",
-  idle_drifting: "#64748b",
+  // Stationary / Waiting (Port, Anchored, Idle/Drifting) -> Amber
+  at_port: "#f59e0b",
+  anchored_waiting: "#f59e0b",
+  idle_drifting: "#f59e0b",
+  // Special Offshore Ops (STS / Floating Storage) -> Purple
+  sts_transfer: "#a855f7",
+  floating_storage: "#a855f7",
+  // Dark / AIS Off -> Red
+  dark: "#ef4444",
 };
 
 export const STATE_LABELS: Record<string, string> = {
@@ -35,7 +39,7 @@ export function getVesselColor(v: Vessel): string {
     : 999;
 
   if (hoursSinceLastSeen > 6) return STATE_COLORS.dark;
-  if (v.operational_state && STATE_COLORS[v.operational_state]) {
+  if (v.operational_state && v.operational_state !== "dark" && STATE_COLORS[v.operational_state]) {
     return STATE_COLORS[v.operational_state];
   }
   if ((v.last_speed || 0) <= 1) return STATE_COLORS.at_port;
@@ -50,7 +54,7 @@ export function getVesselStatus(v: Vessel): string {
 
   if (hoursSinceLastSeen > 24) return "EXTENDED DARK";
   if (hoursSinceLastSeen > 6) return "DARK";
-  if (v.operational_state && STATE_LABELS[v.operational_state]) {
+  if (v.operational_state && v.operational_state !== "dark" && STATE_LABELS[v.operational_state]) {
     return STATE_LABELS[v.operational_state];
   }
   if ((v.last_speed || 0) <= 1) return "At Port";
