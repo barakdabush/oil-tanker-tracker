@@ -394,5 +394,49 @@ export interface AIMarketBriefingResponse {
   created_at: string;
 }
 
+// ─── Satellite SAR Detection Types ──────────────────────────────────────────
 
+export interface SatelliteDetection {
+  id: string;
+  source: string; // "copernicus_s1" | "gfw_sar"
+  scene_id: string | null;
+  detected_at: string;
+  latitude: number;
+  longitude: number;
+  chokepoint_name: string | null;
+  estimated_length_m: number | null;
+  radar_strength_db: number | null;
+  confidence: number | null;
+  is_dark: boolean;
+  matched_mmsi: number | null;
+  matched_vessel_name: string | null;
+  match_distance_km: number | null;
+  detection_count: number;
+}
 
+export interface SatelliteDetectionListResponse {
+  detections: SatelliteDetection[];
+  total: number;
+  dark_total: number;
+  matched_total: number;
+}
+
+export interface SatelliteScene {
+  scene_id: string;
+  satellite: string;
+  chokepoint_name: string;
+  acquired_at: string;
+  status: string;
+  detections_count: number;
+  dark_detections_count: number;
+  processed_at: string | null;
+}
+
+export interface SatelliteSummary {
+  total_detections: number;
+  dark_detections: number;
+  matched_detections: number;
+  by_source: Record<string, number>;
+  latest_scene: SatelliteScene | null;
+  sources_configured: Record<string, boolean>;
+}

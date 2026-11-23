@@ -69,6 +69,13 @@ _GO_TIME_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*([+-]\d{2}:?\d{2})?(?:\s+UTC)?$"
 )
 
+from app.services.hormuz_now_ingestion import (
+    SYNTHETIC_MMSI_BASE,
+    normalize_vessel_name,
+    poll_hormuz_now_forever,
+    synthetic_mmsi_for_hormuz_id,
+)
+
 # In-memory caches to avoid excessive DB writes and UI updates
 _last_saved_positions = {}
 _last_trusted_positions = {}  # MMSI -> {"lat", "lon", "time"} of latest accepted position
@@ -80,6 +87,7 @@ _known_drafts = {}
 _known_tankers = set()      # MMSIs confirmed to be tankers
 _known_non_tankers = set()  # MMSIs confirmed to be non-tankers
 _pending_positions = {}     # MMSI -> (msg, pos_key) buffered while awaiting static data
+_vessel_name_to_mmsi: dict[str, int] = {}  # Normalized vessel name -> real ITU MMSI
 
 # In-memory batch accumulators
 _vessel_batch = {}
@@ -93,6 +101,7 @@ _logged_structures = set()
 _source_stats = {
     "aisstream": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None},
     "openwaters": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None, "sub_sources": {}},
+    "hormuz_now": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None},
 }
 
 
@@ -137,6 +146,7 @@ def get_ingestion_stats() -> dict:
             **_source_stats["openwaters"],
             "sub_sources": dict(_source_stats["openwaters"]["sub_sources"]),
         },
+        "hormuz_now": dict(_source_stats["hormuz_now"]),
         "known_tankers": len(_known_tankers),
         "pending_positions": len(_pending_positions),
     }
@@ -153,6 +163,7 @@ async def start_ais_ingestion():
                 select(
                     Vessel.mmsi,
                     Vessel.draft,
+                    Vessel.name,
                     Vessel.last_lat,
                     Vessel.last_lon,
                     Vessel.last_seen,
@@ -163,6 +174,10 @@ async def start_ais_ingestion():
                 _known_tankers.add(row.mmsi)
                 if row.draft is not None:
                     _known_drafts[row.mmsi] = row.draft
+                if row.name and row.mmsi < SYNTHETIC_MMSI_BASE:
+                    norm = normalize_vessel_name(row.name)
+                    if norm:
+                        _vessel_name_to_mmsi[norm] = row.mmsi
                 if row.last_seen is not None and is_valid_coordinate(row.last_lat, row.last_lon):
                     ts = row.last_seen
                     if ts.tzinfo is None:
@@ -175,7 +190,8 @@ async def start_ais_ingestion():
                     seeded_positions += 1
         logger.info(
             f"Loaded {len(_known_tankers)} known tankers into whitelist "
-            f"({seeded_positions} with trusted last positions)."
+            f"({seeded_positions} with trusted last positions, "
+            f"{len(_vessel_name_to_mmsi)} indexed by name)."
         )
     except Exception as e:
         logger.error(f"Failed to seed whitelist: {e}")
@@ -188,6 +204,9 @@ async def start_ais_ingestion():
 
     if settings.OPENWATERS_ENABLED:
         tasks.append(_run_stream_loop("openwaters.io", _connect_and_consume_openwaters))
+
+    if settings.HORMUZ_NOW_ENABLED:
+        tasks.append(_run_stream_loop("hormuz.now", _poll_and_consume_hormuz_now))
 
     if not tasks:
         logger.error("No AIS stream sources enabled or configured!")
@@ -395,6 +414,61 @@ async def _connect_and_consume_openwaters():
                 logger.error(f"Error processing Open Waters AIS message: {e}")
 
 
+async def _ingest_hormuz_now_snapshot(tankers: list[dict]) -> None:
+    """Ingest a batch of tanker rows from hormuz.now into the shared AIS pipeline."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _source_stats["hormuz_now"]["messages_received"] += len(tankers)
+    _source_stats["hormuz_now"]["last_message_at"] = now_iso
+
+    for rec in tankers:
+        name = rec.get("name")
+        norm_name = normalize_vessel_name(name)
+        mmsi = _vessel_name_to_mmsi.get(norm_name) if norm_name else None
+        if mmsi is None:
+            mmsi = synthetic_mmsi_for_hormuz_id(rec["ext_id"])
+
+        # Enrich vessel metadata (flag, length, dwt, destination) without overwriting newer real AIS
+        async with _batch_lock:
+            v_data = _vessel_batch.setdefault(mmsi, {"mmsi": mmsi})
+            if name and not v_data.get("name"):
+                v_data["name"] = name
+            if rec.get("flag") and not v_data.get("flag"):
+                v_data["flag"] = rec["flag"]
+            if rec.get("length") is not None and v_data.get("length") is None:
+                v_data["length"] = rec["length"]
+            if rec.get("dwt") is not None and v_data.get("dwt") is None:
+                v_data["dwt"] = rec["dwt"]
+            if rec.get("destination") and not v_data.get("destination"):
+                v_data["destination"] = rec["destination"]
+
+        msg = {
+            "MessageType": "PositionReport",
+            "Message": {
+                "PositionReport": {
+                    "UserID": mmsi,
+                    "Latitude": rec["lat"],
+                    "Longitude": rec["lon"],
+                    "Sog": rec.get("speed"),
+                    "Cog": rec.get("course"),
+                    "TrueHeading": rec.get("heading"),
+                }
+            },
+            "MetaData": {
+                "MMSI": mmsi,
+                "ShipName": name or "",
+                "ShipType": rec.get("ship_type", 80),
+                "time_utc": rec["timestamp"].isoformat(),
+                "Source": "hormuz_now",
+            },
+        }
+        await _handle_position_report(msg, "PositionReport")
+
+
+async def _poll_and_consume_hormuz_now():
+    """Poll hormuz.now live snapshot and feed Strait of Hormuz tankers into AIS pipeline."""
+    await poll_hormuz_now_forever(_ingest_hormuz_now_snapshot)
+
+
 async def _process_message(msg: AISMessage):
     """Process an incoming AIS message."""
     msg_type = msg.get("MessageType")
@@ -459,7 +533,14 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         return
 
     source = meta.get("Source")
-    provider = ("openwaters" if source.startswith("openwaters") else "aisstream") if source else None
+    if not source:
+        provider = None
+    elif source.startswith("openwaters"):
+        provider = "openwaters"
+    elif source == "hormuz_now":
+        provider = "hormuz_now"
+    else:
+        provider = "aisstream"
 
     if position.get("Valid") is False:
         if provider:
@@ -695,7 +776,12 @@ async def _handle_static_data(msg: AISMessage, static_key: str = "ShipStaticData
     async with _batch_lock:
         v_data = _vessel_batch.setdefault(mmsi, {"mmsi": mmsi})
         if imo: v_data["imo"] = imo
-        if name: v_data["name"] = name
+        if name:
+            v_data["name"] = name
+            if mmsi < SYNTHETIC_MMSI_BASE:
+                norm = normalize_vessel_name(name)
+                if norm:
+                    _vessel_name_to_mmsi[norm] = mmsi
         if ship_type is not None: v_data["ship_type"] = ship_type
         if callsign: v_data["callsign"] = callsign
         flag = meta.get("country", None)
@@ -800,9 +886,11 @@ async def start_flush_task():
             if tick % 30 == 0:
                 ais_s = _source_stats["aisstream"]
                 ow_s = _source_stats["openwaters"]
+                hn_s = _source_stats["hormuz_now"]
                 logger.info(
                     f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}, glitches={ais_s['dropped_glitches']}) | "
-                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, glitches={ow_s['dropped_glitches']}, sub={ow_s['sub_sources']})"
+                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, glitches={ow_s['dropped_glitches']}, sub={ow_s['sub_sources']}) | "
+                    f"hormuz_now(msgs={hn_s['messages_received']}, tankers={hn_s['tanker_positions']}, glitches={hn_s['dropped_glitches']})"
                 )
         except asyncio.CancelledError:
             logger.info("Batch flush task cancelled")

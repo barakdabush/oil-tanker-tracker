@@ -26,6 +26,8 @@ from app.services.strait_risk_fetcher import StraitRiskFetcher
 from app.services.news_fetcher import NewsFetcher
 from app.services.news_llm_enricher import NewsLLMEnricher
 from app.services.news_impact_analyzer import NewsImpactAnalyzer
+from app.services.sentinel1_sar_detector import Sentinel1SARDetector
+from app.services.gfw_sar_fetcher import GfwSarFetcher
 from app.services.db_log_handler import setup_db_logging
 from app.database import engine
 
@@ -49,6 +51,8 @@ async def run_workers():
     news_fetcher = NewsFetcher()
     news_llm_enricher = NewsLLMEnricher()
     news_impact_analyzer = NewsImpactAnalyzer()
+    sentinel1_sar_detector = Sentinel1SARDetector()
+    gfw_sar_fetcher = GfwSarFetcher()
 
     # Create background tasks for the heavy jobs
     detector_task = asyncio.create_task(cargo_detector.run_periodic())
@@ -64,6 +68,8 @@ async def run_workers():
     news_fetch_task = asyncio.create_task(news_fetcher.run_periodic())
     news_llm_task = asyncio.create_task(news_llm_enricher.run_periodic())
     news_impact_task = asyncio.create_task(news_impact_analyzer.run_periodic())
+    sentinel1_task = asyncio.create_task(sentinel1_sar_detector.run_periodic())
+    gfw_sar_task = asyncio.create_task(gfw_sar_fetcher.run_periodic())
 
     logger.info("🟢 All detection services started. Awaiting events...")
 
@@ -73,6 +79,7 @@ async def run_workers():
             detector_task, dark_fleet_task, sts_task, chokepoint_task,
             feature_task, oil_price_task, portwatch_task, ofac_task, log_flush_task,
             state_task, strait_risk_task, news_fetch_task, news_llm_task, news_impact_task,
+            sentinel1_task, gfw_sar_task,
         )
     except asyncio.CancelledError:
         logger.info("Worker tasks cancelled.")

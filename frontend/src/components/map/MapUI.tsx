@@ -13,6 +13,10 @@ interface MapUIProps {
   setShowChokepoints: (s: boolean) => void;
   showTrails: boolean;
   setShowTrails: (s: boolean) => void;
+  showSatellite: boolean;
+  setShowSatellite: (s: boolean) => void;
+  satelliteCount?: number;
+  satelliteDarkCount?: number;
   selectedVessel: Vessel | null;
   trailLatLngsCount: number;
 }
@@ -61,7 +65,34 @@ export function SearchBar({ searchQuery, setSearchQuery, searchResults, isSearch
   );
 }
 
-export function MapControlsAndLegend({ showPorts, setShowPorts, showChokepoints, setShowChokepoints, showTrails, setShowTrails, selectedVessel, trailLatLngsCount }: Pick<MapUIProps, 'showPorts' | 'setShowPorts' | 'showChokepoints' | 'setShowChokepoints' | 'showTrails' | 'setShowTrails' | 'selectedVessel' | 'trailLatLngsCount'>) {
+export function MapControlsAndLegend({
+  showPorts,
+  setShowPorts,
+  showChokepoints,
+  setShowChokepoints,
+  showTrails,
+  setShowTrails,
+  showSatellite,
+  setShowSatellite,
+  satelliteCount = 0,
+  satelliteDarkCount = 0,
+  selectedVessel,
+  trailLatLngsCount,
+}: Pick<
+  MapUIProps,
+  | "showPorts"
+  | "setShowPorts"
+  | "showChokepoints"
+  | "setShowChokepoints"
+  | "showTrails"
+  | "setShowTrails"
+  | "showSatellite"
+  | "setShowSatellite"
+  | "satelliteCount"
+  | "satelliteDarkCount"
+  | "selectedVessel"
+  | "trailLatLngsCount"
+>) {
   return (
     <>
       {/* Legend */}
@@ -75,6 +106,18 @@ export function MapControlsAndLegend({ showPorts, setShowPorts, showChokepoints,
         <div className="legend-item"><div className="legend-dot" style={{ background: "#a855f7" }}></div>STS Transfer</div>
         <div className="legend-item"><div className="legend-dot" style={{ background: "#64748b" }}></div>Idle / Drifting</div>
         <div className="legend-item"><div className="legend-dot" style={{ background: "#1f2937", border: "1px solid #6b7280" }}></div>Dark (AIS off)</div>
+        {showSatellite && (
+          <>
+            <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+              <div className="legend-dot" style={{ background: "#f43f5e", border: "1.5px solid #fff" }}></div>
+              SAR Dark Vessel (No AIS)
+            </div>
+            <div className="legend-item">
+              <div className="legend-dot" style={{ background: "#818cf8", border: "1.5px solid #fff" }}></div>
+              SAR AIS-Matched
+            </div>
+          </>
+        )}
         <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}><div className="legend-dot" style={{ background: "#3b82f6" }}></div>Oil Port / Terminal</div>
         {showChokepoints && (
           <div className="legend-item">
@@ -95,6 +138,23 @@ export function MapControlsAndLegend({ showPorts, setShowPorts, showChokepoints,
         <button onClick={() => setShowPorts(!showPorts)} style={{ padding: "8px 14px", background: showPorts ? "var(--accent-blue)" : "var(--bg-card)", color: showPorts ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>⚓ Ports</button>
         <button onClick={() => setShowChokepoints(!showChokepoints)} style={{ padding: "8px 14px", background: showChokepoints ? "var(--accent-blue)" : "var(--bg-card)", color: showChokepoints ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>🔶 Chokepoints</button>
         <button onClick={() => setShowTrails(!showTrails)} style={{ padding: "8px 14px", background: showTrails ? "#06b6d4" : "var(--bg-card)", color: showTrails ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>🛤️ Route Trail</button>
+        <button
+          onClick={() => setShowSatellite(!showSatellite)}
+          title="Sentinel-1 & Global Fishing Watch SAR satellite detections"
+          style={{
+            padding: "8px 14px",
+            background: showSatellite ? "#e11d48" : "var(--bg-card)",
+            color: showSatellite ? "#fff" : "var(--text-secondary)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          🛰️ Satellite SAR{showSatellite && satelliteCount > 0 ? ` (${satelliteDarkCount} dark / ${satelliteCount})` : ""}
+        </button>
       </div>
     </>
   );

@@ -40,6 +40,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://admin:secret@db:5432/oil_monitor
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
+      CDSE_CLIENT_ID: ${CDSE_CLIENT_ID:-}
+      CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
+      GFW_API_TOKEN: ${GFW_API_TOKEN:-}
+      HORMUZ_NOW_ENABLED: ${HORMUZ_NOW_ENABLED:-true}
     ports:
       - "8000:8000"
     volumes:
@@ -64,6 +68,9 @@ services:
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
       EIA_API_KEY: ${EIA_API_KEY:-your_eia_api_key_here}
+      CDSE_CLIENT_ID: ${CDSE_CLIENT_ID:-}
+      CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
+      GFW_API_TOKEN: ${GFW_API_TOKEN:-}
     volumes:
       - ./backend:/app
     command: python worker.py
@@ -97,6 +104,7 @@ services:
       DATABASE_URL_SYNC: postgresql://admin:secret@db:5432/oil_monitor
       AIS_API_KEY: ${AIS_API_KEY}
       OPENWATERS_API_KEY: ${OPENWATERS_API_KEY:-}
+      HORMUZ_NOW_ENABLED: ${HORMUZ_NOW_ENABLED:-true}
     ports:
       - "8001:8001"
     volumes:
