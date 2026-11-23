@@ -184,7 +184,6 @@ async def test_classify_all_active_sts_uses_vessel_a_and_b_mmsi(monkeypatch):
     session.commit.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_classify_all_ignores_stale_dark_gap_for_fresh_vessel(monkeypatch):
     """A vessel seen 1 minute ago must not stay 'dark' while awaiting DarkFleetDetector resolution."""
     from datetime import datetime, timedelta, timezone
