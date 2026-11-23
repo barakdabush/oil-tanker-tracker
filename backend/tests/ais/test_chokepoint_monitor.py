@@ -476,3 +476,76 @@ def test_backend_app_and_chokepoints_recalculate_route_import():
 
     route_paths = {route.path for route in app.routes}
     assert "/api/chokepoints/recalculate" in route_paths
+
+
+def test_hormuz_closed_basin_long_distance_transitions():
+    """Tankers jumping between Persian Gulf and distant AIS boxes (Malacca, Bab el-Mandeb, Cape)
+    MUST be detected as Hormuz transits via closed-basin transition, while cross-continental
+    routes outside the Gulf (Turkey -> Malacca) must NOT false-positive.
+    """
+    from app.services.chokepoint_monitor import CLOSED_BASIN_CONFIG
+
+    cfg = CLOSED_BASIN_CONFIG["Strait of Hormuz"]
+    hormuz = ChokepointGeometry(
+        id=1,
+        name="Strait of Hormuz",
+        congestion_threshold=30,
+        polygon=HORMUZ_POLYGON,
+        gate_line=shapely_wkt.loads(DEFAULT_GATE_LINES_WKT["Strait of Hormuz"]),
+        basin_polygon=cfg["polygon"],
+        basin_center=cfg["center"],
+        basin_outbound_direction=cfg["outbound_direction"],
+        basin_inbound_direction=cfg["inbound_direction"],
+    )
+    t0 = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Ras Tanura (Persian Gulf) -> Strait of Malacca (~5,700 km in 14 days)
+    m_east = detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.64, lon=50.16),
+        TrackPoint(time=t0 + timedelta(days=14), lat=2.00, lon=102.00),
+        hormuz,
+    )
+    assert m_east is not None
+    assert m_east.method == "basin_transition"
+    assert m_east.direction == "eastbound"
+    # Crossing timestamp should be early in the voyage (~10% of 14 days, near Hormuz)
+    assert m_east.crossing_time < t0 + timedelta(days=3)
+
+    # 2. Ras Tanura (Persian Gulf) -> Bab el-Mandeb (chord goes SW over Saudi Arabia, never touches 56E!)
+    m_sw = detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.64, lon=50.16),
+        TrackPoint(time=t0 + timedelta(days=8), lat=12.65, lon=43.30),
+        hormuz,
+    )
+    assert m_sw is not None
+    assert m_sw.method == "basin_transition"
+    assert m_sw.direction == "eastbound"
+
+    # 3. Inbound: Cape of Good Hope -> Ras Tanura (22 days)
+    m_in = detect_segment_crossing(
+        TrackPoint(time=t0, lat=-35.00, lon=18.50),
+        TrackPoint(time=t0 + timedelta(days=22), lat=26.64, lon=50.16),
+        hormuz,
+    )
+    assert m_in is not None
+    assert m_in.method == "basin_transition"
+    assert m_in.direction == "westbound"
+
+    # 4. Cross-continental non-Gulf route (Turkish Straits -> Malacca) must NOT trigger Hormuz
+    m_false = detect_segment_crossing(
+        TrackPoint(time=t0, lat=41.12, lon=29.05),
+        TrackPoint(time=t0 + timedelta(days=20), lat=2.00, lon=102.00),
+        hormuz,
+    )
+    assert m_false is None
+
+    # 5. GPS spoof (Ras Tanura -> Malacca in 1 hour) must still be rejected
+    rejected: dict[str, int] = {}
+    m_spoof = detect_segment_crossing(
+        TrackPoint(time=t0, lat=26.64, lon=50.16),
+        TrackPoint(time=t0 + timedelta(hours=1), lat=2.00, lon=102.00),
+        hormuz,
+        rejected_counts=rejected,
+    )
+    assert m_spoof is None
+    assert rejected.get("speed_too_high") == 1

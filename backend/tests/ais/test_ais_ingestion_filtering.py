@@ -14,10 +14,14 @@ def reset_ingestion_state(monkeypatch):
     ais_ingestion._vessel_batch.clear()
     ais_ingestion._position_batch.clear()
     ais_ingestion._last_saved_positions.clear()
+    ais_ingestion._last_trusted_positions.clear()
+    ais_ingestion._suspect_positions.clear()
     ais_ingestion._last_vessel_db_updates.clear()
     ais_ingestion._last_ui_updates.clear()
     ais_ingestion._last_seen_timestamps.clear()
     ais_ingestion._known_drafts.clear()
+    ais_ingestion._source_stats["aisstream"]["dropped_glitches"] = 0
+    ais_ingestion._source_stats["openwaters"]["dropped_glitches"] = 0
 
     broadcasts = []
 

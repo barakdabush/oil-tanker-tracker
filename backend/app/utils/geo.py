@@ -1,11 +1,143 @@
 """Geographic utility functions."""
 
 import math
-from typing import Optional
+from datetime import datetime
+from typing import Callable, Optional, TypeVar
 
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
 
 EARTH_RADIUS_KM = 6371.0
+NAUTICAL_MILE_KM = 1.852
+MAX_PLAUSIBLE_TANKER_SPEED_KNOTS = 40.0
+POSITION_JITTER_GRACE_KM = 5.0
+NULL_ISLAND_EPSILON_DEG = 0.001
+
+T = TypeVar("T")
+
+
+def is_valid_coordinate(lat: Optional[float], lon: Optional[float]) -> bool:
+    """Return True if (lat, lon) is a finite, in-range, non-Null-Island coordinate."""
+    if lat is None or lon is None:
+        return False
+    if isinstance(lat, bool) or isinstance(lon, bool):
+        return False
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return False
+    if math.isnan(lat) or math.isinf(lat) or math.isnan(lon) or math.isinf(lon):
+        return False
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        return False
+    if abs(lat) < NULL_ISLAND_EPSILON_DEG and abs(lon) < NULL_ISLAND_EPSILON_DEG:
+        return False
+    return True
+
+
+def is_plausible_move(
+    prev_lat: float,
+    prev_lon: float,
+    prev_time: datetime,
+    lat: float,
+    lon: float,
+    timestamp: datetime,
+    *,
+    max_speed_knots: float = MAX_PLAUSIBLE_TANKER_SPEED_KNOTS,
+    jitter_km: float = POSITION_JITTER_GRACE_KM,
+) -> bool:
+    """Check whether moving from (prev_lat, prev_lon, prev_time) to (lat, lon, timestamp) is physically plausible."""
+    dist_km = haversine_km(prev_lat, prev_lon, lat, lon)
+    if dist_km <= jitter_km:
+        return True
+    dt_seconds = (timestamp - prev_time).total_seconds()
+    if dt_seconds <= 0:
+        return False
+    dt_hours = max(dt_seconds, 1.0) / 3600.0
+    implied_knots = (dist_km / NAUTICAL_MILE_KM) / dt_hours
+    return implied_knots <= max_speed_knots
+
+
+def despike_positions(
+    positions: list[T],
+    *,
+    get_lat: Callable[[T], Optional[float]] = lambda p: p.latitude,
+    get_lon: Callable[[T], Optional[float]] = lambda p: p.longitude,
+    get_time: Callable[[T], datetime] = lambda p: p.time,
+    max_speed_knots: float = MAX_PLAUSIBLE_TANKER_SPEED_KNOTS,
+    jitter_km: float = POSITION_JITTER_GRACE_KM,
+    quorum: int = 3,
+) -> tuple[list[T], list[T]]:
+    """Filter invalid coordinates and physically impossible teleport spikes from a chronological track.
+
+    Returns ``(clean_positions, rejected_positions)``.
+    Uses a small confirmation quorum so:
+    - Isolated 1–2 point GPS-spoofing / NMEA-corruption spikes (start, middle, or end) are rejected.
+    - A corrupted initial point is replaced once >=2 consistent points establish the real track.
+    - A genuine relocation after an unrecorded gap or prior corrupted anchor recovers once ``quorum``
+      consecutive consistent reports agree on the new position.
+    """
+    accepted: list[T] = []
+    rejected: list[T] = []
+    pending: list[T] = []
+
+    for pt in positions:
+        lat = get_lat(pt)
+        lon = get_lon(pt)
+        if not is_valid_coordinate(lat, lon):
+            rejected.append(pt)
+            continue
+
+        ts = get_time(pt)
+        if not accepted:
+            accepted.append(pt)
+            continue
+
+        last = accepted[-1]
+        if is_plausible_move(
+            get_lat(last),  # type: ignore[arg-type]
+            get_lon(last),  # type: ignore[arg-type]
+            get_time(last),
+            lat,  # type: ignore[arg-type]
+            lon,  # type: ignore[arg-type]
+            ts,
+            max_speed_knots=max_speed_knots,
+            jitter_km=jitter_km,
+        ):
+            if pending:
+                rejected.extend(pending)
+                pending = []
+            accepted.append(pt)
+            continue
+
+        # Implied speed from last trusted point is impossible — check if consistent with pending cluster
+        if pending and is_plausible_move(
+            get_lat(pending[-1]),  # type: ignore[arg-type]
+            get_lon(pending[-1]),  # type: ignore[arg-type]
+            get_time(pending[-1]),
+            lat,  # type: ignore[arg-type]
+            lon,  # type: ignore[arg-type]
+            ts,
+            max_speed_knots=max_speed_knots,
+            jitter_km=jitter_km,
+        ):
+            pending.append(pt)
+        else:
+            if pending:
+                rejected.extend(pending)
+            pending = [pt]
+
+        if len(accepted) < quorum and len(pending) > len(accepted):
+            # Initial point(s) were the outlier; replace with the consistent cluster
+            rejected.extend(accepted)
+            accepted = pending
+            pending = []
+        elif len(pending) >= quorum:
+            # Quorum reached: vessel genuinely relocated or recovered from corrupted history
+            accepted.extend(pending)
+            pending = []
+
+    if pending:
+        rejected.extend(pending)
+
+    return accepted, rejected
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

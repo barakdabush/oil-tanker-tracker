@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.database import async_session
 from app.models.global_oil_features import StraitRiskDaily
+from app.utils.gdelt import gdelt_get_json
 
 logger = logging.getLogger(__name__)
 
@@ -145,26 +146,9 @@ class StraitRiskFetcher:
             "timespan": "180d",
             "format": "json",
         }
-        backoff_delays = (6.0, 15.0, 30.0)
-        resp = None
-        for attempt in range(len(backoff_delays) + 1):
-            resp = await client.get(GDELT_DOC_URL, params=params)
-            if resp.status_code != 429 or attempt == len(backoff_delays):
-                break
-            retry_after = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
-            try:
-                wait_s = min(max(float(retry_after), 1.0), 60.0) if retry_after else backoff_delays[attempt]
-            except (TypeError, ValueError):
-                wait_s = backoff_delays[attempt]
-            logger.info(
-                f"StraitRiskFetcher[{mode}] hit 429 rate limit; retrying in {wait_s:.1f}s "
-                f"(attempt {attempt + 1}/{len(backoff_delays)})"
-            )
-            await asyncio.sleep(wait_s)
-
-        assert resp is not None
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = await gdelt_get_json(client, params, label=f"StraitRiskFetcher[{mode}]")
+        if not payload:
+            return
         timeline = payload.get("timeline") or []
         if not timeline:
             return

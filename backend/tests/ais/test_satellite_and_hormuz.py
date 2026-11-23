@@ -70,9 +70,12 @@ async def test_ingest_hormuz_now_snapshot_matches_real_mmsi_and_synthetic():
     ais_ingestion._position_batch.clear()
     ais_ingestion._last_saved_positions.clear()
     ais_ingestion._last_seen_timestamps.clear()
+    ais_ingestion._last_trusted_positions.clear()
+    ais_ingestion._suspect_positions.clear()
     ais_ingestion._source_stats["hormuz_now"] = {
         "messages_received": 0,
         "tanker_positions": 0,
+        "dropped_glitches": 0,
         "last_message_at": None,
     }
 

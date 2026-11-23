@@ -308,6 +308,17 @@ export default function MapView() {
             <Rectangle key={zone.name} bounds={zone.bounds as any} interactive={false} pathOptions={{ color: "#06b6d4", weight: 2, dashArray: "6 4", fillColor: "#06b6d4", fillOpacity: 0.08 }} />
           ))}
 
+          {[
+            { name: "West India & Sri Lanka",    bounds: [[23.5, 66.0], [5.0, 82.0]] },
+            { name: "Eastern Med & Aegean",      bounds: [[38.0, 22.0], [30.5, 36.5]] },
+            { name: "Strait of Gibraltar",       bounds: [[38.5, -9.0], [34.5, 3.0]] },
+            { name: "English Channel & ARA",     bounds: [[54.0, -5.5], [49.0, 6.5]] },
+            { name: "East / South China Sea",    bounds: [[33.0, 113.0], [21.0, 125.0]] },
+            { name: "US Gulf Coast",             bounds: [[30.5, -98.0], [25.0, -87.0]] },
+          ].map((zone) => (
+            <Rectangle key={`corridor-${zone.name}`} bounds={zone.bounds as any} interactive={false} pathOptions={{ color: "#6366f1", weight: 1.5, dashArray: "4 6", fillColor: "#6366f1", fillOpacity: 0.04 }} />
+          ))}
+
           {showPorts && ports.map((port) => (
             <CircleMarker key={`port-${port.id}`} center={[port.latitude, port.longitude]} radius={5} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.6, weight: 1 }}>
               <Popup><div style={{ color: "#111", minWidth: 160 }}><strong>⚓ {port.name}</strong><br /><span style={{ fontSize: 12 }}>{port.country} · {port.region}</span><br /><span style={{ fontSize: 11, color: "#666" }}>{port.port_type}</span></div></Popup>

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.config import settings
 from app.database import async_session
 from app.models import Vessel, VesselPosition
-from app.utils.geo import haversine_km
+from app.utils.geo import haversine_km, is_plausible_move, is_valid_coordinate
 from app.ws_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,20 @@ CHOKEPOINT_BBOXES = [
     (7.5, -80.5, 10.5, -77.5),    # Panama Canal (Pacific + Caribbean approaches)
 ]
 
+# Additional coastal oil-corridor & major hub bounding boxes subscribed on
+# aisstream.io (Open Waters stays on the 8 core CHOKEPOINT_BBOXES due to its
+# area limit). Bridges key blind spots between chokepoints without global noise.
+CORRIDOR_BBOXES = [
+    (5.0, 66.0, 23.5, 82.0),      # West India & Sri Lanka (Jamnagar, Mumbai, Colombo — Hormuz <-> Malacca)
+    (30.5, 22.0, 38.0, 36.5),     # Eastern Mediterranean & Aegean (Suez <-> Bosporus + Laconian Gulf STS)
+    (34.5, -9.0, 38.5, 3.0),      # Strait of Gibraltar & Western Med approach
+    (49.0, -5.5, 54.0, 6.5),      # English Channel & Rotterdam / ARA refining hub
+    (21.0, 113.0, 33.0, 125.0),   # East / South China Sea (Zhoushan, Ningbo, Taiwan Strait)
+    (25.0, -98.0, 30.5, -87.0),   # US Gulf Coast (Houston, Corpus Christi, LOOP crude exports)
+]
+
+AISSTREAM_BBOXES = CHOKEPOINT_BBOXES + CORRIDOR_BBOXES
+
 POSITION_MSG_TYPES = (
     "PositionReport",
     "StandardClassBPositionReport",
@@ -45,8 +60,14 @@ POSITION_MSG_TYPES = (
 )
 STATIC_MSG_TYPES = ("ShipStaticData", "StaticDataReport")
 
-MAX_PENDING_POSITIONS = 5000
-MAX_KNOWN_NON_TANKERS = 50000
+MAX_PENDING_POSITIONS = 10000
+MAX_KNOWN_NON_TANKERS = 150000
+SUSPECT_POSITION_QUORUM = 3
+
+# Regex for Go time.String() format used by aisstream.io, e.g. "2026-04-23 18:42:33.749439468 +0000 UTC"
+_GO_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*([+-]\d{2}:?\d{2})?(?:\s+UTC)?$"
+)
 
 from app.services.hormuz_now_ingestion import (
     SYNTHETIC_MMSI_BASE,
@@ -57,6 +78,8 @@ from app.services.hormuz_now_ingestion import (
 
 # In-memory caches to avoid excessive DB writes and UI updates
 _last_saved_positions = {}
+_last_trusted_positions = {}  # MMSI -> {"lat", "lon", "time"} of latest accepted position
+_suspect_positions = {}       # MMSI -> list[{"lat", "lon", "time"}] awaiting quorum
 _last_vessel_db_updates = {}
 _last_ui_updates = {}
 _last_seen_timestamps = {}
@@ -76,10 +99,43 @@ _logged_structures = set()
 
 # Per-source ingestion telemetry
 _source_stats = {
-    "aisstream": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None},
-    "openwaters": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None, "sub_sources": {}},
-    "hormuz_now": {"messages_received": 0, "tanker_positions": 0, "last_message_at": None},
+    "aisstream": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None},
+    "openwaters": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None, "sub_sources": {}},
+    "hormuz_now": {"messages_received": 0, "tanker_positions": 0, "dropped_glitches": 0, "last_message_at": None},
 }
+
+
+def _parse_ais_timestamp(timestamp_str: Optional[str], fallback: datetime) -> datetime:
+    """Parse AIS timestamp strings from both ISO 8601 (Open Waters) and Go time.String() (aisstream.io)."""
+    if not timestamp_str or not isinstance(timestamp_str, str):
+        return fallback
+    raw = timestamp_str.strip()
+    if not raw:
+        return fallback
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+
+    m = _GO_TIME_RE.match(raw)
+    if m:
+        base, frac, tz_part = m.groups()
+        iso = base.replace(" ", "T")
+        if frac:
+            iso += "." + frac[:6].ljust(6, "0")
+        if tz_part:
+            if ":" not in tz_part and len(tz_part) == 5:
+                tz_part = f"{tz_part[:3]}:{tz_part[3:]}"
+            iso += tz_part
+        else:
+            iso += "+00:00"
+        try:
+            dt = datetime.fromisoformat(iso)
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+    return fallback
 
 
 def get_ingestion_stats() -> dict:
@@ -99,13 +155,21 @@ def get_ingestion_stats() -> dict:
 async def start_ais_ingestion():
     """Main AIS ingestion loop — connects to configured AIS streams and processes messages."""
 
-    # ── Seed Whitelist ──
+    # ── Seed Whitelist & Last Trusted Positions ──
     logger.info("Seeding known tankers whitelist from database...")
     try:
         async with async_session() as session:
             result = await session.execute(
-                select(Vessel.mmsi, Vessel.draft, Vessel.name).where(Vessel.ship_type.in_(TANKER_TYPES))
+                select(
+                    Vessel.mmsi,
+                    Vessel.draft,
+                    Vessel.name,
+                    Vessel.last_lat,
+                    Vessel.last_lon,
+                    Vessel.last_seen,
+                ).where(Vessel.ship_type.in_(TANKER_TYPES))
             )
+            seeded_positions = 0
             for row in result.all():
                 _known_tankers.add(row.mmsi)
                 if row.draft is not None:
@@ -114,9 +178,20 @@ async def start_ais_ingestion():
                     norm = normalize_vessel_name(row.name)
                     if norm:
                         _vessel_name_to_mmsi[norm] = row.mmsi
+                if row.last_seen is not None and is_valid_coordinate(row.last_lat, row.last_lon):
+                    ts = row.last_seen
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    _last_trusted_positions[row.mmsi] = {
+                        "lat": row.last_lat,
+                        "lon": row.last_lon,
+                        "time": ts,
+                    }
+                    seeded_positions += 1
         logger.info(
             f"Loaded {len(_known_tankers)} known tankers into whitelist "
-            f"({len(_vessel_name_to_mmsi)} indexed by name for cross-source matching)."
+            f"({seeded_positions} with trusted last positions, "
+            f"{len(_vessel_name_to_mmsi)} indexed by name)."
         )
     except Exception as e:
         logger.error(f"Failed to seed whitelist: {e}")
@@ -143,14 +218,26 @@ async def start_ais_ingestion():
 async def _run_stream_loop(source_name: str, connect_fn):
     """Reconnect loop with exponential backoff for a single AIS stream source."""
     backoff = 5
+    consecutive_drops = 0
     while True:
         try:
             await connect_fn()
             backoff = 5
+            consecutive_drops = 0
         except asyncio.CancelledError:
             logger.info(f"AIS ingestion ({source_name}) cancelled")
             break
+        except websockets.ConnectionClosed as e:
+            consecutive_drops += 1
+            log_fn = logger.info if consecutive_drops < 3 else logger.warning
+            log_fn(
+                f"AIS ({source_name}) connection closed ({e.__class__.__name__}: {e}). "
+                f"Reconnecting in {backoff}s..."
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 60)
         except (TimeoutError, ConnectionRefusedError):
+            consecutive_drops += 1
             logger.warning(f"AIS ({source_name}) connection timeout/refused. Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
@@ -174,7 +261,7 @@ async def _connect_and_consume_aisstream():
         "APIKey": settings.AIS_API_KEY,
         "BoundingBoxes": [
             [[max_lat, min_lon], [min_lat, max_lon]]
-            for (min_lat, min_lon, max_lat, max_lon) in CHOKEPOINT_BBOXES
+            for (min_lat, min_lon, max_lat, max_lon) in AISSTREAM_BBOXES
         ],
         "FilterMessageTypes": list(POSITION_MSG_TYPES + STATIC_MSG_TYPES),
     }
@@ -188,7 +275,10 @@ async def _connect_and_consume_aisstream():
         open_timeout=30,
     ) as ws:
         await ws.send(json.dumps(subscribe_msg))
-        logger.info("✅ Connected to aisstream.io — receiving AIS data")
+        logger.info(
+            f"✅ Connected to aisstream.io — receiving AIS data across "
+            f"{len(AISSTREAM_BBOXES)} zones ({len(CHOKEPOINT_BBOXES)} chokepoints + {len(CORRIDOR_BBOXES)} oil corridors)"
+        )
 
         async for raw_msg in ws:
             try:
@@ -442,31 +532,80 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         logger.info(f"Removed MMSI {mmsi} from whitelist (type changed to {ship_type})")
         return
 
-    lat = position.get("Latitude", 0)
-    lon = position.get("Longitude", 0)
+    source = meta.get("Source")
+    if not source:
+        provider = None
+    elif source.startswith("openwaters"):
+        provider = "openwaters"
+    elif source == "hormuz_now":
+        provider = "hormuz_now"
+    else:
+        provider = "aisstream"
+
+    if position.get("Valid") is False:
+        if provider:
+            _source_stats[provider]["dropped_glitches"] += 1
+        return
+
+    lat = position.get("Latitude")
+    lon = position.get("Longitude")
     speed = position.get("Sog", None)  # Speed over ground
     course = position.get("Cog", None)  # Course over ground
     heading = position.get("TrueHeading", None)
     nav_status = position.get("NavigationalStatus", None)
 
-    # Validate coordinates
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+    # Validate coordinates (rejects None, NaN/Inf, out-of-range, and Null Island (0, 0))
+    if not is_valid_coordinate(lat, lon):
+        if provider:
+            _source_stats[provider]["dropped_glitches"] += 1
         return
 
     now = datetime.now(timezone.utc)
-    timestamp_str = meta.get("time_utc", None)
-    if timestamp_str:
-        try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            timestamp = now
-    else:
-        timestamp = now
+    timestamp = _parse_ais_timestamp(meta.get("time_utc", None), now)
 
     # Drop stale/out-of-order positions (e.g. delayed duplicate from a slower feed)
     last_seen_ts = _last_seen_timestamps.get(mmsi)
     if last_seen_ts and timestamp < last_seen_ts:
         return
+
+    # ── Teleport / GPS-Spoofing Guard (before throttle so glitches never bypass 30-min save) ──
+    trusted = _last_trusted_positions.get(mmsi)
+    if trusted is not None:
+        if is_plausible_move(trusted["lat"], trusted["lon"], trusted["time"], lat, lon, timestamp):
+            _suspect_positions.pop(mmsi, None)
+            _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+        else:
+            suspects = _suspect_positions.get(mmsi, [])
+            if suspects and is_plausible_move(
+                suspects[-1]["lat"], suspects[-1]["lon"], suspects[-1]["time"], lat, lon, timestamp
+            ):
+                suspects.append({"lat": lat, "lon": lon, "time": timestamp})
+            else:
+                suspects = [{"lat": lat, "lon": lon, "time": timestamp}]
+
+            if len(suspects) >= SUSPECT_POSITION_QUORUM:
+                # 3 consecutive consistent reports confirm real relocation / recovery from bad DB anchor
+                logger.info(
+                    f"Position quorum reached for MMSI {mmsi}: relocating from "
+                    f"({trusted['lat']:.4f}, {trusted['lon']:.4f}) to ({lat:.4f}, {lon:.4f})"
+                )
+                _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+                _suspect_positions.pop(mmsi, None)
+            else:
+                _suspect_positions[mmsi] = suspects
+                if provider:
+                    _source_stats[provider]["dropped_glitches"] += 1
+                dist_km = haversine_km(trusted["lat"], trusted["lon"], lat, lon)
+                dt_sec = (timestamp - trusted["time"]).total_seconds()
+                logger.debug(
+                    f"Dropped implausible jump for MMSI {mmsi} ({source}): "
+                    f"({trusted['lat']:.4f}, {trusted['lon']:.4f}) -> ({lat:.4f}, {lon:.4f}) "
+                    f"({dist_km:.1f} km in {dt_sec:.0f}s; suspect {len(suspects)}/{SUSPECT_POSITION_QUORUM})"
+                )
+                return
+    else:
+        _last_trusted_positions[mmsi] = {"lat": lat, "lon": lon, "time": timestamp}
+
     _last_seen_timestamps[mmsi] = timestamp
 
     # ── Smart Position Save Logic ──
@@ -492,14 +631,7 @@ async def _handle_position_report(msg: AISMessage, pos_key: str = "PositionRepor
         or (timestamp - last_v_update).total_seconds() < 0
     )
 
-    source = meta.get("Source")
-    if source:
-        if source.startswith("openwaters"):
-            provider = "openwaters"
-        elif source == "hormuz_now":
-            provider = "hormuz_now"
-        else:
-            provider = "aisstream"
+    if provider:
         _source_stats[provider]["tanker_positions"] += 1
 
     if should_update_vessel_db:
@@ -756,9 +888,9 @@ async def start_flush_task():
                 ow_s = _source_stats["openwaters"]
                 hn_s = _source_stats["hormuz_now"]
                 logger.info(
-                    f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}) | "
-                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, sub={ow_s['sub_sources']}) | "
-                    f"hormuz_now(msgs={hn_s['messages_received']}, tankers={hn_s['tanker_positions']})"
+                    f"📊 AIS sources: aisstream(msgs={ais_s['messages_received']}, tankers={ais_s['tanker_positions']}, glitches={ais_s['dropped_glitches']}) | "
+                    f"openwaters(msgs={ow_s['messages_received']}, tankers={ow_s['tanker_positions']}, glitches={ow_s['dropped_glitches']}, sub={ow_s['sub_sources']}) | "
+                    f"hormuz_now(msgs={hn_s['messages_received']}, tankers={hn_s['tanker_positions']}, glitches={hn_s['dropped_glitches']})"
                 )
         except asyncio.CancelledError:
             logger.info("Batch flush task cancelled")
