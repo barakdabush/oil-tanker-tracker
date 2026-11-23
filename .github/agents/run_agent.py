@@ -32,11 +32,11 @@ def _resolve_providers() -> list[tuple[str, str, str]]:
     explicit_model = os.getenv("AGENT_MODEL", "").strip()
     providers: list[tuple[str, str, str]] = []
 
-    if os.getenv("OPENROUTER_API_KEY", "").strip():
+    if os.getenv("GEMINI_API_KEY", "").strip():
         providers.append((
-            explicit_url or "https://openrouter.ai/api/v1/chat/completions",
-            os.getenv("OPENROUTER_API_KEY", "").strip(),
-            explicit_model or "openrouter/free",
+            explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            os.getenv("GEMINI_API_KEY", "").strip(),
+            explicit_model or "gemini-2.5-flash",
         ))
     if os.getenv("GROQ_API_KEY", "").strip():
         providers.append((
@@ -44,14 +44,14 @@ def _resolve_providers() -> list[tuple[str, str, str]]:
             os.getenv("GROQ_API_KEY", "").strip(),
             explicit_model or "llama-3.3-70b-versatile",
         ))
-    if os.getenv("GEMINI_API_KEY", "").strip():
+    if os.getenv("OPENROUTER_API_KEY", "").strip():
         providers.append((
-            explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            os.getenv("GEMINI_API_KEY", "").strip(),
-            explicit_model or "gemini-3.8-flash",
+            explicit_url or "https://openrouter.ai/api/v1/chat/completions",
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+            explicit_model or "openrouter/free",
         ))
     if not providers:
-        raise RuntimeError("Set one of OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY.")
+        raise RuntimeError("Set one of GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY.")
     return providers
 
 
