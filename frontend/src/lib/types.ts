@@ -416,6 +416,10 @@ export interface HorizonForecast {
   backtest_samples: number;
   high_conviction_hit_rate_pct?: number | null;
   high_conviction_samples?: number;
+  up_wave_prob_pct?: number | null;
+  down_wave_prob_pct?: number | null;
+  range_prob_pct?: number | null;
+  wave_state?: string;
   model_name?: string;
 }
 

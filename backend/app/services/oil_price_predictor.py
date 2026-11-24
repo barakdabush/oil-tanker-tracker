@@ -36,7 +36,7 @@ from app.schemas.forecast import (
     ForecastPillar,
     HorizonForecast,
 )
-from app.services.gbt_oil_model import run_walkforward_gbt
+from app.services.gbt_oil_model import run_walkforward_wave_classifier
 from app.services.news_predictor import build_news_analog_memory
 
 PILLAR_WEIGHTS = {
@@ -64,9 +64,9 @@ RIDGE_FEATURE_KEYS: tuple[str, ...] = (
 )
 
 FORECAST_HORIZONS: tuple[tuple[str, int], ...] = (
-    ("24h", 1),
     ("3d", 3),
     ("7d", 7),
+    ("14d", 14),
 )
 
 DEFAULT_DAILY_VOL_PCT = 2.0
@@ -719,8 +719,8 @@ async def build_bottom_line_forecast(
             "pw_global_tankers": pw.get("pw_global_tankers"),
         })
 
-    # 7. Multi-horizon forecasts blending Pillars + News Analogs + 5-Year Walk-Forward GBT
-    news_ret_map = {"24h": news_ret_24h, "3d": news_ret_3d, "7d": news_ret_7d}
+    # 7. Multi-day Wave Forecasts (3d / 7d / 14d) blending Pillars + News Analogs + 5y Wave GBT
+    news_ret_map = {"3d": news_ret_3d, "7d": news_ret_7d, "14d": news_ret_7d * 1.25}
     analog_bt = memory.evaluate_walkforward_accuracy(symbol=symbol, sample_limit=160)
     horizons_out: dict[str, HorizonForecast] = {}
 
@@ -731,57 +731,56 @@ async def build_bottom_line_forecast(
             + df_pillar.score * df_pillar.weight
             + mom_pillar.score * mom_pillar.weight
         ) / (1.0 - news_pillar.weight)
-        non_news_ret = (non_news_score / 100.0) * daily_vol_pct * h_scale * 0.9
+        non_news_ret = (non_news_score / 100.0) * daily_vol_pct * h_scale * 0.85
         pillar_ret = round(
             news_pillar.weight * news_ret_map[h_label] + (1.0 - news_pillar.weight) * non_news_ret,
             2,
         )
 
-        gbt_res = run_walkforward_gbt(
+        wave_res = run_walkforward_wave_classifier(
             daily_rows=gbt_daily_rows,
             price_key=price_key,
             horizon_days=h_days,
         )
 
-        # Gate 5y GBT strictly: blend when OOS hit rate >= 52% (or high-conviction >= 55%) over >= 40 days
-        gbt_has_edge = (
-            gbt_res.latest_pred_pct is not None
-            and gbt_res.samples >= 40
+        # Gate Wave GBT strictly: blend when fired-wave OOS precision >= 53% (or high-conv >= 56%)
+        wave_has_edge = (
+            wave_res.expected_wave_pct is not None
+            and wave_res.signal_samples >= 20
             and (
-                (gbt_res.hit_rate_pct is not None and gbt_res.hit_rate_pct >= 52.0)
+                (wave_res.signal_hit_rate_pct is not None and wave_res.signal_hit_rate_pct >= 53.0)
                 or (
-                    gbt_res.high_conviction_hit_rate_pct is not None
-                    and gbt_res.high_conviction_hit_rate_pct >= 55.0
+                    wave_res.high_conviction_hit_rate_pct is not None
+                    and wave_res.high_conviction_hit_rate_pct >= 56.0
                 )
             )
         )
 
-        if gbt_has_edge and gbt_res.latest_pred_pct is not None:
-            ml_pred = gbt_res.latest_pred_pct
-            # Scale GBT weight smoothly up to 60% as OOS edge above 50% grows
+        if wave_has_edge and wave_res.expected_wave_pct is not None:
+            ml_pred = wave_res.expected_wave_pct
             edge_pts = max(
-                (gbt_res.hit_rate_pct or 50.0) - 50.0,
-                ((gbt_res.high_conviction_hit_rate_pct or 50.0) - 52.0),
+                (wave_res.signal_hit_rate_pct or 50.0) - 50.0,
+                (wave_res.high_conviction_hit_rate_pct or 50.0) - 53.0,
             )
-            ml_weight = round(_clamp(0.30 + edge_pts * 0.04, 0.30, 0.60), 2)
+            ml_weight = round(_clamp(0.35 + edge_pts * 0.035, 0.35, 0.65), 2)
             blended_ret = round((1.0 - ml_weight) * pillar_ret + ml_weight * ml_pred, 2)
-            hit_rate = gbt_res.hit_rate_pct
-            mae = gbt_res.mae_pct
-            bt_samples = gbt_res.samples
-            hc_hit = gbt_res.high_conviction_hit_rate_pct
-            hc_samples = gbt_res.high_conviction_samples
-            model_name = "5y GBT + 4-Pillar Hybrid"
+            hit_rate = wave_res.signal_hit_rate_pct
+            mae = wave_res.mae_pct
+            bt_samples = wave_res.signal_samples
+            hc_hit = wave_res.high_conviction_hit_rate_pct
+            hc_samples = wave_res.high_conviction_samples
+            model_name = "5y Wave GBT + 4-Pillar Hybrid"
         else:
-            ml_pred = gbt_res.latest_pred_pct
+            ml_pred = wave_res.expected_wave_pct
             ml_weight = 0.0
             blended_ret = pillar_ret
-            hc_hit = gbt_res.high_conviction_hit_rate_pct
-            hc_samples = gbt_res.high_conviction_samples
-            if gbt_res.samples >= 40 and gbt_res.hit_rate_pct is not None:
-                hit_rate, mae, bt_samples = gbt_res.hit_rate_pct, gbt_res.mae_pct, gbt_res.samples
-                model_name = "4-Pillar + News Analogs (GBT Gated)"
+            hc_hit = wave_res.high_conviction_hit_rate_pct
+            hc_samples = wave_res.high_conviction_samples
+            if wave_res.signal_samples >= 20 and wave_res.signal_hit_rate_pct is not None:
+                hit_rate, mae, bt_samples = wave_res.signal_hit_rate_pct, wave_res.mae_pct, wave_res.signal_samples
+                model_name = "4-Pillar + News Analogs (Wave GBT Gated)"
             else:
-                abt = analog_bt.get(h_label)
+                abt = analog_bt.get("7d" if h_label == "14d" else h_label)
                 if abt:
                     hit_rate, mae, bt_samples = abt["hit_rate_pct"], abt["mae_pct"], abt["samples"]
                 else:
@@ -791,7 +790,11 @@ async def build_bottom_line_forecast(
         blended_ret = round(_clamp(blended_ret, -12.0, 12.0), 2)
         verdict, direction = _verdict_from_return(blended_ret, h_days)
 
-        # Confidence combines pillar agreement + signal strength + out-of-sample backtest edge
+        # If Wave GBT is active and detects a clear wave, reflect it in wave_state
+        wave_state = wave_res.wave_state
+        if wave_state == "Range-Bound" and abs(blended_ret) >= (1.1 * math.sqrt(h_days / 3.0)):
+            wave_state = "Bullish Wave" if blended_ret > 0 else "Bearish Wave"
+
         signs = [1 if p.score > 10 else (-1 if p.score < -10 else 0) for p in pillars]
         non_zero_signs = [s for s in signs if s != 0]
         target_sign = 1 if blended_ret >= 0 else -1
@@ -809,10 +812,9 @@ async def build_bottom_line_forecast(
         high_price = None
         if current_price is not None:
             pred_price = round(current_price * (1.0 + blended_ret / 100.0), 2)
-            # Use asymmetric GBT quantile tail-risk bands (P15 / P85) when available
-            if gbt_res.q15_pct is not None and gbt_res.q85_pct is not None:
-                low_pct = min(gbt_res.q15_pct, blended_ret - 0.35 * daily_vol_pct * h_scale)
-                high_pct = max(gbt_res.q85_pct, blended_ret + 0.35 * daily_vol_pct * h_scale)
+            if wave_res.q15_pct is not None and wave_res.q85_pct is not None:
+                low_pct = min(wave_res.q15_pct, blended_ret - 0.35 * daily_vol_pct * h_scale)
+                high_pct = max(wave_res.q85_pct, blended_ret + 0.35 * daily_vol_pct * h_scale)
                 low_price = round(current_price * (1.0 + low_pct / 100.0), 2)
                 high_price = round(current_price * (1.0 + high_pct / 100.0), 2)
             else:
@@ -837,10 +839,14 @@ async def build_bottom_line_forecast(
             backtest_samples=bt_samples,
             high_conviction_hit_rate_pct=hc_hit,
             high_conviction_samples=hc_samples,
+            up_wave_prob_pct=wave_res.up_wave_prob_pct,
+            down_wave_prob_pct=wave_res.down_wave_prob_pct,
+            range_prob_pct=wave_res.range_prob_pct,
+            wave_state=wave_state,
             model_name=model_name,
         )
 
-    primary = horizons_out["3d"]
+    primary = horizons_out["7d"]
     price_clause = (
         f" (~${primary.predicted_price_usd:.2f} vs ${current_price:.2f} now)"
         if (primary.predicted_price_usd is not None and current_price is not None)
@@ -855,9 +861,16 @@ async def build_bottom_line_forecast(
     ):
         counter_clause = f", partly offset by {weakest_counter.label.lower()}"
 
+    wave_prob_clause = ""
+    if primary.up_wave_prob_pct is not None and primary.down_wave_prob_pct is not None:
+        wave_prob_clause = (
+            f" · Wave probs: {primary.up_wave_prob_pct:.0f}% Up / "
+            f"{primary.down_wave_prob_pct:.0f}% Down"
+        )
+
     headline_summary = (
-        f"{primary.verdict.upper()} ({primary.predicted_return_pct:+.2f}% over 3d{price_clause}) — "
-        f"led by {strongest_pillar.label.lower()}{counter_clause}."
+        f"{primary.wave_state.upper()} ({primary.predicted_return_pct:+.2f}% over next 7d{price_clause}) — "
+        f"led by {strongest_pillar.label.lower()}{counter_clause}{wave_prob_clause}."
     )
 
     top_drivers = (news_drivers + physical_drivers)[:5]
@@ -870,7 +883,7 @@ async def build_bottom_line_forecast(
         price_date=price_date,
         daily_vol_pct=daily_vol_pct,
         composite_score=composite_score,
-        primary_horizon="3d",
+        primary_horizon="7d",
         verdict=primary.verdict,
         direction=primary.direction,
         headline_summary=headline_summary,

@@ -18,7 +18,7 @@ from datetime import date
 from typing import Any, Optional
 
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
 FEATURE_NAMES: tuple[str, ...] = (
     "ret_1d",
@@ -398,3 +398,210 @@ def run_walkforward_gbt(
         high_conviction_samples=hc_total,
         training_rows=int(full_mask.sum()),
     )
+
+
+@dataclass
+class WaveForecastResult:
+    wave_state: str  # "Bullish Wave" | "Bearish Wave" | "Range-Bound"
+    up_wave_prob_pct: Optional[float]
+    down_wave_prob_pct: Optional[float]
+    range_prob_pct: Optional[float]
+    expected_wave_pct: Optional[float]
+    q15_pct: Optional[float]
+    q85_pct: Optional[float]
+    signal_hit_rate_pct: Optional[float]
+    signal_samples: int
+    high_conviction_hit_rate_pct: Optional[float]
+    high_conviction_samples: int
+    mae_pct: Optional[float]
+
+
+def run_walkforward_wave_classifier(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int,
+    min_train_rows: int = 220,
+    refit_every: int = 25,
+    max_eval_days: int = 400,
+) -> WaveForecastResult:
+    """Multi-day Oil Price Wave Detector (Bullish Wave / Range-Bound / Bearish Wave).
+
+    Instead of noisy single-day close-to-close prediction, targets the smoothed
+    forward H-day wave return ``ln(mean(P[t+1..t+H]) / P[t])`` using a 3-class
+    HistGradientBoostingClassifier with strict expanding-window walk-forward validation.
+    Abstains (Range-Bound) on quiet/ambiguous days and measures precision strictly on
+    fired wave alerts.
+    """
+    X, prices, _ = build_gbt_feature_matrix(daily_rows, price_key=price_key)
+    n = len(prices)
+    if n < min_train_rows + horizon_days + 25:
+        return WaveForecastResult(
+            wave_state="Range-Bound",
+            up_wave_prob_pct=None,
+            down_wave_prob_pct=None,
+            range_prob_pct=None,
+            expected_wave_pct=None,
+            q15_pct=None,
+            q85_pct=None,
+            signal_hit_rate_pct=None,
+            signal_samples=0,
+            high_conviction_hit_rate_pct=None,
+            high_conviction_samples=0,
+            mae_pct=None,
+        )
+
+    # Smoothed forward wave return over the next H trading days
+    wave_ret = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n - horizon_days):
+        fwd_window = prices[i + 1 : i + 1 + horizon_days]
+        if prices[i] > 0 and len(fwd_window) == horizon_days and np.all(fwd_window > 0):
+            wave_ret[i] = math.log(float(np.mean(fwd_window)) / prices[i])
+
+    # Wave threshold scales with horizon (3d: 0.8%, 7d: 1.2%, 14d: 1.8%)
+    wave_th = 0.008 if horizon_days <= 3 else (0.012 if horizon_days <= 7 else 0.018)
+
+    # Labels: 0 = Down Wave, 1 = Range-Bound, 2 = Up Wave
+    y_cls = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        if not math.isfinite(wave_ret[i]):
+            continue
+        if wave_ret[i] >= wave_th:
+            y_cls[i] = 2
+        elif wave_ret[i] <= -wave_th:
+            y_cls[i] = 0
+        else:
+            y_cls[i] = 1
+
+    def _make_clf() -> HistGradientBoostingClassifier:
+        return HistGradientBoostingClassifier(
+            max_iter=80,
+            max_depth=3,
+            learning_rate=0.05,
+            l2_regularization=3.0,
+            min_samples_leaf=20,
+            max_bins=128,
+            random_state=42,
+        )
+
+    def _extract_probs(clf: HistGradientBoostingClassifier, x_row: np.ndarray) -> tuple[float, float, float]:
+        probs = clf.predict_proba(x_row)[0]
+        cls_map = {int(c): float(p) for c, p in zip(clf.classes_, probs)}
+        return cls_map.get(0, 0.0), cls_map.get(1, 0.0), cls_map.get(2, 0.0)
+
+    eval_end = n - horizon_days
+    eval_start = max(min_train_rows + horizon_days, eval_end - max_eval_days)
+
+    clf: Optional[HistGradientBoostingClassifier] = None
+    last_fit_t = -9999
+    avg_up_pct = 2.0
+    avg_down_pct = -2.0
+
+    sig_hits = 0
+    sig_total = 0
+    hc_hits = 0
+    hc_total = 0
+    abs_errs: list[float] = []
+
+    for t in range(eval_start, eval_end):
+        if y_cls[t] < 0 or not math.isfinite(wave_ret[t]):
+            continue
+        train_end = t - horizon_days + 1
+        if clf is None or (t - last_fit_t) >= refit_every:
+            y_tr = y_cls[:train_end]
+            mask = y_tr >= 0
+            if int(mask.sum()) < min_train_rows or len(set(y_tr[mask].tolist())) < 2:
+                continue
+            clf = _make_clf()
+            clf.fit(X[:train_end][mask], y_tr[mask])
+            # Empirical average up/down wave magnitudes from training set only
+            w_tr = wave_ret[:train_end][mask]
+            up_vals = w_tr[y_tr[mask] == 2]
+            dn_vals = w_tr[y_tr[mask] == 0]
+            if len(up_vals) > 0:
+                avg_up_pct = float(np.mean(up_vals)) * 100.0
+            if len(dn_vals) > 0:
+                avg_down_pct = float(np.mean(dn_vals)) * 100.0
+            last_fit_t = t
+
+        p_down, p_range, p_up = _extract_probs(clf, X[t : t + 1])
+        expected_pct = p_up * avg_up_pct + p_down * avg_down_pct
+        actual_pct = (math.exp(float(wave_ret[t])) - 1.0) * 100.0
+
+        # Fire a wave signal only when one side clearly dominates
+        if p_up >= 0.45 and (p_up - p_down) >= 0.12:
+            sig_total += 1
+            is_hit = actual_pct > 0
+            if is_hit:
+                sig_hits += 1
+            abs_errs.append(abs(expected_pct - actual_pct))
+            if p_up >= 0.55 and (p_up - p_down) >= 0.22:
+                hc_total += 1
+                if is_hit:
+                    hc_hits += 1
+        elif p_down >= 0.45 and (p_down - p_up) >= 0.12:
+            sig_total += 1
+            is_hit = actual_pct < 0
+            if is_hit:
+                sig_hits += 1
+            abs_errs.append(abs(expected_pct - actual_pct))
+            if p_down >= 0.55 and (p_down - p_up) >= 0.22:
+                hc_total += 1
+                if is_hit:
+                    hc_hits += 1
+
+    # Fit final wave classifier on all matured rows up to today
+    y_full = y_cls[:eval_end]
+    full_mask = y_full >= 0
+    if int(full_mask.sum()) < min_train_rows or len(set(y_full[full_mask].tolist())) < 2:
+        return WaveForecastResult(
+            wave_state="Range-Bound",
+            up_wave_prob_pct=None,
+            down_wave_prob_pct=None,
+            range_prob_pct=None,
+            expected_wave_pct=None,
+            q15_pct=None,
+            q85_pct=None,
+            signal_hit_rate_pct=None,
+            signal_samples=0,
+            high_conviction_hit_rate_pct=None,
+            high_conviction_samples=0,
+            mae_pct=None,
+        )
+
+    final_clf = _make_clf()
+    final_clf.fit(X[:eval_end][full_mask], y_full[full_mask])
+    p_down, p_range, p_up = _extract_probs(final_clf, X[n - 1 : n])
+
+    w_full = wave_ret[:eval_end][full_mask]
+    up_vals = w_full[y_full[full_mask] == 2]
+    dn_vals = w_full[y_full[full_mask] == 0]
+    avg_up_pct = float(np.mean(up_vals)) * 100.0 if len(up_vals) > 0 else 2.0
+    avg_down_pct = float(np.mean(dn_vals)) * 100.0 if len(dn_vals) > 0 else -2.0
+    expected_pct = round(max(-12.0, min(12.0, p_up * avg_up_pct + p_down * avg_down_pct)), 2)
+
+    if p_up >= 0.45 and (p_up - p_down) >= 0.12:
+        wave_state = "Bullish Wave"
+    elif p_down >= 0.45 and (p_down - p_up) >= 0.12:
+        wave_state = "Bearish Wave"
+    else:
+        wave_state = "Range-Bound"
+
+    # Empirical P15 / P85 wave range from historical wave returns
+    q15_pct = round(float(np.percentile(w_full, 15)) * 100.0, 2)
+    q85_pct = round(float(np.percentile(w_full, 85)) * 100.0, 2)
+
+    return WaveForecastResult(
+        wave_state=wave_state,
+        up_wave_prob_pct=round(p_up * 100.0, 1),
+        down_wave_prob_pct=round(p_down * 100.0, 1),
+        range_prob_pct=round(p_range * 100.0, 1),
+        expected_wave_pct=expected_pct,
+        q15_pct=q15_pct,
+        q85_pct=q85_pct,
+        signal_hit_rate_pct=round((sig_hits / sig_total) * 100.0, 1) if sig_total >= 10 else None,
+        signal_samples=sig_total,
+        high_conviction_hit_rate_pct=round((hc_hits / hc_total) * 100.0, 1) if hc_total >= 8 else None,
+        high_conviction_samples=hc_total,
+        mae_pct=round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else None,
+    )
+

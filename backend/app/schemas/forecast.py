@@ -43,7 +43,11 @@ class HorizonForecast(BaseModel):
     backtest_samples: int = 0
     high_conviction_hit_rate_pct: Optional[float] = None
     high_conviction_samples: int = 0
-    model_name: str = "4-Pillar + News Analogs"
+    up_wave_prob_pct: Optional[float] = None
+    down_wave_prob_pct: Optional[float] = None
+    range_prob_pct: Optional[float] = None
+    wave_state: str = "Range-Bound"  # "Bullish Wave" | "Bearish Wave" | "Range-Bound"
+    model_name: str = "5y Wave GBT + 4-Pillar"
 
 
 class BottomLineForecastResponse(BaseModel):

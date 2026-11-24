@@ -260,3 +260,17 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert res.q15_pct <= res.q85_pct
     assert res.samples >= 100
     assert res.hit_rate_pct is not None and res.hit_rate_pct > 55.0
+
+    from app.services.gbt_oil_model import run_walkforward_wave_classifier
+
+    wres = run_walkforward_wave_classifier(
+        daily_rows=rows,
+        price_key="brent_close_usd",
+        horizon_days=7,
+        min_train_rows=180,
+        refit_every=25,
+    )
+    assert wres.up_wave_prob_pct is not None and wres.down_wave_prob_pct is not None
+    assert wres.wave_state in ("Bullish Wave", "Bearish Wave", "Range-Bound")
+    assert wres.signal_samples >= 20
+    assert wres.signal_hit_rate_pct is not None and wres.signal_hit_rate_pct > 55.0

@@ -49,7 +49,7 @@ function driverIcon(sourceType: string): string {
 
 export default function BottomLineCard({ compact = false }: BottomLineCardProps) {
   const [symbol, setSymbol] = useState<"BZ=F" | "CL=F">("BZ=F");
-  const [horizon, setHorizon] = useState<"24h" | "3d" | "7d">("3d");
+  const [horizon, setHorizon] = useState<string>("7d");
   const [forecast, setForecast] = useState<BottomLineForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +66,9 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: BottomLineForecastResponse = await res.json();
       setForecast(json);
+      if (json.primary_horizon && json.horizons[json.primary_horizon]) {
+        setHorizon((prev) => (json.horizons[prev] ? prev : json.primary_horizon));
+      }
     } catch {
       setError("Oil price predictor unavailable");
     } finally {
@@ -89,7 +92,7 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
         }}
       >
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          Computing Bottom-Line Oil Price Forecast…
+          Computing Multi-Day Oil Price Wave Forecast…
         </div>
       </div>
     );
@@ -99,7 +102,11 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
     return null;
   }
 
-  const activeH = forecast.horizons[horizon] ?? forecast.horizons["3d"];
+  const availableHorizons = Object.keys(forecast.horizons);
+  const activeH =
+    forecast.horizons[horizon] ??
+    forecast.horizons[forecast.primary_horizon] ??
+    forecast.horizons[availableHorizons[0]];
   const colors = directionColors(activeH.direction);
 
   return (
@@ -140,10 +147,10 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
               border: "1px solid rgba(56, 189, 248, 0.3)",
             }}
           >
-            🎯 Bottom Line Oil Forecast
+            🌊 Oil Price Wave Forecast
           </span>
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            News Analogs ({forecast.analog_memory_size}) + Chokepoints + Dark Fleet + Walk-Forward ML
+            5y PortWatch Ships + News Analogs ({forecast.analog_memory_size}) + Crack Spreads + Wave GBT
           </span>
         </div>
 
@@ -187,7 +194,7 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
               overflow: "hidden",
             }}
           >
-            {(["24h", "3d", "7d"] as const).map((h) => (
+            {availableHorizons.map((h) => (
               <button
                 key={h}
                 type="button"
@@ -198,8 +205,8 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
                   fontWeight: 600,
                   border: "none",
                   cursor: "pointer",
-                  background: horizon === h ? "rgba(56, 189, 248, 0.25)" : "transparent",
-                  color: horizon === h ? "#e0f2fe" : "var(--text-secondary)",
+                  background: activeH.horizon === h ? "rgba(56, 189, 248, 0.25)" : "transparent",
+                  color: activeH.horizon === h ? "#e0f2fe" : "var(--text-secondary)",
                 }}
               >
                 {h}
@@ -223,7 +230,7 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
           marginBottom: 16,
         }}
       >
-        {/* Left: Verdict & Headline */}
+        {/* Left: Verdict, Wave Probabilities & Headline */}
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
             <span
@@ -237,14 +244,37 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
                 fontWeight: 800,
               }}
             >
-              {colors.icon} {activeH.verdict.toUpperCase()}
+              {colors.icon} {(activeH.wave_state || activeH.verdict).toUpperCase()}
             </span>
             <span style={{ fontSize: 22, fontWeight: 800, color: colors.text }}>
               {activeH.predicted_return_pct >= 0 ? "+" : ""}
               {activeH.predicted_return_pct.toFixed(2)}%
             </span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>in next {horizon}</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>over next {activeH.horizon}</span>
           </div>
+          {activeH.up_wave_prob_pct != null && activeH.down_wave_prob_pct != null && (
+            <div style={{ marginBottom: 8 }}>
+              <div
+                style={{
+                  display: "flex",
+                  height: 6,
+                  borderRadius: 999,
+                  overflow: "hidden",
+                  background: "rgba(148, 163, 184, 0.18)",
+                  marginBottom: 4,
+                }}
+              >
+                <div style={{ width: `${activeH.up_wave_prob_pct}%`, background: "#34d399" }} />
+                <div style={{ width: `${activeH.range_prob_pct ?? 0}%`, background: "#64748b" }} />
+                <div style={{ width: `${activeH.down_wave_prob_pct}%`, background: "#f87171" }} />
+              </div>
+              <div style={{ display: "flex", gap: 10, fontSize: 11, color: "var(--text-muted)", flexWrap: "wrap" }}>
+                <span style={{ color: "#34d399" }}>▲ Up Wave {activeH.up_wave_prob_pct.toFixed(0)}%</span>
+                <span>● Range {(activeH.range_prob_pct ?? 0).toFixed(0)}%</span>
+                <span style={{ color: "#f87171" }}>▼ Down Wave {activeH.down_wave_prob_pct.toFixed(0)}%</span>
+              </div>
+            </div>
+          )}
           <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.45 }}>
             {forecast.headline_summary}
           </div>
