@@ -151,6 +151,8 @@ export default function NewsIntelligencePage() {
       const evParams = new URLSearchParams({
         days: String(days),
         sort_by: sortBy,
+        symbol,
+        include_predictions: "true",
         limit: "60",
       });
       if (categoryFilter !== "all") evParams.set("event_type", categoryFilter);
@@ -897,13 +899,92 @@ export default function NewsIntelligencePage() {
                         )}
                       </div>
 
+                      {/* Similarity-Based Predicted Oil Impact Banner */}
+                      {ev.prediction && (
+                        <div
+                          data-testid="event-prediction-banner"
+                          style={{
+                            marginBottom: 10,
+                            padding: "8px 12px",
+                            borderRadius: 8,
+                            background:
+                              ev.prediction.direction === "bullish"
+                                ? "rgba(16, 185, 129, 0.10)"
+                                : ev.prediction.direction === "bearish"
+                                  ? "rgba(239, 68, 68, 0.10)"
+                                  : "rgba(100, 116, 139, 0.12)",
+                            border:
+                              ev.prediction.direction === "bullish"
+                                ? "1px solid rgba(16, 185, 129, 0.28)"
+                                : ev.prediction.direction === "bearish"
+                                  ? "1px solid rgba(239, 68, 68, 0.28)"
+                                  : "1px solid rgba(148, 163, 184, 0.22)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 12,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <div style={{ fontSize: 12, color: "var(--text-primary)", flex: 1, minWidth: 220 }}>
+                            <strong style={{ color: "#38bdf8" }}>🔮 Predicted Oil Impact:</strong>{" "}
+                            {ev.prediction.narrative}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 800,
+                                color:
+                                  ev.prediction.direction === "bullish"
+                                    ? "#34d399"
+                                    : ev.prediction.direction === "bearish"
+                                      ? "#f87171"
+                                      : "#cbd5e1",
+                              }}
+                            >
+                              {symbol === "BZ=F" ? "Brent" : "WTI"}{" "}
+                              {ev.prediction.expected_return_pct >= 0 ? "+" : ""}
+                              {ev.prediction.expected_return_pct.toFixed(2)}% ({ev.prediction.peak_horizon})
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 11,
+                                padding: "2px 7px",
+                                borderRadius: 999,
+                                background: "rgba(15, 23, 42, 0.7)",
+                                color: "var(--text-secondary)",
+                                border: "1px solid var(--border)",
+                              }}
+                            >
+                              {ev.prediction.confidence_pct.toFixed(0)}% conf · {ev.prediction.analog_count} analogs
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedId(isOpen ? null : ev.id)}
+                              style={{
+                                fontSize: 11,
+                                color: "#38bdf8",
+                                background: "transparent",
+                                border: "none",
+                                cursor: "pointer",
+                                padding: "2px 4px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {isOpen ? "Hide memory ▲" : "View analogs ▼"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Realized Price Reaction Strip */}
                       <ReactionStrip
                         impact={activeImpact}
                         label={symbol === "BZ=F" ? "Brent:" : "WTI:"}
                       />
 
-                      {/* Expandable Rationale & Source Links */}
+                      {/* Expandable Rationale, Matched Historical Analogs & Source Links */}
                       {isOpen && (
                         <div
                           style={{
@@ -914,6 +995,85 @@ export default function NewsIntelligencePage() {
                             color: "var(--text-secondary)",
                           }}
                         >
+                          {ev.prediction && ev.prediction.analogs.length > 0 && (
+                            <div style={{ marginBottom: 12 }}>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  marginBottom: 6,
+                                  color: "#38bdf8",
+                                  textTransform: "uppercase",
+                                  letterSpacing: 0.4,
+                                }}
+                              >
+                                🧠 Historical Memory — Similar Past News &amp; Actual{" "}
+                                {symbol === "BZ=F" ? "Brent" : "WTI"} Moves
+                              </div>
+                              <div style={{ overflowX: "auto" }}>
+                                <table
+                                  style={{
+                                    width: "100%",
+                                    borderCollapse: "collapse",
+                                    fontSize: 11,
+                                    background: "rgba(15, 23, 42, 0.65)",
+                                    borderRadius: 6,
+                                  }}
+                                >
+                                  <thead>
+                                    <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Match</th>
+                                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Past Event</th>
+                                      <th style={{ textAlign: "right", padding: "6px 8px" }}>+4h</th>
+                                      <th style={{ textAlign: "right", padding: "6px 8px" }}>+24h</th>
+                                      <th style={{ textAlign: "right", padding: "6px 8px" }}>+3d</th>
+                                      <th style={{ textAlign: "right", padding: "6px 8px" }}>+7d</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {ev.prediction.analogs.map((an) => (
+                                      <tr
+                                        key={an.event_id}
+                                        style={{ borderBottom: "1px solid rgba(148, 163, 184, 0.1)" }}
+                                      >
+                                        <td style={{ padding: "6px 8px", fontWeight: 700, color: "#38bdf8" }}>
+                                          {Math.round(an.similarity * 100)}%
+                                        </td>
+                                        <td style={{ padding: "6px 8px", color: "var(--text-primary)" }}>
+                                          <div>{an.headline}</div>
+                                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                                            {new Date(an.first_seen_at).toLocaleDateString()} · {an.event_type_label}
+                                          </div>
+                                        </td>
+                                        {[an.ret_4h_pct, an.ret_24h_pct, an.ret_3d_pct, an.ret_7d_pct].map(
+                                          (val, i) => (
+                                            <td
+                                              key={i}
+                                              style={{
+                                                padding: "6px 8px",
+                                                textAlign: "right",
+                                                fontWeight: 600,
+                                                color:
+                                                  val === null
+                                                    ? "var(--text-muted)"
+                                                    : val > 0.1
+                                                      ? "#34d399"
+                                                      : val < -0.1
+                                                        ? "#f87171"
+                                                        : "#cbd5e1",
+                                              }}
+                                            >
+                                              {val === null ? "—" : `${val >= 0 ? "+" : ""}${val.toFixed(2)}%`}
+                                            </td>
+                                          )
+                                        )}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
                           {ev.llm_rationale && (
                             <p style={{ marginBottom: 8, color: "#ddd6fe" }}>
                               <strong>Analyst Rationale:</strong> {ev.llm_rationale}

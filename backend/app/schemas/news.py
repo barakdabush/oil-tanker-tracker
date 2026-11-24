@@ -40,6 +40,45 @@ class EventPriceReaction(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SimilarNewsAnalog(BaseModel):
+    event_id: int
+    headline: str
+    event_type: str
+    event_type_label: str
+    first_seen_at: datetime
+    similarity: float
+    ret_4h_pct: Optional[float] = None
+    ret_24h_pct: Optional[float] = None
+    ret_3d_pct: Optional[float] = None
+    ret_7d_pct: Optional[float] = None
+
+
+class HorizonPrediction(BaseModel):
+    horizon: str
+    expected_return_pct: float
+    range_low_pct: float
+    range_high_pct: float
+    confidence_pct: float
+    directional_agreement_pct: Optional[float] = None
+    analog_count: int = 0
+
+
+class EventPricePrediction(BaseModel):
+    symbol: str
+    peak_horizon: str
+    direction: str  # "bullish" | "bearish" | "neutral"
+    expected_return_pct: float
+    range_low_pct: float
+    range_high_pct: float
+    confidence_pct: float
+    analog_count: int = 0
+    avg_similarity: float = 0.0
+    similarity_mode: str = "hybrid_tfidf_structured"
+    narrative: str
+    horizons: dict[str, HorizonPrediction] = {}
+    analogs: list[SimilarNewsAnalog] = []
+
+
 class NewsEventResponse(BaseModel):
     id: int
     headline: str
@@ -65,6 +104,7 @@ class NewsEventResponse(BaseModel):
     llm_rationale: Optional[str] = None
     brent_impact: Optional[EventPriceReaction] = None
     wti_impact: Optional[EventPriceReaction] = None
+    prediction: Optional[EventPricePrediction] = None
     articles: list[NewsArticleItem] = []
 
 

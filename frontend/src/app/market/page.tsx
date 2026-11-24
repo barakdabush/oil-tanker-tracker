@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { getApiUrl } from "@/lib/config";
 import type { MarketSnapshotResponse } from "@/lib/types";
+import BottomLineCard from "@/components/BottomLineCard";
 
 // Dynamically import Recharts (prevents SSR hydration errors)
 const ComposedChart = dynamic(() => import("recharts").then((m) => m.ComposedChart), { ssr: false });
@@ -284,6 +285,9 @@ export default function MarketIntelligencePage() {
       </div>
 
       <div className="page-body">
+        {/* Unified Bottom-Line Oil Price Predictor */}
+        <BottomLineCard />
+
         {/* KPI Cards */}
         {latest && (
           <div className="stats-grid animate-in" style={{ marginBottom: 24, gridTemplateColumns: "repeat(4, 1fr)" }}>

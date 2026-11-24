@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.models.news import (
     NewsImpactPrior,
 )
 from app.schemas.news import (
+    EventPricePrediction,
     EventPriceReaction,
     HorizonStatCell,
     ImpactMatrixResponse,
@@ -38,6 +39,7 @@ from app.services.news_clusterer import EVENT_CATEGORIES
 from app.services.news_fetcher import NewsFetcher
 from app.services.news_impact_analyzer import NewsImpactAnalyzer, POST_HORIZONS
 from app.services.news_llm_enricher import NewsLLMEnricher, is_llm_configured
+from app.services.news_predictor import build_news_analog_memory
 
 router = APIRouter()
 
@@ -251,10 +253,12 @@ async def list_news_events(
     chokepoint: Optional[str] = Query(None),
     min_rank: float = Query(0.0, ge=0.0, le=100.0),
     sort_by: str = Query("rank", pattern="^(rank|recent|learned)$"),
+    symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
+    include_predictions: bool = Query(True),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List ranked canonical oil & maritime news events with multi-horizon Brent/WTI impacts."""
+    """List ranked canonical oil & maritime news events with multi-horizon Brent/WTI impacts & analog predictions."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     q = select(NewsEvent).where(
         NewsEvent.first_seen_at >= cutoff,
@@ -273,7 +277,31 @@ async def list_news_events(
         q = q.order_by(NewsEvent.prior_rank_score.desc(), NewsEvent.first_seen_at.desc())
 
     events = list((await db.execute(q.limit(limit))).scalars().all())
-    return await _hydrate_events(db, events, include_articles=True)
+    hydrated = await _hydrate_events(db, events, include_articles=True)
+
+    if include_predictions and hydrated:
+        memory = await build_news_analog_memory(db, symbol=symbol)
+        now_utc = datetime.now(timezone.utc)
+        for item in hydrated:
+            rec = memory.by_id.get(item.id)
+            if rec is not None:
+                item.prediction = memory.predict_for_event(rec, symbol=symbol, reference_time=now_utc)
+
+    return hydrated
+
+
+@router.get("/events/{event_id}/prediction", response_model=EventPricePrediction)
+async def get_event_prediction(
+    event_id: int,
+    symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return similarity-based historical analog price prediction for a single news event."""
+    memory = await build_news_analog_memory(db, symbol=symbol)
+    rec = memory.by_id.get(event_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="News event not found")
+    return memory.predict_for_event(rec, symbol=symbol, reference_time=datetime.now(timezone.utc))
 
 
 @router.get("/impact-matrix", response_model=ImpactMatrixResponse)

@@ -59,7 +59,6 @@ RSS_FEEDS: list[tuple[str, int, str]] = [
     ("gCaptain", 2, "https://gcaptain.com/feed/"),
     ("Splash247", 2, "https://splash247.com/feed/"),
     ("OilPrice.com", 2, "https://oilprice.com/rss/main"),
-    ("Hellenic Shipping News", 2, "https://www.hellenicshippingnews.com/category/shipping-news/tanker-shipping-news/feed/"),
     (
         "Google News - Oil & OPEC",
         2,
@@ -69,6 +68,16 @@ RSS_FEEDS: list[tuple[str, int, str]] = [
         "Google News - Maritime Chokepoints",
         2,
         "https://news.google.com/rss/search?q=(%22Strait+of+Hormuz%22+OR+%22Bab+el-Mandeb%22+OR+%22Suez+Canal%22+OR+%22Red+Sea%22)+AND+(tanker+OR+oil+OR+shipping)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "Google News - Tanker & Dark Fleet",
+        2,
+        "https://news.google.com/rss/search?q=(%22oil+tanker%22+OR+%22shadow+fleet%22+OR+%22dark+fleet%22+OR+%22VLCC%22)+AND+(sanctions+OR+Iran+OR+Russia+OR+freight)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "Google News - Brent & WTI Prices",
+        2,
+        "https://news.google.com/rss/search?q=(%22Brent+crude%22+OR+%22WTI+crude%22+OR+%22oil+prices%22)+AND+(surge+OR+plunge+OR+OPEC+OR+inventory+OR+EIA)+when:2d&hl=en-US&gl=US&ceid=US:en",
     ),
 ]
 
@@ -360,9 +369,10 @@ class NewsFetcher:
                 return
         logger.warning(f"{label} failed: {type(exc).__name__}: {exc}")
 
-    async def fetch_and_store(self, timespan: str = "3d", include_rss: bool = True) -> dict[str, int]:
+    async def fetch_and_store(self, timespan: str = "3d", include_rss: bool = True) -> dict:
         """Fetch free news sources, deduplicate articles, and cluster into canonical events."""
         raw_items: list[RawNewsItem] = []
+        source_counts: dict[str, int] = {}
         now = datetime.now(timezone.utc)
         headers = {
             "User-Agent": "oil-tanker-tracker/1.0 (https://github.com/barakdabush/oil-tanker-tracker)",
@@ -380,13 +390,18 @@ class NewsFetcher:
                     try:
                         fetched = await self._fetch_rss_feed(client, source_name, tier, url)
                         raw_items.extend(fetched)
+                        source_counts[source_name] = len(fetched)
                     except Exception as e:
+                        source_counts[source_name] = -1
                         self._handle_fetch_error(key, f"NewsFetcher RSS[{source_name}]", e, now)
 
                 if not self._is_in_cooldown("straits", now):
                     try:
-                        raw_items.extend(await self._fetch_straits_events(client))
+                        straits_items = await self._fetch_straits_events(client)
+                        raw_items.extend(straits_items)
+                        source_counts["Straits.live"] = len(straits_items)
                     except Exception as e:
+                        source_counts["Straits.live"] = -1
                         self._handle_fetch_error("straits", "NewsFetcher[Straits.live]", e, now)
 
             gdelt_due = (
@@ -402,11 +417,16 @@ class NewsFetcher:
                     if idx > 0:
                         await asyncio.sleep(10.0)
                     try:
-                        raw_items.extend(await self._fetch_gdelt_articles(client, qtext, timespan=timespan))
+                        gdelt_items = await self._fetch_gdelt_articles(client, qtext, timespan=timespan)
+                        raw_items.extend(gdelt_items)
+                        source_counts[f"GDELT:{qname}"] = len(gdelt_items)
                     except Exception as e:
+                        source_counts[f"GDELT:{qname}"] = -1
                         self._handle_fetch_error(key, f"NewsFetcher GDELT[{qname}]", e, now)
 
         stats = await self.ingest_items(raw_items)
+        stats["fetched_total"] = len(raw_items)
+        stats["sources"] = source_counts
         logger.info(
             f"NewsFetcher complete: fetched={len(raw_items)}, "
             f"new_articles={stats['new_articles']}, new_events={stats['new_events']}, "

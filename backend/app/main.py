@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine
-from app.api import vessels, ports, alerts, analytics, chokepoints, global_oil_features, system, news, agent_intel, satellite, debug
+from app.api import vessels, ports, alerts, analytics, chokepoints, global_oil_features, system, news, agent_intel, satellite, debug, forecast
 from app.services.db_log_handler import setup_db_logging
 
 # Ensure all models are registered with Base.metadata
@@ -60,6 +60,7 @@ app.include_router(system.router, prefix="/api/system", tags=["System"])
 app.include_router(news.router, prefix="/api/news", tags=["News Intelligence"])
 app.include_router(agent_intel.router, prefix="/api/agent-intel", tags=["Agent Intelligence"])
 app.include_router(satellite.router, prefix="/api/satellite", tags=["Satellite SAR"])
+app.include_router(forecast.router, prefix="/api/forecast", tags=["Oil Price Forecast"])
 app.include_router(debug.router, prefix="/api/debug", tags=["Debug"])
 
 

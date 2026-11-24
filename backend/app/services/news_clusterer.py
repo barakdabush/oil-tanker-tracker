@@ -42,11 +42,13 @@ EVENT_CATEGORIES: dict[str, CategorySpec] = {
             "tanker attack", "ship attack", "vessel struck", "missile", "drone strike",
             "houthi", "seized tanker", "tanker seized", "hijack", "blockade", "mine",
             "ukmto", "maritime incident", "closure of hormuz", "close hormuz",
+            "hormuz blockade", "hormuz attack", "hormuz war", "avoid strait of hormuz",
+            "tanker fire", "tanker explosion", "tankers explode", "catches fire",
             "suez blocked", "canal blocked", "grounded in suez", "red sea attack",
-            "strait of hormuz", "bab el-mandeb", "bab al-mandab", "piracy",
+            "piracy", "sunk", "sink ships", "ships will be sunk",
         ),
-        bearish_cues=("reopen", "reopened", "cleared", "resumed transit", "freed", "released", "truce", "ceasefire"),
-        bullish_cues=("attack", "struck", "hit", "seized", "blockade", "closed", "suspended", "explosion", "fire"),
+        bearish_cues=("reopen", "reopened", "cleared", "resumed transit", "freed", "released", "truce", "ceasefire", "walks back", "never existed", "false alarm"),
+        bullish_cues=("attack", "struck", "hit", "seized", "blockade", "closed", "suspended", "explosion", "explode", "fire", "avoid", "sunk"),
     ),
     "opec_production_decision": CategorySpec(
         code="opec_production_decision",
@@ -57,9 +59,9 @@ EVENT_CATEGORIES: dict[str, CategorySpec] = {
         keywords=(
             "opec", "opec+", "saudi aramco", "production cut", "output cut",
             "output hike", "production increase", "quota", "voluntary cut",
-            "unwind cuts", "barrel cut", "spare capacity",
+            "unwind cuts", "barrel cut", "spare capacity", "more oil reaches market",
         ),
-        bearish_cues=("increase", "hike", "boost output", "raise output", "unwind", "add barrels", "oversupply", "pump more"),
+        bearish_cues=("increase", "hike", "boost output", "raise output", "unwind", "add barrels", "oversupply", "pump more", "more oil reaches market", "exports rise"),
         bullish_cues=("cut", "extend cuts", "deepen cuts", "curb", "slash output", "tighten", "compliance"),
     ),
     "refinery_pipeline_outage": CategorySpec(
@@ -69,11 +71,12 @@ EVENT_CATEGORIES: dict[str, CategorySpec] = {
         base_severity=0.70,
         default_direction=0.65,
         keywords=(
-            "pipeline", "refinery", "export terminal", "force majeure", "oil field",
-            "outage", "shutdown", "fire at refinery", "terminal fire", "crude spill",
-            "oil leak", "cpc pipeline", "druzhba", "keystone", "kirkuk", "libya oil",
+            "pipeline outage", "pipeline halt", "pipeline shut", "refinery outage",
+            "refinery fire", "fire at refinery", "refinery shutdown", "export terminal",
+            "force majeure", "terminal fire", "crude spill", "oil leak",
+            "cpc pipeline", "druzhba", "keystone", "outage", "shutdown",
         ),
-        bearish_cues=("restarts", "resumes", "restored", "reopened", "back online"),
+        bearish_cues=("restarts", "resumes", "restored", "reopened", "back online", "more oil reaches market"),
         bullish_cues=("halt", "halted", "shut", "shutdown", "outage", "force majeure", "fire", "explosion", "disrupted"),
     ),
     "inventory_macro_surprise": CategorySpec(
@@ -321,6 +324,20 @@ def extract_entities(text: str) -> list[str]:
     return found
 
 
+# Non-market educational/FAQ/digest titles to reject unless strong shock cues appear
+NOISE_TITLE_PATTERNS: tuple[str, ...] = (
+    "how does eia",
+    "what is ",
+    "explainer:",
+    "energy briefs",
+    "podcast:",
+    "webinar",
+    "quiz:",
+    "careers in ",
+    "oil & gas jobs",
+)
+
+
 def classify_article(
     title: str,
     summary: str = "",
@@ -329,6 +346,15 @@ def classify_article(
     """Classify an article into our 10 oil/tanker categories with local direction & severity."""
     combined = f"{title or ''} {summary or ''}".strip()
     text_lower = combined.lower()
+    title_lower = (title or "").lower()
+
+    if any(pat in title_lower for pat in NOISE_TITLE_PATTERNS):
+        return ClassificationResult(
+            relevant=False,
+            event_type="other",
+            direction=0.0,
+            severity=0.0,
+        )
 
     if not any(term in text_lower for term in CORE_RELEVANCE_TERMS):
         return ClassificationResult(
@@ -342,7 +368,6 @@ def classify_article(
     entities = extract_entities(combined)
 
     # Score every category by keyword hits (title matches count 2x)
-    title_lower = (title or "").lower()
     best_code = "geopolitical_escalation"
     best_score = 0.0
 

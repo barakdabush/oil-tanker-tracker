@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { DashboardStats, CargoEvent } from "@/lib/types";
+import Link from "next/link";
+import type { DashboardStats, NewsEventResponse } from "@/lib/types";
 import { getApiUrl } from "@/lib/config";
+import BottomLineCard from "@/components/BottomLineCard";
 
 // Mock data for when backend is unavailable
 const ZERO_STATS: DashboardStats = {
@@ -45,14 +47,20 @@ function timeAgo(dateStr: string | null): string {
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats>(ZERO_STATS);
+  const [topNews, setTopNews] = useState<NewsEventResponse[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const API = getApiUrl();
-    fetch(`${API}/api/analytics/dashboard`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data) setStats(data);
+    Promise.allSettled([
+      fetch(`${API}/api/analytics/dashboard`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${API}/api/news/events?days=3&sort_by=rank&limit=5&symbol=BZ%3DF`, { cache: "no-store" }).then((r) =>
+        r.ok ? r.json() : []
+      ),
+    ])
+      .then(([dashRes, newsRes]) => {
+        if (dashRes.status === "fulfilled" && dashRes.value) setStats(dashRes.value);
+        if (newsRes.status === "fulfilled" && Array.isArray(newsRes.value)) setTopNews(newsRes.value);
         setLoading(false);
       })
       .catch(() => {
@@ -66,10 +74,13 @@ export default function DashboardPage() {
     <>
       <div className="page-header">
         <h2>Dashboard</h2>
-        <p>Global oil tanker fleet overview — real-time monitoring</p>
+        <p>Global oil tanker fleet overview — real-time monitoring &amp; oil price outlook</p>
       </div>
 
       <div className="page-body">
+        {/* Hero Bottom-Line Oil Price Predictor */}
+        <BottomLineCard compact />
+
         {/* Stats Cards */}
         <div className="stats-grid animate-in" style={{ marginBottom: 24 }}>
           <div
@@ -287,6 +298,82 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Top Market-Moving News & Predicted Oil Impact */}
+        <div className="panel animate-in" style={{ marginTop: 16, animationDelay: "0.25s" }}>
+          <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3>📰 Top Market-Moving News &amp; Predicted Oil Impact</h3>
+            <Link href="/news" style={{ fontSize: 12, color: "#38bdf8", textDecoration: "none" }}>
+              Open News Intelligence →
+            </Link>
+          </div>
+          {topNews.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">📰</div>
+              <div className="empty-state-text">
+                No recent ranked news events yet. Visit News Intelligence to fetch live feeds.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 16px" }}>
+              {topNews.map((ev) => {
+                const pred = ev.prediction;
+                const moveColor =
+                  pred && pred.expected_return_pct >= 0.25
+                    ? "#34d399"
+                    : pred && pred.expected_return_pct <= -0.25
+                      ? "#f87171"
+                      : "#94a3b8";
+                return (
+                  <div
+                    key={ev.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      background: "rgba(15, 23, 42, 0.55)",
+                      border: "1px solid var(--border)",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 3 }}>
+                        {ev.headline}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        {ev.event_type_label} · {timeAgo(ev.first_seen_at)}
+                        {pred ? ` · ${pred.narrative}` : ""}
+                      </div>
+                    </div>
+                    {pred && (
+                      <div
+                        style={{
+                          padding: "5px 10px",
+                          borderRadius: 8,
+                          background: "rgba(2, 6, 23, 0.65)",
+                          border: `1px solid ${moveColor}44`,
+                          textAlign: "right",
+                          minWidth: 120,
+                        }}
+                      >
+                        <div style={{ fontSize: 13, fontWeight: 800, color: moveColor }}>
+                          Brent {pred.expected_return_pct >= 0 ? "+" : ""}
+                          {pred.expected_return_pct.toFixed(2)}%
+                        </div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                          next {pred.peak_horizon} · {pred.confidence_pct.toFixed(0)}% conf
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </>

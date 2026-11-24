@@ -86,6 +86,7 @@ class NewsEvent(Base):
     effective_severity = Column(Float, nullable=False, default=0.3)
     prior_rank_score = Column(Float, nullable=False, default=0.0, index=True)  # 0..100
     learned_impact_score = Column(Float)  # empirical expected z-score magnitude
+    embedding = Column(JSONB, nullable=True)  # optional dense semantic embedding vector
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))
 

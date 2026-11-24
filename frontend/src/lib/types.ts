@@ -309,6 +309,45 @@ export interface EventPriceReaction {
   max_computed_horizon: string | null;
 }
 
+export interface SimilarNewsAnalog {
+  event_id: number;
+  headline: string;
+  event_type: string;
+  event_type_label: string;
+  first_seen_at: string;
+  similarity: number;
+  ret_4h_pct: number | null;
+  ret_24h_pct: number | null;
+  ret_3d_pct: number | null;
+  ret_7d_pct: number | null;
+}
+
+export interface HorizonPrediction {
+  horizon: string;
+  expected_return_pct: number;
+  range_low_pct: number;
+  range_high_pct: number;
+  confidence_pct: number;
+  directional_agreement_pct: number | null;
+  analog_count: number;
+}
+
+export interface EventPricePrediction {
+  symbol: string;
+  peak_horizon: string;
+  direction: "bullish" | "bearish" | "neutral";
+  expected_return_pct: number;
+  range_low_pct: number;
+  range_high_pct: number;
+  confidence_pct: number;
+  analog_count: number;
+  avg_similarity: number;
+  similarity_mode: string;
+  narrative: string;
+  horizons: Record<string, HorizonPrediction>;
+  analogs: SimilarNewsAnalog[];
+}
+
 export interface NewsEventResponse {
   id: number;
   headline: string;
@@ -334,7 +373,68 @@ export interface NewsEventResponse {
   llm_rationale: string | null;
   brent_impact: EventPriceReaction | null;
   wti_impact: EventPriceReaction | null;
+  prediction?: EventPricePrediction | null;
   articles: NewsArticleItem[];
+}
+
+// ─── Unified Bottom-Line Oil Price Forecast Types ───────────────────────────
+
+export interface ForecastPillar {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  direction: "bullish" | "bearish" | "neutral";
+  summary: string;
+  metrics: string[];
+}
+
+export interface ForecastDriver {
+  source_type: "news" | "chokepoint" | "dark_fleet" | "market" | string;
+  title: string;
+  impact_direction: "bullish" | "bearish" | "neutral";
+  expected_move_pct: number | null;
+  horizon: string | null;
+  confidence_pct: number | null;
+  detail: string;
+}
+
+export interface HorizonForecast {
+  horizon: string;
+  verdict: string;
+  direction: "bullish" | "bearish" | "neutral";
+  predicted_return_pct: number;
+  predicted_price_usd: number | null;
+  price_low_usd: number | null;
+  price_high_usd: number | null;
+  confidence_pct: number;
+  pillar_return_pct: number;
+  ml_return_pct: number | null;
+  ml_weight: number;
+  backtest_hit_rate_pct: number | null;
+  backtest_mae_pct: number | null;
+  backtest_samples: number;
+}
+
+export interface BottomLineForecastResponse {
+  symbol: string;
+  symbol_label: string;
+  as_of: string;
+  current_price_usd: number | null;
+  price_date: string | null;
+  daily_vol_pct: number;
+  composite_score: number;
+  primary_horizon: string;
+  verdict: string;
+  direction: "bullish" | "bearish" | "neutral";
+  headline_summary: string;
+  horizons: Record<string, HorizonForecast>;
+  pillars: ForecastPillar[];
+  top_drivers: ForecastDriver[];
+  active_news_count_48h: number;
+  analog_memory_size: number;
+  latest_briefing_bias: string | null;
+  latest_briefing_summary: string | null;
 }
 
 export interface HorizonStatCell {
