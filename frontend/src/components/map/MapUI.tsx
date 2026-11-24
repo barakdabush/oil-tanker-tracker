@@ -1,6 +1,8 @@
 import React from "react";
 import type { Vessel } from "@/lib/types";
 
+import { SAR_DARK_COLOR, SAR_MATCHED_COLOR } from "./SatelliteLayer";
+
 interface MapUIProps {
   searchQuery: string;
   setSearchQuery: (q: string) => void;
@@ -15,8 +17,11 @@ interface MapUIProps {
   setShowTrails: (s: boolean) => void;
   showSatellite: boolean;
   setShowSatellite: (s: boolean) => void;
+  vesselStateCounts?: Record<string, number>;
+  portsCount?: number;
   satelliteCount?: number;
   satelliteDarkCount?: number;
+  satelliteMatchedCount?: number;
   selectedVessel: Vessel | null;
   trailLatLngsCount: number;
 }
@@ -65,6 +70,17 @@ export function SearchBar({ searchQuery, setSearchQuery, searchResults, isSearch
   );
 }
 
+const VESSEL_LEGEND_ITEMS: Array<{ key: string; label: string; color: string; border?: string }> = [
+  { key: "in_transit_laden", label: "In Transit (Laden)", color: "#ef4444" },
+  { key: "in_transit_ballast", label: "In Transit (Ballast)", color: "#10b981" },
+  { key: "at_port", label: "At Port (Berthed)", color: "#f59e0b" },
+  { key: "anchored_waiting", label: "Anchored (Waiting)", color: "#f97316" },
+  { key: "floating_storage", label: "Floating Storage", color: "#ec4899" },
+  { key: "sts_transfer", label: "STS Transfer", color: "#a855f7" },
+  { key: "idle_drifting", label: "Idle / Drifting", color: "#64748b" },
+  { key: "dark", label: "Dark (AIS off)", color: "#1f2937", border: "1px solid #6b7280" },
+];
+
 export function MapControlsAndLegend({
   showPorts,
   setShowPorts,
@@ -74,8 +90,11 @@ export function MapControlsAndLegend({
   setShowTrails,
   showSatellite,
   setShowSatellite,
+  vesselStateCounts = {},
+  portsCount = 0,
   satelliteCount = 0,
   satelliteDarkCount = 0,
+  satelliteMatchedCount = 0,
   selectedVessel,
   trailLatLngsCount,
 }: Pick<
@@ -88,37 +107,64 @@ export function MapControlsAndLegend({
   | "setShowTrails"
   | "showSatellite"
   | "setShowSatellite"
+  | "vesselStateCounts"
+  | "portsCount"
   | "satelliteCount"
   | "satelliteDarkCount"
+  | "satelliteMatchedCount"
   | "selectedVessel"
   | "trailLatLngsCount"
 >) {
+  const totalVessels = Object.values(vesselStateCounts).reduce((a, b) => a + b, 0);
+
   return (
     <>
       {/* Legend */}
       <div className="map-legend">
-        <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: "var(--text-primary)" }}>Vessel State</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#ef4444" }}></div>In Transit (Laden)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#10b981" }}></div>In Transit (Ballast)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#f59e0b" }}></div>At Port (Berthed)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#f97316" }}></div>Anchored (Waiting)</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#ec4899" }}></div>Floating Storage</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#a855f7" }}></div>STS Transfer</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#64748b" }}></div>Idle / Drifting</div>
-        <div className="legend-item"><div className="legend-dot" style={{ background: "#1f2937", border: "1px solid #6b7280" }}></div>Dark (AIS off)</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 11, fontWeight: 600, marginBottom: 8, color: "var(--text-primary)" }}>
+          <span>Vessel State</span>
+          <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>{totalVessels}</span>
+        </div>
+        {VESSEL_LEGEND_ITEMS.map((item) => (
+          <div key={item.key} className="legend-item" style={{ justifyContent: "space-between", gap: 10 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span className="legend-dot" style={{ background: item.color, border: item.border }} />
+              {item.label}
+            </span>
+            <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
+              {vesselStateCounts[item.key] || 0}
+            </span>
+          </div>
+        ))}
         {showSatellite && (
           <>
-            <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-              <div className="legend-dot" style={{ background: "#f43f5e", border: "1.5px solid #fff" }}></div>
-              SAR Dark Vessel (No AIS)
+            <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8, justifyContent: "space-between", gap: 10 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 9, height: 9, background: SAR_DARK_COLOR, border: "1.5px solid #0f172a", transform: "rotate(45deg)", display: "inline-block", boxShadow: `0 0 5px ${SAR_DARK_COLOR}`, flexShrink: 0 }} />
+                SAR Dark (No AIS)
+              </span>
+              <span style={{ fontFamily: "monospace", fontSize: 11, color: SAR_DARK_COLOR, fontWeight: 600 }}>
+                {satelliteDarkCount}
+              </span>
             </div>
-            <div className="legend-item">
-              <div className="legend-dot" style={{ background: "#818cf8", border: "1.5px solid #fff" }}></div>
-              SAR AIS-Matched
+            <div className="legend-item" style={{ justifyContent: "space-between", gap: 10 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 9, height: 9, background: SAR_MATCHED_COLOR, border: "1.5px solid #0f172a", transform: "rotate(45deg)", display: "inline-block", flexShrink: 0 }} />
+                SAR AIS-Matched
+              </span>
+              <span style={{ fontFamily: "monospace", fontSize: 11, color: SAR_MATCHED_COLOR, fontWeight: 600 }}>
+                {satelliteMatchedCount}
+              </span>
             </div>
           </>
         )}
-        <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}><div className="legend-dot" style={{ background: "#3b82f6" }}></div>Oil Port / Terminal</div>
+        <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8, justifyContent: "space-between", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="legend-dot" style={{ background: "#3b82f6" }} />
+            Oil Port / Terminal
+          </span>
+          <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>{portsCount}</span>
+        </div>
         {showChokepoints && (
           <div className="legend-item">
             <div style={{ width: 18, height: 0, borderTop: "2.5px dashed #facc15", marginRight: 6 }}></div>
@@ -143,7 +189,7 @@ export function MapControlsAndLegend({
           title="Sentinel-1 & Global Fishing Watch SAR satellite detections"
           style={{
             padding: "8px 14px",
-            background: showSatellite ? "#e11d48" : "var(--bg-card)",
+            background: showSatellite ? "#0891b2" : "var(--bg-card)",
             color: showSatellite ? "#fff" : "var(--text-secondary)",
             border: "1px solid var(--border)",
             borderRadius: 8,
