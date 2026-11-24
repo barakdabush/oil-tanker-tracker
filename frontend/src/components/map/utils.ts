@@ -120,3 +120,21 @@ export function splitTrailSegments<T extends { latitude: number; longitude: numb
   }
   return segments;
 }
+
+export function kmToNauticalMiles(km: number): number {
+  return km / 1.852;
+}
+
+export function formatDistanceNm(km: number): string {
+  const nm = kmToNauticalMiles(km);
+  if (nm < 10) return `${nm.toFixed(2)} NM`;
+  if (nm < 100) return `${nm.toFixed(1)} NM`;
+  return `${Math.round(nm).toLocaleString("en-US")} NM`;
+}
+
+export function formatDistanceKm(km: number): string {
+  if (km < 10) return `${km.toFixed(2)} km`;
+  if (km < 100) return `${km.toFixed(1)} km`;
+  return `${Math.round(km).toLocaleString("en-US")} km`;
+}
+

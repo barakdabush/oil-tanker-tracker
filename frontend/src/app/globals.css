@@ -501,6 +501,169 @@ html, body {
   animation: slideInRight 0.3s ease-out forwards;
 }
 
+/* ─── Map Controls & Distance Measure HUD ───────────────────── */
+.map-search-bar {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 280px;
+}
+
+.map-left-controls {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.measure-mode-active,
+.measure-mode-active .leaflet-grab {
+  cursor: crosshair !important;
+}
+
+.measure-mode-active .leaflet-dragging .leaflet-grab {
+  cursor: grabbing !important;
+}
+
+.measure-hud {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  border-radius: 12px;
+  padding: 10px 14px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  min-width: 320px;
+  max-width: calc(100% - 32px);
+  user-select: none;
+}
+
+.measure-hud-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.measure-hud-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.measure-hud-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.measure-hud-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.measure-hud-total {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.measure-total-nm {
+  font-size: 16px;
+  font-weight: 700;
+  color: #22d3ee;
+  font-family: monospace;
+}
+
+.measure-total-km {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.measure-hud-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.measure-btn {
+  padding: 6px 10px;
+  min-height: 32px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.measure-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.measure-btn-primary {
+  background: #0ea5e9;
+  color: #ffffff;
+  border-color: #38bdf8;
+}
+
+.measure-btn-secondary {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.measure-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+}
+
+.measure-btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.measure-btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.28);
+}
+
+.measure-legs-list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.measure-leg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
 /* ─── Responsive ───────────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar {
@@ -525,5 +688,47 @@ html, body {
   }
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .map-search-bar {
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+  .map-left-controls {
+    top: 60px;
+    left: 10px;
+    gap: 6px;
+  }
+  .map-left-controls button {
+    padding: 8px 10px !important;
+    min-height: 38px;
+    font-size: 11px !important;
+  }
+  .map-legend {
+    display: none;
+  }
+  .measure-hud {
+    bottom: 12px;
+    left: 10px;
+    right: 10px;
+    transform: none;
+    min-width: 0;
+    max-width: none;
+    width: auto;
+    padding: 10px 12px;
+  }
+  .measure-hud-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .measure-hud-actions {
+    justify-content: space-between;
+  }
+  .measure-btn {
+    flex: 1;
+    min-height: 40px;
+    text-align: center;
   }
 }

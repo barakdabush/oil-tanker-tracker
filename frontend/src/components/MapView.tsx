@@ -18,6 +18,7 @@ import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
 import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, getVesselStateKey, splitTrailSegments, haversineKm, TRAIL_BREAK_DISTANCE_KM } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import { SatelliteLayer } from "./map/SatelliteLayer";
+import { MeasureLayer, MeasureHUD, type MeasurePoint } from "./map/MeasureLayer";
 import type { STSEvent, SatelliteDetection } from "@/lib/types";
 
 interface TrailPoint {
@@ -63,6 +64,9 @@ export default function MapView() {
   const [stsHighlightedMmsis, setStsHighlightedMmsis] = useState<number[] | null>(null);
   const [loadingTrail, setLoadingTrail] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [measureEnabled, setMeasureEnabled] = useState(false);
+  const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
+  const measurePointCounterRef = useRef(0);
   
   const API = getApiUrl();
   const WS_API = getWsUrl();
@@ -184,13 +188,31 @@ export default function MapView() {
     return () => ws.close();
   }, [WS_API]);
 
+  const handleAddMeasurePoint = useCallback((lat: number, lng: number) => {
+    measurePointCounterRef.current += 1;
+    const id = `mp-${measurePointCounterRef.current}`;
+    setMeasurePoints((prev) => [...prev, { id, lat, lng }]);
+  }, []);
+
+  const handleUndoMeasurePoint = useCallback(() => {
+    setMeasurePoints((prev) => prev.slice(0, -1));
+  }, []);
+
+  const handleClearMeasurePoints = useCallback(() => {
+    setMeasurePoints([]);
+  }, []);
+
   const handleVesselClick = useCallback((v: Vessel) => {
+    if (measureEnabled && v.last_lat != null && v.last_lon != null) {
+      handleAddMeasurePoint(v.last_lat, v.last_lon);
+      return;
+    }
     setSelectedStsEvent(null);
     setStsHighlightedMmsis(null);
     setSelectedVessel(v);
     setActiveDetail("vessel");
     fetchTrail(v, trailHours);
-  }, [fetchTrail, trailHours]);
+  }, [fetchTrail, trailHours, measureEnabled, handleAddMeasurePoint]);
 
   const handleSelectSts = useCallback((event: STSEvent | null) => {
     setSelectedStsEvent(event);
@@ -354,7 +376,7 @@ export default function MapView() {
           ))}
 
           {showPorts && ports.map((port) => (
-            <CircleMarker key={`port-${port.id}`} center={[port.latitude, port.longitude]} radius={5} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.6, weight: 1 }}>
+            <CircleMarker key={`port-${port.id}`} center={[port.latitude, port.longitude]} radius={5} interactive={!measureEnabled} pathOptions={{ color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.6, weight: 1 }}>
               <Popup><div style={{ color: "#111", minWidth: 160 }}><strong>⚓ {port.name}</strong><br /><span style={{ fontSize: 12 }}>{port.country} · {port.region}</span><br /><span style={{ fontSize: 11, color: "#666" }}>{port.port_type}</span></div></Popup>
             </CircleMarker>
           ))}
@@ -375,6 +397,11 @@ export default function MapView() {
             highlightedMmsis={stsHighlightedMmsis}
             handleVesselClick={handleVesselClick}
           />
+          <MeasureLayer
+            enabled={measureEnabled}
+            points={measurePoints}
+            onAddPoint={handleAddMeasurePoint}
+          />
         </MapContainer>
 
         <MapControlsAndLegend
@@ -393,6 +420,17 @@ export default function MapView() {
           satelliteMatchedCount={satelliteMatchedCount}
           selectedVessel={selectedVessel}
           trailLatLngsCount={trailLatLngs.length}
+          measureEnabled={measureEnabled}
+          setMeasureEnabled={setMeasureEnabled}
+          measurePointsCount={measurePoints.length}
+        />
+
+        <MeasureHUD
+          enabled={measureEnabled}
+          points={measurePoints}
+          onToggleEnabled={() => setMeasureEnabled((v) => !v)}
+          onUndo={handleUndoMeasurePoint}
+          onClear={handleClearMeasurePoints}
         />
       </div>
 

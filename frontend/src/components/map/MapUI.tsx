@@ -24,11 +24,14 @@ interface MapUIProps {
   satelliteMatchedCount?: number;
   selectedVessel: Vessel | null;
   trailLatLngsCount: number;
+  measureEnabled: boolean;
+  setMeasureEnabled: (s: boolean) => void;
+  measurePointsCount: number;
 }
 
 export function SearchBar({ searchQuery, setSearchQuery, searchResults, isSearching, onSelectVessel }: Pick<MapUIProps, 'searchQuery' | 'setSearchQuery' | 'searchResults' | 'isSearching' | 'onSelectVessel'>) {
   return (
-    <div style={{ position: "absolute", top: 16, right: 16, zIndex: 1000, display: "flex", flexDirection: "column", gap: 4, width: 280 }}>
+    <div className="map-search-bar">
       <div style={{ position: "relative" }}>
         <input
           type="text"
@@ -93,6 +96,9 @@ export function MapControlsAndLegend({
   satelliteMatchedCount = 0,
   selectedVessel,
   trailLatLngsCount,
+  measureEnabled,
+  setMeasureEnabled,
+  measurePointsCount,
 }: Pick<
   MapUIProps,
   | "showPorts"
@@ -110,6 +116,9 @@ export function MapControlsAndLegend({
   | "satelliteMatchedCount"
   | "selectedVessel"
   | "trailLatLngsCount"
+  | "measureEnabled"
+  | "setMeasureEnabled"
+  | "measurePointsCount"
 >) {
   const totalVessels = Object.values(vesselStateCounts).reduce((a, b) => a + b, 0);
 
@@ -179,7 +188,7 @@ export function MapControlsAndLegend({
       </div>
 
       {/* Toggle buttons */}
-      <div style={{ position: "absolute", top: 16, left: 16, zIndex: 1000, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="map-left-controls">
         <button onClick={() => setShowPorts(!showPorts)} style={{ padding: "8px 14px", background: showPorts ? "var(--accent-blue)" : "var(--bg-card)", color: showPorts ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>⚓ Ports</button>
         <button onClick={() => setShowChokepoints(!showChokepoints)} style={{ padding: "8px 14px", background: showChokepoints ? "var(--accent-blue)" : "var(--bg-card)", color: showChokepoints ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>🔶 Chokepoints</button>
         <button onClick={() => setShowTrails(!showTrails)} style={{ padding: "8px 14px", background: showTrails ? "#06b6d4" : "var(--bg-card)", color: showTrails ? "#fff" : "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", backdropFilter: "blur(8px)" }}>🛤️ Route Trail</button>
@@ -199,6 +208,38 @@ export function MapControlsAndLegend({
           }}
         >
           🛰️ Satellite SAR{showSatellite && satelliteCount > 0 ? ` (${satelliteDarkCount} dark / ${satelliteCount})` : ""}
+        </button>
+        <button
+          type="button"
+          data-testid="measure-toggle-btn"
+          aria-pressed={measureEnabled}
+          onClick={() => setMeasureEnabled(!measureEnabled)}
+          title={measureEnabled ? "Disable distance measurement" : "Measure distance between points on map"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            padding: "8px 14px",
+            background: measureEnabled ? "#0ea5e9" : "var(--bg-card)",
+            color: measureEnabled ? "#fff" : "var(--text-secondary)",
+            border: measureEnabled ? "1px solid #38bdf8" : "1px solid var(--border)",
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            boxShadow: measureEnabled ? "0 0 14px rgba(14, 165, 233, 0.45)" : "none",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z" />
+            <path d="m14.5 12.5 2-2" />
+            <path d="m11.5 9.5 2-2" />
+            <path d="m8.5 6.5 2-2" />
+            <path d="m17.5 15.5 2-2" />
+          </svg>
+          <span>Measure{measurePointsCount > 0 ? ` (${measurePointsCount})` : ""}</span>
         </button>
       </div>
     </>
