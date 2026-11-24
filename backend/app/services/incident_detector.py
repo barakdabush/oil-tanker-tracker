@@ -103,6 +103,86 @@ def sanitize_title(text: str, max_len: int = 200) -> str:
     return t[:max_len]
 
 
+_RE_UPSTREAM_TRANSIENT = re.compile(
+    r"(?:"
+    r"connection\s+timeout/refused"
+    r"|too\s+many\s+requests"
+    r"|api\s+calls\s+quota\s+exceeded"
+    r"|http\s*(?:429|502|503|504)\b"
+    r"|(?:'code'|\"code\")\s*:\s*429\b"
+    r"|\b(?:ReadTimeout|ConnectTimeout|PoolTimeout|RemoteProtocolError|NameResolutionError)\b"
+    r"|temporary\s+failure\s+in\s+name\s+resolution"
+    r"|nodename\s+nor\s+servname\s+provided"
+    r")",
+    re.I,
+)
+_RE_OUR_API_BUG = re.compile(
+    r"(?:invalid\s+url|token\s+required|http\s*(?:400|401|403|404)\b)",
+    re.I,
+)
+
+QUIET_ROUNDS_TO_RESOLVE = 4
+MIN_QUIET_SECONDS = 40 * 60
+MAX_QUIET_SECONDS = 48 * 3600
+DEFAULT_QUIET_CADENCE_SECONDS = 6 * 3600
+
+# Known periodic cadences (seconds) for background services/loggers.
+_LOGGER_CADENCE_SECONDS: dict[str, int] = {
+    "app.services.ais_ingestion": 60,
+    "app.services.chokepoint_monitor": 120,
+    "app.services.cargo_detector": 300,
+    "app.services.sts_detector": 600,
+    "app.services.vessel_state_classifier": 600,
+    "app.services.dark_fleet_detector": 900,
+    "app.services.news_fetcher": 1800,
+    "app.services.news_llm_enricher": 1800,
+    "app.services.news_impact_analyzer": 3600,
+    "app.services.oil_price_fetcher": 3600,
+    "app.services.strait_risk_fetcher": 3600,
+    "app.services.global_oil_feature_builder": 3600,
+    "app.services.sentinel1_sar_detector": 3600,
+    "app.services.portwatch_fetcher": 6 * 3600,
+    "app.services.gfw_sar_fetcher": 6 * 3600,
+    "app.services.ofac_fetcher": 12 * 3600,
+}
+
+
+def is_upstream_transient_error(message: str) -> bool:
+    """Return True for transient third-party/network failures (rate limits, 5xx, timeouts).
+
+    Config/auth/URL bugs on our side (400/401/403/404, Invalid URL, Token Required)
+    return False so they still open incidents.
+    """
+    msg = message or ""
+    if _RE_OUR_API_BUG.search(msg):
+        return False
+    return bool(_RE_UPSTREAM_TRANSIENT.search(msg))
+
+
+def estimate_quiet_window(inc: Incident) -> timedelta:
+    """Compute dynamic auto-resolve quiet window (4 job rounds, clamped 40m..48h)."""
+    if inc.kind in ("pipeline_stale", "pipeline_empty", "service_unhealthy"):
+        cadence_s = RUN_INTERVAL_SECONDS
+    elif inc.logger_name and inc.logger_name in _LOGGER_CADENCE_SECONDS:
+        cadence_s = _LOGGER_CADENCE_SECONDS[inc.logger_name]
+    elif inc.first_seen and inc.last_seen and (inc.occurrences or 0) > 1:
+        span_s = max((inc.last_seen - inc.first_seen).total_seconds(), 0.0)
+        cadence_s = int(span_s / max((inc.occurrences or 1) - 1, 1)) if span_s > 0 else DEFAULT_QUIET_CADENCE_SECONDS
+    else:
+        cadence_s = DEFAULT_QUIET_CADENCE_SECONDS
+
+    quiet_s = max(MIN_QUIET_SECONDS, min(MAX_QUIET_SECONDS, cadence_s * QUIET_ROUNDS_TO_RESOLVE))
+    return timedelta(seconds=quiet_s)
+
+
+def should_auto_resolve(inc: Incident, now: datetime) -> bool:
+    """Return True when an issued incident has been quiet for at least 4 job rounds."""
+    if inc.status != "issued" or not inc.github_issue_number or not inc.last_seen:
+        return False
+    last_seen = inc.last_seen if inc.last_seen.tzinfo else inc.last_seen.replace(tzinfo=timezone.utc)
+    return (now - last_seen) >= estimate_quiet_window(inc)
+
+
 def should_open_issue(
     kind: str,
     occurrences: int,
@@ -149,6 +229,8 @@ def group_log_rows(rows: list) -> list[Signal]:
     for r in rows:
         logger_name = r.logger_name or ""
         if logger_name.startswith(_SELF_LOGGERS):
+            continue
+        if is_upstream_transient_error(r.message):
             continue
         level = (getattr(r, "level", None) or "ERROR").upper()
         kind = "log_warning" if level == "WARNING" else "log_error"
@@ -415,6 +497,24 @@ class IncidentDetector:
                     logger.info(f"Incident detector: opened GitHub issue #{number} ({inc.kind}).")
 
             elif inc.status == "issued" and inc.github_issue_number:
+                if should_auto_resolve(inc, now):
+                    status_info = await self._client.get_issue_status(inc.github_issue_number)
+                    if status_info and status_info[0] == "closed":
+                        inc.status = "resolved"
+                        inc.occurrences_at_notify = inc.occurrences
+                        continue
+                    quiet_h = round(estimate_quiet_window(inc).total_seconds() / 3600.0, 1)
+                    close_msg = (
+                        f"✅ Auto-resolved: no new occurrences for ~{quiet_h}h "
+                        f"({QUIET_ROUNDS_TO_RESOLVE} job rounds; last seen "
+                        f"{inc.last_seen.strftime('%Y-%m-%d %H:%M UTC')})."
+                    )
+                    if await self._client.close_issue(inc.github_issue_number, comment=close_msg):
+                        inc.status = "resolved"
+                        inc.occurrences_at_notify = inc.occurrences
+                        inc.last_notified_at = now
+                        logger.info(f"Incident detector: auto-closed quiet issue #{inc.github_issue_number}.")
+                    continue
                 new_occ = (inc.occurrences or 0) - (inc.occurrences_at_notify or 0)
                 if not should_comment(new_occ, inc.last_notified_at, now, settings.INCIDENT_COMMENT_INTERVAL_HOURS):
                     continue

@@ -132,6 +132,7 @@ class _FakeGitHubClient:
         self._existing_open_issue = existing_open_issue
         self.created_issues = []
         self.comments = []
+        self.closed_issues = []
 
     async def get_issue_status(self, _number):
         return self._status
@@ -145,6 +146,10 @@ class _FakeGitHubClient:
 
     async def add_comment(self, number, body):
         self.comments.append((number, body))
+        return True
+
+    async def close_issue(self, number, comment=None):
+        self.closed_issues.append((number, comment))
         return True
 
 
@@ -361,6 +366,117 @@ async def test_notify_deduplicates_same_logger_in_batch_and_existing():
     assert inc2.status == "issued"
     assert len(client.comments) == 1
     assert client.comments[0][0] == 99
+
+
+def test_upstream_transient_errors_are_filtered_from_log_signals():
+    from types import SimpleNamespace
+    from app.services.incident_detector import group_log_rows, is_upstream_transient_error
+
+    assert is_upstream_transient_error("AIS (aisstream.io) connection timeout/refused. Reconnecting in 5s...")
+    assert is_upstream_transient_error("IMF PortWatch ArcGIS error: {'code': 429, 'message': 'Too many requests.'}")
+    assert is_upstream_transient_error("HTTP 503 Service Unavailable")
+
+    # Our own bugs / config errors must NOT be filtered
+    assert not is_upstream_transient_error("IMF PortWatch ArcGIS error: {'code': 400, 'message': 'Invalid URL'}")
+    assert not is_upstream_transient_error("IMF PortWatch ArcGIS error: {'code': 499, 'message': 'Token Required'}")
+    assert not is_upstream_transient_error("AttributeError: 'NoneType' object has no attribute 'id'")
+
+    rows = [
+        SimpleNamespace(level="WARNING", service="websocket", logger_name="app.services.ais_ingestion", message="AIS (aisstream.io) connection timeout/refused. Reconnecting in 5s..."),
+        SimpleNamespace(level="ERROR", service="scheduler", logger_name="app.services.portwatch_fetcher", message="IMF PortWatch ArcGIS error: {'code': 429, 'message': 'Unable to perform query. Too many requests.'}"),
+        SimpleNamespace(level="ERROR", service="scheduler", logger_name="app.services.portwatch_fetcher", message="IMF PortWatch ArcGIS error: {'code': 400, 'message': 'Invalid URL'}"),
+    ]
+    signals = group_log_rows(rows)
+    assert len(signals) == 1
+    assert "Invalid URL" in signals[0].sample
+
+
+def test_estimate_quiet_window_uses_dynamic_job_cadence():
+    from app.services.incident_detector import estimate_quiet_window, should_auto_resolve
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+
+    # Known fast job (ais_ingestion 60s -> 4*60s=4m, clamped to MIN_QUIET_SECONDS=40m)
+    ws_inc = Incident(
+        fingerprint="fp-ws",
+        kind="log_warning",
+        service="websocket",
+        title="ws",
+        sample_message="msg",
+        logger_name="app.services.ais_ingestion",
+        first_seen=now - timedelta(hours=2),
+        last_seen=now - timedelta(minutes=45),
+        occurrences=5,
+        status="issued",
+        github_issue_number=76,
+    )
+    assert estimate_quiet_window(ws_inc) == timedelta(minutes=40)
+    assert should_auto_resolve(ws_inc, now)
+
+    # Known 6h job (portwatch_fetcher -> 4 * 6h = 24h)
+    pw_inc = Incident(
+        fingerprint="fp-pw",
+        kind="log_error",
+        service="scheduler",
+        title="pw",
+        sample_message="msg",
+        logger_name="app.services.portwatch_fetcher",
+        first_seen=now - timedelta(hours=30),
+        last_seen=now - timedelta(hours=10),
+        occurrences=3,
+        status="issued",
+        github_issue_number=77,
+    )
+    assert estimate_quiet_window(pw_inc) == timedelta(hours=24)
+    assert not should_auto_resolve(pw_inc, now)
+
+    # Unknown logger infers cadence from observed spacing: 2h apart -> 4 * 2h = 8h
+    custom_inc = Incident(
+        fingerprint="fp-custom",
+        kind="log_error",
+        service="backend",
+        title="custom",
+        sample_message="msg",
+        logger_name="app.services.custom_job",
+        first_seen=now - timedelta(hours=14),
+        last_seen=now - timedelta(hours=10),
+        occurrences=3,
+        status="issued",
+        github_issue_number=78,
+    )
+    assert estimate_quiet_window(custom_inc) == timedelta(hours=8)
+    assert should_auto_resolve(custom_inc, now)
+
+
+@pytest.mark.asyncio
+async def test_notify_auto_closes_quiet_issue_after_4_rounds():
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    inc = Incident(
+        fingerprint="fp-quiet",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] news bug",
+        sample_message="err",
+        logger_name="app.services.news_fetcher",  # 30m cadence -> 4 rounds = 2h
+        first_seen=now - timedelta(hours=5),
+        last_seen=now - timedelta(hours=2, minutes=5),
+        occurrences=4,
+        occurrences_at_notify=4,
+        status="issued",
+        github_issue_number=88,
+        issue_created_at=now - timedelta(hours=4),
+        last_notified_at=now - timedelta(hours=4),
+    )
+    client = _FakeGitHubClient("open", None)
+    detector = IncidentDetector()
+    detector._client = client
+    await detector._notify(_FakeSession([inc]), now)
+
+    assert inc.status == "resolved"
+    assert len(client.closed_issues) == 1
+    assert client.closed_issues[0][0] == 88
+    assert "Auto-resolved" in client.closed_issues[0][1]
+
 
 
 

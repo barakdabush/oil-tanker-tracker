@@ -65,6 +65,19 @@ class GitHubIssuesClient:
                 return False
             return True
 
+    async def close_issue(self, number: int, comment: Optional[str] = None) -> bool:
+        if comment:
+            await self.add_comment(number, comment)
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
+            resp = await client.patch(
+                f"{GITHUB_API}/repos/{self.repo}/issues/{number}",
+                json={"state": "closed"},
+            )
+            if resp.status_code >= 300:
+                logger.warning(f"GitHub close_issue failed: HTTP {resp.status_code}")
+                return False
+            return True
+
     async def find_open_issue_by_fingerprint(self, fingerprint: str) -> Optional[int]:
         """Return an open auto-incident issue number matching fingerprint, if any."""
         if not fingerprint:
