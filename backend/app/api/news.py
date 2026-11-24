@@ -486,3 +486,41 @@ async def backfill_historical_news(
         "gold_snapshots_recalculated": snapshots_recalculated,
     }
 
+
+@router.post("/score-impacts")
+async def score_historical_impacts(
+    days: int = Query(1825, ge=30, le=3650, description="Lookback days of existing news_events to score against Brent/WTI prices."),
+):
+    """Fast impact-only pass: ensure multi-year Brent/WTI prices exist, score all events, and refresh current priors."""
+    from app.services.oil_price_fetcher import OilPriceFetcher
+
+    price_fetcher = OilPriceFetcher()
+    await price_fetcher.fetch_prices(days=days + 30)
+
+    analyzer = NewsImpactAnalyzer()
+    impacts_updated = await analyzer.compute_event_impacts(lookback_days=days + 14)
+    priors_updated = await analyzer.update_impact_priors()
+
+    return {
+        "days": days,
+        "impacts_updated": impacts_updated,
+        "priors_updated": priors_updated,
+    }
+
+
+@router.get("/backtest")
+async def get_news_analog_backtest(
+    symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
+    sample_limit: int = Query(250, ge=30, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    """Strictly out-of-sample walk-forward accuracy report for the similarity-based News Analog Predictor."""
+    memory = await build_news_analog_memory(db, symbol=symbol)
+    results = memory.evaluate_walkforward_accuracy(symbol=symbol, sample_limit=sample_limit)
+    return {
+        "symbol": symbol,
+        "analog_memory_size": len(memory.records),
+        "matured_events": sum(1 for r in memory.records if r.returns),
+        "horizons": results,
+    }
+

@@ -395,6 +395,66 @@ class NewsAnalogMemory:
             analogs=top_analog_items,
         )
 
+    def evaluate_walkforward_accuracy(
+        self,
+        symbol: str = "BZ=F",
+        sample_limit: int = 180,
+    ) -> dict[str, dict]:
+        """Strictly out-of-sample walk-forward backtest of NewsAnalogMemory across matured events.
+
+        For each sampled historical event, predicts using ONLY prior matured events
+        (``reference_time = event.market_aligned_at``) and compares against actual returns.
+        """
+        matured = [r for r in self.records if r.returns]
+        matured.sort(key=lambda r: r.market_aligned_at)
+        if len(matured) < 25:
+            return {}
+
+        # Skip the earliest 20% as warmup so analog memory has historical precedents
+        warmup = max(20, len(matured) // 5)
+        eval_pool = matured[warmup:]
+        if len(eval_pool) > sample_limit:
+            step = max(1, len(eval_pool) // sample_limit)
+            eval_pool = eval_pool[::step][:sample_limit]
+
+        buckets: dict[str, dict[str, list]] = {
+            h: {"hits": [], "abs_err": [], "bull_rets": [], "bear_rets": []}
+            for h in ("24h", "3d", "7d")
+        }
+
+        for ev in eval_pool:
+            pred = self.predict_for_event(ev, symbol=symbol, reference_time=ev.market_aligned_at)
+            for h_key in ("24h", "3d", "7d"):
+                actual_log = ev.returns.get(h_key)
+                hp = pred.horizons.get(h_key)
+                if actual_log is None or hp is None or hp.analog_count == 0:
+                    continue
+                actual_pct = (math.exp(actual_log) - 1.0) * 100.0
+                pred_pct = hp.expected_return_pct
+                if abs(pred_pct) < 0.05:
+                    continue
+                hit = 1 if (pred_pct >= 0 and actual_pct >= 0) or (pred_pct < 0 and actual_pct < 0) else 0
+                buckets[h_key]["hits"].append(hit)
+                buckets[h_key]["abs_err"].append(abs(pred_pct - actual_pct))
+                if pred_pct > 0:
+                    buckets[h_key]["bull_rets"].append(actual_pct)
+                else:
+                    buckets[h_key]["bear_rets"].append(actual_pct)
+
+        summary: dict[str, dict] = {}
+        for h_key, b in buckets.items():
+            n = len(b["hits"])
+            if n == 0:
+                continue
+            summary[h_key] = {
+                "samples": n,
+                "hit_rate_pct": round((sum(b["hits"]) / n) * 100.0, 1),
+                "mae_pct": round(sum(b["abs_err"]) / n, 2),
+                "avg_actual_on_bullish_pct": round(sum(b["bull_rets"]) / len(b["bull_rets"]), 2) if b["bull_rets"] else None,
+                "avg_actual_on_bearish_pct": round(sum(b["bear_rets"]) / len(b["bear_rets"]), 2) if b["bear_rets"] else None,
+            }
+        return summary
+
 
 async def build_news_analog_memory(
     db: AsyncSession,

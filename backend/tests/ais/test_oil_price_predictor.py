@@ -212,3 +212,5 @@ def test_walkforward_ridge_and_vol_and_routes():
     assert "/api/forecast/bottom-line" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
     assert "/api/news/backfill" in paths
+    assert "/api/news/score-impacts" in paths
+    assert "/api/news/backtest" in paths

@@ -569,8 +569,9 @@ async def build_bottom_line_forecast(
     pillars = [news_pillar, cp_pillar, df_pillar, mom_pillar]
     composite_score = round(sum(p.score * p.weight for p in pillars), 1)
 
-    # 6. Multi-horizon forecasts blending Pillars + News Analogs + Walk-Forward Ridge
+    # 6. Multi-horizon forecasts blending Pillars + News Analogs + gated Walk-Forward Ridge
     news_ret_map = {"24h": news_ret_24h, "3d": news_ret_3d, "7d": news_ret_7d}
+    analog_bt = memory.evaluate_walkforward_accuracy(symbol=symbol, sample_limit=160)
     horizons_out: dict[str, HorizonForecast] = {}
 
     for h_label, h_days in FORECAST_HORIZONS:
@@ -587,25 +588,33 @@ async def build_bottom_line_forecast(
             2,
         )
 
-        ml_pred, hit_rate, mae, bt_samples = run_walkforward_ridge(
+        ml_pred, ridge_hit_rate, ridge_mae, ridge_samples = run_walkforward_ridge(
             snapshot_dicts=snapshot_dicts,
             price_key=price_key,
             horizon_days=h_days,
         )
 
-        # Weight ML higher only as out-of-sample history grows and shows edge
-        if ml_pred is not None and bt_samples >= 10:
-            edge_mult = 1.0 if (hit_rate is not None and hit_rate >= 52.0) else 0.5
-            ml_weight = round(min(0.45, (bt_samples / 60.0) * 0.45) * edge_mult, 2)
+        # Strictly gate Ridge ML: only blend when out-of-sample hit rate >= 52% over >= 15 days
+        if ml_pred is not None and ridge_samples >= 15 and ridge_hit_rate is not None and ridge_hit_rate >= 52.0:
+            ml_weight = round(min(0.45, (ridge_samples / 60.0) * 0.45), 2)
             blended_ret = round((1.0 - ml_weight) * pillar_ret + ml_weight * ml_pred, 2)
+            hit_rate, mae, bt_samples = ridge_hit_rate, ridge_mae, ridge_samples
         else:
             ml_weight = 0.0
             blended_ret = pillar_ret
+            # Surface walk-forward accuracy of the active News Analog predictor
+            abt = analog_bt.get(h_label)
+            if abt:
+                hit_rate = abt["hit_rate_pct"]
+                mae = abt["mae_pct"]
+                bt_samples = abt["samples"]
+            else:
+                hit_rate, mae, bt_samples = ridge_hit_rate, ridge_mae, ridge_samples
 
         blended_ret = round(_clamp(blended_ret, -12.0, 12.0), 2)
         verdict, direction = _verdict_from_return(blended_ret, h_days)
 
-        # Confidence combines pillar agreement + signal strength + optional ML backtest edge
+        # Confidence combines pillar agreement + signal strength + out-of-sample backtest edge
         signs = [1 if p.score > 10 else (-1 if p.score < -10 else 0) for p in pillars]
         non_zero_signs = [s for s in signs if s != 0]
         target_sign = 1 if blended_ret >= 0 else -1

@@ -186,7 +186,7 @@ class NewsImpactAnalyzer:
         priors_updated = await self.update_impact_priors()
         return {"impacts_updated": impacts_updated, "priors_updated": priors_updated}
 
-    async def compute_event_impacts(self, lookback_days: int = 365) -> int:
+    async def compute_event_impacts(self, lookback_days: int = 1825) -> int:
         """Compute/update multi-horizon price impacts for events whose horizons have matured."""
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=lookback_days)
