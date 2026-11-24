@@ -183,3 +183,19 @@ def test_parse_gfw_sar_response():
     assert rows[0]["chokepoint_name"] == "Strait of Hormuz"
     assert rows[0]["detected_at"] == datetime(2026, 11, 15, 2, 0, tzinfo=timezone.utc)
     assert rows[0]["dedup_key"] != rows[1]["dedup_key"]
+
+
+def test_sentinel1_adjacent_slices_share_dedup_key():
+    from app.services.sentinel1_sar_detector import _make_dedup_key
+
+    t1 = datetime(2026, 11, 23, 14, 24, 15, tzinfo=timezone.utc)
+    t2 = datetime(2026, 11, 23, 14, 24, 40, tzinfo=timezone.utc)
+    t_next_day = datetime(2026, 11, 24, 14, 24, 40, tzinfo=timezone.utc)
+
+    k1 = _make_dedup_key("copernicus_s1", t1, 25.7156, 55.0925)
+    k2 = _make_dedup_key("copernicus_s1", t2, 25.7156, 55.0925)
+    k3 = _make_dedup_key("copernicus_s1", t_next_day, 25.7156, 55.0925)
+
+    assert k1 == k2
+    assert k1 != k3
+
