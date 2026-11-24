@@ -289,7 +289,13 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   MAE {activeH.backtest_mae_pct?.toFixed(2)}% over {activeH.backtest_samples} OOS days ·
                   ML blend {Math.round(activeH.ml_weight * 100)}%
+                  {activeH.high_conviction_hit_rate_pct != null && activeH.high_conviction_samples
+                    ? ` · High-conv ${activeH.high_conviction_hit_rate_pct.toFixed(1)}% (${activeH.high_conviction_samples})`
+                    : ""}
                 </div>
+                {activeH.model_name && (
+                  <div style={{ fontSize: 10, color: "#94a3b8" }}>Model: {activeH.model_name}</div>
+                )}
               </>
             ) : (
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>

@@ -210,7 +210,53 @@ def test_walkforward_ridge_and_vol_and_routes():
     # Verify new API routes are registered on FastAPI app
     paths = {r.path for r in app.routes}
     assert "/api/forecast/bottom-line" in paths
+    assert "/api/forecast/backfill-macro" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
     assert "/api/news/backfill" in paths
     assert "/api/news/score-impacts" in paths
     assert "/api/news/backtest" in paths
+
+
+def test_crack_spread_and_walkforward_gbt_model():
+    from app.services.gbt_oil_model import run_walkforward_gbt
+    from app.services.macro_market_fetcher import compute_crack_spread_321
+
+    # 3-2-1 crack spread: ((2*2.50*42 + 1*2.80*42) / 3) - 80.0 = 109.20 - 80.0 = 29.20 $/bbl
+    spread = compute_crack_spread_321(rbob_gal=2.50, heating_oil_gal=2.80, wti_bbl=80.0)
+    assert spread == 29.2
+    assert compute_crack_spread_321(None, 2.80, 80.0) is None
+
+    # Synthetic 320-day series where rising crack spread predicts positive 3d Brent returns
+    base_d = date(2025, 1, 1)
+    rows = []
+    price = 75.0
+    for i in range(320):
+        wave = math.sin(i / 6.0)
+        crack = 22.0 + 6.0 * wave
+        rows.append({
+            "date": base_d + timedelta(days=i),
+            "brent_close_usd": round(price, 2),
+            "wti_close_usd": round(price - 4.0, 2),
+            "crack_spread_321_usd": round(crack, 2),
+            "brent_wti_spread_usd": 4.0,
+            "dxy_close": round(103.0 - 2.0 * wave, 2),
+            "vix_close": round(18.0 + 3.0 * abs(wave), 2),
+            "tanker_etf_close": round(20.0 + 3.0 * wave, 2),
+            "energy_etf_close": round(90.0 + 4.0 * wave, 2),
+            "news_dir_1d": round(0.8 * wave, 3),
+            "news_shock_count_1d": 1 if wave > 0.5 else 0,
+        })
+        price *= math.exp(0.007 * wave)
+
+    res = run_walkforward_gbt(
+        daily_rows=rows,
+        price_key="brent_close_usd",
+        horizon_days=3,
+        min_train_rows=180,
+        refit_every=25,
+    )
+    assert res.latest_pred_pct is not None
+    assert res.q15_pct is not None and res.q85_pct is not None
+    assert res.q15_pct <= res.q85_pct
+    assert res.samples >= 100
+    assert res.hit_rate_pct is not None and res.hit_rate_pct > 55.0

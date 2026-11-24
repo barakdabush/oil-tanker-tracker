@@ -414,6 +414,9 @@ export interface HorizonForecast {
   backtest_hit_rate_pct: number | null;
   backtest_mae_pct: number | null;
   backtest_samples: number;
+  high_conviction_hit_rate_pct?: number | null;
+  high_conviction_samples?: number;
+  model_name?: string;
 }
 
 export interface BottomLineForecastResponse {

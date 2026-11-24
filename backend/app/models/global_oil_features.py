@@ -85,3 +85,20 @@ class StraitRiskDaily(Base):
     gdelt_strait_risk_vol = Column(Float)
     gdelt_strait_tone = Column(Float)
     fetched_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))
+
+
+class OilMacroDaily(Base):
+    """Daily oil-market leading indicators: 3-2-1 crack spread, Brent-WTI spread, DXY, VIX, and tanker/energy equities."""
+
+    __tablename__ = "oil_macro_daily"
+
+    date = Column(Date, primary_key=True)
+    rbob_gasoline_usd = Column(Float)       # RB=F ($/gal)
+    heating_oil_usd = Column(Float)         # HO=F ($/gal)
+    crack_spread_321_usd = Column(Float)    # ((2*RB*42 + HO*42) / 3) - WTI ($/bbl)
+    brent_wti_spread_usd = Column(Float)    # BZ=F - CL=F ($/bbl)
+    dxy_close = Column(Float)               # DX-Y.NYB (US Dollar Index)
+    vix_close = Column(Float)               # ^VIX (CBOE Volatility Index)
+    tanker_etf_close = Column(Float)        # FRO (Frontline VLCC tanker equity proxy)
+    energy_etf_close = Column(Float)        # XLE (Energy Select Sector SPDR)
+    fetched_at = Column(TIMESTAMP(timezone=True), server_default=text("NOW()"))

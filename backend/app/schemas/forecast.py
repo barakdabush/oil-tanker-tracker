@@ -41,6 +41,9 @@ class HorizonForecast(BaseModel):
     backtest_hit_rate_pct: Optional[float] = None
     backtest_mae_pct: Optional[float] = None
     backtest_samples: int = 0
+    high_conviction_hit_rate_pct: Optional[float] = None
+    high_conviction_samples: int = 0
+    model_name: str = "4-Pillar + News Analogs"
 
 
 class BottomLineForecastResponse(BaseModel):

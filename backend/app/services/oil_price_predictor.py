@@ -27,7 +27,7 @@ import numpy as np
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.global_oil_features import OilMarketSnapshot, OilPrice, StraitRiskDaily
+from app.models.global_oil_features import OilMacroDaily, OilMarketSnapshot, OilPrice, StraitRiskDaily
 from app.models.news import AIMarketBriefing
 from app.schemas.forecast import (
     BottomLineForecastResponse,
@@ -35,6 +35,7 @@ from app.schemas.forecast import (
     ForecastPillar,
     HorizonForecast,
 )
+from app.services.gbt_oil_model import run_walkforward_gbt
 from app.services.news_predictor import build_news_analog_memory
 
 PILLAR_WEIGHTS = {
@@ -251,8 +252,9 @@ async def build_bottom_line_forecast(
     sym_label = "Brent Crude" if symbol == "BZ=F" else "WTI Crude"
     price_key = "brent_close_usd" if symbol == "BZ=F" else "wti_close_usd"
 
-    # 1. Load daily snapshots (up to 365d) + OilPrice + StraitRiskDaily
+    # 1. Load daily snapshots (365d) + 5-year OilPrice & OilMacroDaily + StraitRiskDaily
     cutoff_date = (now - timedelta(days=365)).date()
+    cutoff_5y = (now - timedelta(days=1850)).date()
     snaps = list(
         (
             await db.execute(
@@ -266,8 +268,17 @@ async def build_bottom_line_forecast(
         (
             await db.execute(
                 select(OilPrice)
-                .where(OilPrice.price_date >= cutoff_date)
+                .where(OilPrice.price_date >= cutoff_5y)
                 .order_by(OilPrice.price_date.asc())
+            )
+        ).scalars().all()
+    )
+    macro_rows = list(
+        (
+            await db.execute(
+                select(OilMacroDaily)
+                .where(OilMacroDaily.date >= cutoff_5y)
+                .order_by(OilMacroDaily.date.asc())
             )
         ).scalars().all()
     )
@@ -288,6 +299,7 @@ async def build_bottom_line_forecast(
         p.price_date: (p.brent_close_usd, p.wti_close_usd)
         for p in price_rows
     }
+    macro_by_date = {m.date: m for m in macro_rows}
     risk_by_date = {r.date: r for r in risk_rows}
 
     snapshot_dicts: list[dict[str, Any]] = []
@@ -522,7 +534,7 @@ async def build_bottom_line_forecast(
         metrics=df_metrics or ["Awaiting dark-fleet baseline"],
     )
 
-    # 5. Pillar 4 — Market Momentum & Volatility
+    # 5. Pillar 4 — Macro, Crack Spread & Price Momentum
     mom_3d_pct = (
         ((all_prices[-1] - all_prices[-4]) / all_prices[-4]) * 100.0
         if len(all_prices) >= 4
@@ -533,11 +545,42 @@ async def build_bottom_line_forecast(
         if len(all_prices) >= 8
         else mom_3d_pct
     )
-    mom_score = round(_clamp((0.6 * mom_3d_pct + 0.4 * mom_7d_pct) * 14.0, -100.0, 100.0), 1)
+    mom_signals: list[float] = [_clamp((0.6 * mom_3d_pct + 0.4 * mom_7d_pct) * 14.0, -100.0, 100.0)]
     mom_metrics = [
-        f"3d trend: {mom_3d_pct:+.2f}% · 7d trend: {mom_7d_pct:+.2f}%",
-        f"20d realized daily volatility: {daily_vol_pct:.2f}%",
+        f"3d trend: {mom_3d_pct:+.2f}% · 7d trend: {mom_7d_pct:+.2f}% · 20d vol: {daily_vol_pct:.2f}%",
     ]
+
+    latest_macro = macro_rows[-1] if macro_rows else None
+    prev_macro_5d = macro_rows[-6] if len(macro_rows) >= 6 else None
+    if latest_macro and latest_macro.crack_spread_321_usd is not None:
+        crack_now = float(latest_macro.crack_spread_321_usd)
+        crack_5d_chg = (
+            round(crack_now - float(prev_macro_5d.crack_spread_321_usd), 2)
+            if (prev_macro_5d and prev_macro_5d.crack_spread_321_usd is not None)
+            else 0.0
+        )
+        # Rising 3-2-1 crack spread = stronger refinery demand for crude (bullish)
+        mom_signals.append(_clamp(crack_5d_chg * 14.0, -70.0, 70.0))
+        mom_metrics.append(f"3-2-1 Crack Spread: ${crack_now:.2f}/bbl ({crack_5d_chg:+.2f} 5d)")
+        if abs(crack_5d_chg) >= 1.5:
+            physical_drivers.append(
+                ForecastDriver(
+                    source_type="market",
+                    title=f"3-2-1 Refinery Crack Spread ${crack_now:.2f}/bbl ({crack_5d_chg:+.2f} 5d)",
+                    impact_direction="bullish" if crack_5d_chg > 0 else "bearish",
+                    detail=(
+                        "Expanding refining margins incentivize higher crude runs."
+                        if crack_5d_chg > 0
+                        else "Compressing refining margins signal softer fuel demand."
+                    ),
+                )
+            )
+    if latest_macro and latest_macro.tanker_etf_close is not None and prev_macro_5d and prev_macro_5d.tanker_etf_close:
+        fro_5d = ((latest_macro.tanker_etf_close - prev_macro_5d.tanker_etf_close) / prev_macro_5d.tanker_etf_close) * 100.0
+        mom_signals.append(_clamp(fro_5d * 8.0, -50.0, 50.0))
+        mom_metrics.append(f"Tanker Equity (FRO): {fro_5d:+.1f}% 5d · VIX: {latest_macro.vix_close or '—'}")
+
+    mom_score = round(_clamp(sum(mom_signals) / max(1, len(mom_signals)), -100.0, 100.0), 1)
     if abs(mom_7d_pct) >= 2.5:
         physical_drivers.append(
             ForecastDriver(
@@ -552,16 +595,16 @@ async def build_bottom_line_forecast(
 
     mom_pillar = ForecastPillar(
         key="market_momentum",
-        label="Price Momentum & Regime",
+        label="Macro, Crack Spread & Momentum",
         score=mom_score,
         weight=PILLAR_WEIGHTS["market_momentum"],
         direction=_direction_from_score(mom_score),
         summary=(
-            f"{sym_label} is in an upward short-term trend ({mom_7d_pct:+.2f}% over 7d)."
+            f"Refining margins & trend lean bullish ({mom_7d_pct:+.2f}% 7d)."
             if mom_score >= 15
-            else f"{sym_label} is trading sideways ({mom_7d_pct:+.2f}% over 7d)."
+            else f"Macro & refining indicators are balanced ({mom_7d_pct:+.2f}% 7d)."
             if mom_score > -15
-            else f"{sym_label} faces downward price momentum ({mom_7d_pct:+.2f}% over 7d)."
+            else f"Downward momentum / softer margins weigh on {sym_label} ({mom_7d_pct:+.2f}% 7d)."
         ),
         metrics=mom_metrics,
     )
@@ -569,14 +612,48 @@ async def build_bottom_line_forecast(
     pillars = [news_pillar, cp_pillar, df_pillar, mom_pillar]
     composite_score = round(sum(p.score * p.weight for p in pillars), 1)
 
-    # 6. Multi-horizon forecasts blending Pillars + News Analogs + gated Walk-Forward Ridge
+    # 6. Build 5-year daily feature table (OilPrice + OilMacroDaily + 5y News Events) for GBT
+    news_dir_by_date: dict = {}
+    news_shocks_by_date: dict = {}
+    for rec in memory.records:
+        d = rec.market_aligned_at.date()
+        w = max(0.2, rec.prior_rank_score / 100.0)
+        news_dir_by_date[d] = news_dir_by_date.get(d, 0.0) + rec.effective_direction * w
+        if rec.prior_rank_score >= 55.0:
+            news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
+
+    gbt_daily_rows: list[dict[str, Any]] = []
+    for p in price_rows:
+        m = macro_by_date.get(p.price_date)
+        gbt_daily_rows.append({
+            "date": p.price_date,
+            "brent_close_usd": p.brent_close_usd,
+            "wti_close_usd": p.wti_close_usd,
+            "crack_spread_321_usd": m.crack_spread_321_usd if m else None,
+            "brent_wti_spread_usd": (
+                m.brent_wti_spread_usd
+                if (m and m.brent_wti_spread_usd is not None)
+                else (
+                    round(p.brent_close_usd - p.wti_close_usd, 2)
+                    if (p.brent_close_usd is not None and p.wti_close_usd is not None)
+                    else None
+                )
+            ),
+            "dxy_close": m.dxy_close if m else None,
+            "vix_close": m.vix_close if m else None,
+            "tanker_etf_close": m.tanker_etf_close if m else None,
+            "energy_etf_close": m.energy_etf_close if m else None,
+            "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
+            "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
+        })
+
+    # 7. Multi-horizon forecasts blending Pillars + News Analogs + 5-Year Walk-Forward GBT
     news_ret_map = {"24h": news_ret_24h, "3d": news_ret_3d, "7d": news_ret_7d}
     analog_bt = memory.evaluate_walkforward_accuracy(symbol=symbol, sample_limit=160)
     horizons_out: dict[str, HorizonForecast] = {}
 
     for h_label, h_days in FORECAST_HORIZONS:
         h_scale = math.sqrt(h_days)
-        # Pillar-implied move: combine non-news pillars (vol-scaled) with direct news analog move
         non_news_score = (
             cp_pillar.score * cp_pillar.weight
             + df_pillar.score * df_pillar.weight
@@ -588,28 +665,56 @@ async def build_bottom_line_forecast(
             2,
         )
 
-        ml_pred, ridge_hit_rate, ridge_mae, ridge_samples = run_walkforward_ridge(
-            snapshot_dicts=snapshot_dicts,
+        gbt_res = run_walkforward_gbt(
+            daily_rows=gbt_daily_rows,
             price_key=price_key,
             horizon_days=h_days,
         )
 
-        # Strictly gate Ridge ML: only blend when out-of-sample hit rate >= 52% over >= 15 days
-        if ml_pred is not None and ridge_samples >= 15 and ridge_hit_rate is not None and ridge_hit_rate >= 52.0:
-            ml_weight = round(min(0.45, (ridge_samples / 60.0) * 0.45), 2)
+        # Gate 5y GBT strictly: blend when OOS hit rate >= 52% (or high-conviction >= 55%) over >= 40 days
+        gbt_has_edge = (
+            gbt_res.latest_pred_pct is not None
+            and gbt_res.samples >= 40
+            and (
+                (gbt_res.hit_rate_pct is not None and gbt_res.hit_rate_pct >= 52.0)
+                or (
+                    gbt_res.high_conviction_hit_rate_pct is not None
+                    and gbt_res.high_conviction_hit_rate_pct >= 55.0
+                )
+            )
+        )
+
+        if gbt_has_edge and gbt_res.latest_pred_pct is not None:
+            ml_pred = gbt_res.latest_pred_pct
+            # Scale GBT weight smoothly up to 60% as OOS edge above 50% grows
+            edge_pts = max(
+                (gbt_res.hit_rate_pct or 50.0) - 50.0,
+                ((gbt_res.high_conviction_hit_rate_pct or 50.0) - 52.0),
+            )
+            ml_weight = round(_clamp(0.30 + edge_pts * 0.04, 0.30, 0.60), 2)
             blended_ret = round((1.0 - ml_weight) * pillar_ret + ml_weight * ml_pred, 2)
-            hit_rate, mae, bt_samples = ridge_hit_rate, ridge_mae, ridge_samples
+            hit_rate = gbt_res.hit_rate_pct
+            mae = gbt_res.mae_pct
+            bt_samples = gbt_res.samples
+            hc_hit = gbt_res.high_conviction_hit_rate_pct
+            hc_samples = gbt_res.high_conviction_samples
+            model_name = "5y GBT + 4-Pillar Hybrid"
         else:
+            ml_pred = gbt_res.latest_pred_pct
             ml_weight = 0.0
             blended_ret = pillar_ret
-            # Surface walk-forward accuracy of the active News Analog predictor
-            abt = analog_bt.get(h_label)
-            if abt:
-                hit_rate = abt["hit_rate_pct"]
-                mae = abt["mae_pct"]
-                bt_samples = abt["samples"]
+            hc_hit = gbt_res.high_conviction_hit_rate_pct
+            hc_samples = gbt_res.high_conviction_samples
+            if gbt_res.samples >= 40 and gbt_res.hit_rate_pct is not None:
+                hit_rate, mae, bt_samples = gbt_res.hit_rate_pct, gbt_res.mae_pct, gbt_res.samples
+                model_name = "4-Pillar + News Analogs (GBT Gated)"
             else:
-                hit_rate, mae, bt_samples = ridge_hit_rate, ridge_mae, ridge_samples
+                abt = analog_bt.get(h_label)
+                if abt:
+                    hit_rate, mae, bt_samples = abt["hit_rate_pct"], abt["mae_pct"], abt["samples"]
+                else:
+                    hit_rate, mae, bt_samples = None, None, 0
+                model_name = "4-Pillar + News Analogs"
 
         blended_ret = round(_clamp(blended_ret, -12.0, 12.0), 2)
         verdict, direction = _verdict_from_return(blended_ret, h_days)
@@ -624,17 +729,24 @@ async def build_bottom_line_forecast(
             else 0.5
         )
         strength = min(1.0, abs(composite_score) / 65.0)
-        bt_bonus = ((hit_rate - 50.0) / 50.0) * 15.0 if (hit_rate is not None and bt_samples >= 10) else 0.0
-        conf = round(_clamp(32.0 + 30.0 * agreement + 22.0 * strength + bt_bonus, 20.0, 88.0), 1)
+        bt_bonus = ((hit_rate - 50.0) / 50.0) * 18.0 if (hit_rate is not None and bt_samples >= 20) else 0.0
+        conf = round(_clamp(32.0 + 30.0 * agreement + 22.0 * strength + bt_bonus, 20.0, 90.0), 1)
 
         pred_price = None
         low_price = None
         high_price = None
         if current_price is not None:
             pred_price = round(current_price * (1.0 + blended_ret / 100.0), 2)
-            band_pct = daily_vol_pct * h_scale * 0.85
-            low_price = round(current_price * (1.0 + (blended_ret - band_pct) / 100.0), 2)
-            high_price = round(current_price * (1.0 + (blended_ret + band_pct) / 100.0), 2)
+            # Use asymmetric GBT quantile tail-risk bands (P15 / P85) when available
+            if gbt_res.q15_pct is not None and gbt_res.q85_pct is not None:
+                low_pct = min(gbt_res.q15_pct, blended_ret - 0.35 * daily_vol_pct * h_scale)
+                high_pct = max(gbt_res.q85_pct, blended_ret + 0.35 * daily_vol_pct * h_scale)
+                low_price = round(current_price * (1.0 + low_pct / 100.0), 2)
+                high_price = round(current_price * (1.0 + high_pct / 100.0), 2)
+            else:
+                band_pct = daily_vol_pct * h_scale * 0.85
+                low_price = round(current_price * (1.0 + (blended_ret - band_pct) / 100.0), 2)
+                high_price = round(current_price * (1.0 + (blended_ret + band_pct) / 100.0), 2)
 
         horizons_out[h_label] = HorizonForecast(
             horizon=h_label,
@@ -651,6 +763,9 @@ async def build_bottom_line_forecast(
             backtest_hit_rate_pct=hit_rate,
             backtest_mae_pct=mae,
             backtest_samples=bt_samples,
+            high_conviction_hit_rate_pct=hc_hit,
+            high_conviction_samples=hc_samples,
+            model_name=model_name,
         )
 
     primary = horizons_out["3d"]
