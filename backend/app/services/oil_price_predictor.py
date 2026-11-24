@@ -27,6 +27,7 @@ import numpy as np
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chokepoint import PortWatchChokepointDaily
 from app.models.global_oil_features import OilMacroDaily, OilMarketSnapshot, OilPrice, StraitRiskDaily
 from app.models.news import AIMarketBriefing
 from app.schemas.forecast import (
@@ -282,6 +283,46 @@ async def build_bottom_line_forecast(
             )
         ).scalars().all()
     )
+    pw_rows = list(
+        (
+            await db.execute(
+                select(
+                    PortWatchChokepointDaily.date,
+                    PortWatchChokepointDaily.portname,
+                    PortWatchChokepointDaily.n_tanker,
+                    PortWatchChokepointDaily.capacity_tanker,
+                )
+                .where(PortWatchChokepointDaily.date >= cutoff_5y)
+            )
+        ).all()
+    )
+    pw_by_date: dict = {}
+    for pw_d, pname, n_t, cap_t in pw_rows:
+        bucket = pw_by_date.setdefault(
+            pw_d,
+            {
+                "pw_hormuz_tankers": 0.0,
+                "pw_hormuz_capacity": 0.0,
+                "pw_bab_tankers": 0.0,
+                "pw_suez_tankers": 0.0,
+                "pw_cape_tankers": 0.0,
+                "pw_global_tankers": 0.0,
+            },
+        )
+        nt_val = float(n_t or 0.0)
+        cap_val = float(cap_t or 0.0)
+        bucket["pw_global_tankers"] += nt_val
+        p_low = (pname or "").lower()
+        if "hormuz" in p_low:
+            bucket["pw_hormuz_tankers"] += nt_val
+            bucket["pw_hormuz_capacity"] += cap_val
+        elif "mandeb" in p_low:
+            bucket["pw_bab_tankers"] += nt_val
+        elif "suez" in p_low:
+            bucket["pw_suez_tankers"] += nt_val
+        elif "good hope" in p_low or "cape" in p_low:
+            bucket["pw_cape_tankers"] += nt_val
+
     risk_rows = list(
         (
             await db.execute(
@@ -612,7 +653,31 @@ async def build_bottom_line_forecast(
     pillars = [news_pillar, cp_pillar, df_pillar, mom_pillar]
     composite_score = round(sum(p.score * p.weight for p in pillars), 1)
 
-    # 6. Build 5-year daily feature table (OilPrice + OilMacroDaily + 5y News Events) for GBT
+    # Physical Ocean vs. Wall Street Market Divergence check
+    physical_ocean_score = round((cp_pillar.score + df_pillar.score) / 2.0, 1)
+    if abs(physical_ocean_score - mom_pillar.score) >= 35.0:
+        if physical_ocean_score > mom_pillar.score:
+            physical_drivers.insert(
+                0,
+                ForecastDriver(
+                    source_type="chokepoint",
+                    title=f"Physical vs. Market Divergence (Ocean {physical_ocean_score:+.0f} vs Market {mom_pillar.score:+.0f})",
+                    impact_direction="bullish",
+                    detail="Physical tanker flows & dark-fleet stress are tighter than recent futures price action implies.",
+                ),
+            )
+        else:
+            physical_drivers.insert(
+                0,
+                ForecastDriver(
+                    source_type="chokepoint",
+                    title=f"Physical vs. Market Divergence (Ocean {physical_ocean_score:+.0f} vs Market {mom_pillar.score:+.0f})",
+                    impact_direction="bearish",
+                    detail="Physical seaborne flows look looser than futures momentum implies.",
+                ),
+            )
+
+    # 6. Build 5-year daily feature table (OilPrice + OilMacroDaily + 5y PortWatch + 5y News) for GBT
     news_dir_by_date: dict = {}
     news_shocks_by_date: dict = {}
     for rec in memory.records:
@@ -625,6 +690,7 @@ async def build_bottom_line_forecast(
     gbt_daily_rows: list[dict[str, Any]] = []
     for p in price_rows:
         m = macro_by_date.get(p.price_date)
+        pw = pw_by_date.get(p.price_date, {})
         gbt_daily_rows.append({
             "date": p.price_date,
             "brent_close_usd": p.brent_close_usd,
@@ -645,6 +711,12 @@ async def build_bottom_line_forecast(
             "energy_etf_close": m.energy_etf_close if m else None,
             "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
             "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
+            "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
+            "pw_hormuz_capacity": pw.get("pw_hormuz_capacity"),
+            "pw_bab_tankers": pw.get("pw_bab_tankers"),
+            "pw_suez_tankers": pw.get("pw_suez_tankers"),
+            "pw_cape_tankers": pw.get("pw_cape_tankers"),
+            "pw_global_tankers": pw.get("pw_global_tankers"),
         })
 
     # 7. Multi-horizon forecasts blending Pillars + News Analogs + 5-Year Walk-Forward GBT

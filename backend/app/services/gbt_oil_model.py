@@ -47,6 +47,15 @@ FEATURE_NAMES: tuple[str, ...] = (
     "news_dir_3d",
     "news_dir_7d",
     "news_shock_count_3d",
+    # Stationary IMF PortWatch physical tanker flow ratios & z-scores (zero AIS source drift)
+    "pw_hormuz_7d_vs_30d",
+    "pw_hormuz_cap_7d_vs_30d",
+    "pw_bab_7d_vs_30d",
+    "pw_suez_7d_vs_30d",
+    "pw_cape_7d_vs_30d",
+    "pw_cape_vs_suez_share",
+    "pw_global_tankers_7d_vs_30d",
+    "pw_hormuz_cap_z30",
 )
 
 
@@ -81,6 +90,38 @@ def _safe_diff(arr: np.ndarray, idx: int, lag: int) -> float:
     return float(a - b)
 
 
+def _rolling_ratio_7_30(arr: np.ndarray, idx: int) -> float:
+    """Scale-invariant ratio of 7-day rolling mean to 30-day rolling mean (minus 1.0)."""
+    if idx < 10:
+        return np.nan
+    s7 = arr[max(0, idx - 6) : idx + 1]
+    s30 = arr[max(0, idx - 29) : idx + 1]
+    v7 = s7[np.isfinite(s7)]
+    v30 = s30[np.isfinite(s30)]
+    if len(v7) < 3 or len(v30) < 10:
+        return np.nan
+    m30 = float(np.mean(v30))
+    if m30 <= 1e-6:
+        return np.nan
+    return float(np.mean(v7) / m30 - 1.0)
+
+
+def _rolling_z30(arr: np.ndarray, idx: int) -> float:
+    """30-day rolling z-score of the 7-day smoothed series."""
+    if idx < 15:
+        return np.nan
+    s7 = arr[max(0, idx - 6) : idx + 1]
+    s30 = arr[max(0, idx - 29) : idx + 1]
+    v7 = s7[np.isfinite(s7)]
+    v30 = s30[np.isfinite(s30)]
+    if len(v7) < 3 or len(v30) < 12:
+        return np.nan
+    std = float(np.std(v30))
+    if std <= 1e-6:
+        return 0.0
+    return float(max(-3.5, min(3.5, (float(np.mean(v7)) - float(np.mean(v30))) / std)))
+
+
 def build_gbt_feature_matrix(
     daily_rows: list[dict[str, Any]],
     price_key: str,
@@ -111,6 +152,14 @@ def build_gbt_feature_matrix(
     xle = _col("energy_etf_close")
     news_1d = _col("news_dir_1d")
     news_shocks = _col("news_shock_count_1d")
+
+    # IMF PortWatch satellite-AIS daily tanker series (uniform methodology across 5+ years)
+    pw_hormuz = _col("pw_hormuz_tankers")
+    pw_hormuz_cap = _col("pw_hormuz_capacity")
+    pw_bab = _col("pw_bab_tankers")
+    pw_suez = _col("pw_suez_tankers")
+    pw_cape = _col("pw_cape_tankers")
+    pw_global = _col("pw_global_tankers")
 
     daily_rets = np.full(n, np.nan, dtype=np.float64)
     for i in range(1, n):
@@ -162,6 +211,17 @@ def build_gbt_feature_matrix(
         sh3_slice = news_shocks[max(0, i - 2) : i + 1]
         sh3 = float(np.nansum(sh3_slice)) if np.any(np.isfinite(sh3_slice)) else 0.0
 
+        # Scale-invariant PortWatch rerouting share: Cape / (Cape + Suez + Bab) over trailing 7d
+        c7 = pw_cape[max(0, i - 6) : i + 1]
+        s7 = pw_suez[max(0, i - 6) : i + 1]
+        b7 = pw_bab[max(0, i - 6) : i + 1]
+        if np.any(np.isfinite(c7)) and np.any(np.isfinite(s7)):
+            c_sum = float(np.nansum(c7))
+            tot_reroute = c_sum + float(np.nansum(s7)) + float(np.nansum(b7))
+            cape_share = (c_sum / tot_reroute) if tot_reroute > 0 else np.nan
+        else:
+            cape_share = np.nan
+
         X[i] = [
             r1,
             r3,
@@ -189,6 +249,14 @@ def build_gbt_feature_matrix(
             n3,
             n7,
             sh3,
+            _rolling_ratio_7_30(pw_hormuz, i),
+            _rolling_ratio_7_30(pw_hormuz_cap, i),
+            _rolling_ratio_7_30(pw_bab, i),
+            _rolling_ratio_7_30(pw_suez, i),
+            _rolling_ratio_7_30(pw_cape, i),
+            cape_share,
+            _rolling_ratio_7_30(pw_global, i),
+            _rolling_z30(pw_hormuz_cap, i),
         ]
 
     return X, prices, dates

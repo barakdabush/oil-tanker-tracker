@@ -103,25 +103,42 @@ class PortWatchFetcher:
 
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             for portid in CHOKEPOINT_PORTIDS:
-                params = {
-                    "where": f"portid='{portid}'",
-                    "outFields": "portid,portname,date,n_total,n_tanker,n_cargo,n_container,capacity_tanker,capacity",
-                    "orderByFields": "date DESC",
-                    "resultRecordCount": min(lookback_days + 10, 1000),
-                    "f": "json",
-                }
-                resp = await client.get(PORTWATCH_QUERY_URL, params=params)
-                resp.raise_for_status()
-                payload = resp.json()
+                offset = 0
+                page_size = min(lookback_days + 10, 1000)
+                while True:
+                    params = {
+                        "where": f"portid='{portid}'",
+                        "outFields": "portid,portname,date,n_total,n_tanker,n_cargo,n_container,capacity_tanker,capacity",
+                        "orderByFields": "date DESC",
+                        "resultRecordCount": page_size,
+                        "resultOffset": offset,
+                        "f": "json",
+                    }
+                    resp = await client.get(PORTWATCH_QUERY_URL, params=params)
+                    resp.raise_for_status()
+                    payload = resp.json()
 
-                if "error" in payload:
-                    logger.error(f"IMF PortWatch ArcGIS error ({portid}): {payload['error']}")
-                    break
+                    if "error" in payload:
+                        logger.error(f"IMF PortWatch ArcGIS error ({portid}): {payload['error']}")
+                        break
 
-                for feat in payload.get("features") or []:
-                    parsed = _parse_portwatch_feature(feat.get("attributes") or {})
-                    if parsed is not None and parsed["date"] >= cutoff_date:
-                        rows.append(parsed)
+                    features = payload.get("features") or []
+                    if not features:
+                        break
+
+                    reached_cutoff = False
+                    for feat in features:
+                        parsed = _parse_portwatch_feature(feat.get("attributes") or {})
+                        if parsed is None:
+                            continue
+                        if parsed["date"] < cutoff_date:
+                            reached_cutoff = True
+                        else:
+                            rows.append(parsed)
+
+                    if reached_cutoff or not payload.get("exceededTransferLimit") or len(features) < page_size:
+                        break
+                    offset += len(features)
 
         if not rows:
             logger.warning("IMF PortWatch returned 0 rows.")
