@@ -13,10 +13,16 @@ same session.
   `ops/`, `backend/migrations/`, Dockerfiles, docker-compose files, `.env*`, or deployment config.
 - Never add secrets, tokens, network calls to new hosts, or new dependencies.
 
-## Efficiency rules (keep turns minimal)
-- Check `<repo_context>` first — the suspect source file, matching test file, recent commits, and repo file list are pre-injected when available. Do **not** waste turns calling `list_dir` or re-reading files already provided there.
-- **Batch independent tool calls in parallel** in a single turn (e.g. read source + test together, or edit source + test together).
-- If you cannot identify a clean, safe root cause within 5 turns, stop early and return `fixable: false` (`needs-human`).
+## Service map (static — do not waste turns rediscovering)
+- `backend` (`uvicorn app.main:app`, single worker): `backend/app/main.py`, routers in `backend/app/api/*.py`, services in `backend/app/services/*.py`.
+- `websocket` (`uvicorn websocket_app:app`): `backend/websocket_app.py`, AIS ingestion in `backend/app/services/ais_ingestion.py`.
+- `scheduler`: `backend/worker.py` running periodic `backend/app/services/*` jobs.
+- `ops/watchdog.py` (Tier 2 host probe): checks Docker state & `http://localhost:8000/api/health` (`4s` timeout); never edit `ops/`.
+
+## Efficiency rules (keep turns & tokens minimal)
+- Check `<repo_context>` first — the suspect source file (or service entrypoint), matching test file, recent commits, and repo file list are pre-injected when available. Do **not** waste turns calling `list_dir` or re-reading files already provided there.
+- **Batch independent tool calls in parallel** in a single turn (e.g. read multiple files or `grep_search` + `read_file` together, or edit source + test together). Prefer targeted `start_line`/`end_line` ranges over full-file reads.
+- If you cannot identify a clean, safe root cause within 12 turns, stop early and return `fixable: false` (`needs-human`).
 
 ## Step 1: Triage & Risk Check
 1. Locate the code path that produced the error (search for the logger name / message text).
