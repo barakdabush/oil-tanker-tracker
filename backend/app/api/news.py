@@ -444,14 +444,19 @@ async def recompute_news_pipeline(
 
 @router.post("/backfill")
 async def backfill_historical_news(
-    days: int = Query(365, ge=7, le=730, description="How many days back to backfill via date-sliced Google News RSS."),
-    chunk_days: int = Query(14, ge=7, le=30, description="Date-window size in days per RSS slice."),
+    days: int = Query(365, ge=7, le=1825, description="How many days back to backfill via date-sliced Google News RSS (up to 5 years)."),
+    chunk_days: int = Query(14, ge=7, le=60, description="Date-window size in days per RSS slice."),
     recalculate_snapshots: bool = Query(True, description="Also update oil_market_snapshots news columns."),
     db: AsyncSession = Depends(get_db),
 ):
-    """Backfill historical oil & maritime news, compute Brent/WTI multi-horizon impacts, and update walk-forward priors."""
+    """Backfill multi-year Brent/WTI prices + historical oil & maritime news, compute multi-horizon impacts, and update walk-forward priors."""
     from app.models.global_oil_features import OilMarketSnapshot
     from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
+    from app.services.oil_price_fetcher import OilPriceFetcher
+
+    # Ensure daily Brent/WTI prices cover the full backfill window before computing event impacts
+    price_fetcher = OilPriceFetcher()
+    await price_fetcher.fetch_prices(days=days + 30)
 
     fetcher = NewsFetcher()
     backfill_stats = await fetcher.backfill_history(days=days, chunk_days=chunk_days)
@@ -465,7 +470,7 @@ async def backfill_historical_news(
         today = datetime.now(timezone.utc).date()
         snap_q = (
             select(OilMarketSnapshot.snapshot_date)
-            .where(OilMarketSnapshot.snapshot_date >= today - timedelta(days=days))
+            .where(OilMarketSnapshot.snapshot_date >= today - timedelta(days=min(days, 730)))
             .order_by(OilMarketSnapshot.snapshot_date.asc())
         )
         existing_dates = (await db.execute(snap_q)).scalars().all()

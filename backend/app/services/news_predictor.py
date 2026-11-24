@@ -399,7 +399,7 @@ class NewsAnalogMemory:
 async def build_news_analog_memory(
     db: AsyncSession,
     symbol: str = "BZ=F",
-    lookback_days: int = 365,
+    lookback_days: int = 1825,
 ) -> NewsAnalogMemory:
     """Load historical NewsEvents, price impacts, and latest category priors into a NewsAnalogMemory."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -410,7 +410,7 @@ async def build_news_analog_memory(
                 select(NewsEvent)
                 .where(NewsEvent.first_seen_at >= cutoff)
                 .order_by(NewsEvent.first_seen_at.desc())
-                .limit(4000)
+                .limit(10000)
             )
         ).scalars().all()
     )
