@@ -304,8 +304,18 @@ def _parse_cdse_timestamp(raw: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _make_dedup_key(source: str, scene_id: str, lat: float, lon: float) -> str:
-    raw = f"{source}:{scene_id}:{lat:.3f}:{lon:.3f}"
+OVERPASS_DEDUP_WINDOW_MINUTES = 15
+
+
+def _overpass_bucket(ts: datetime) -> str:
+    """Bucket a timestamp into 30-minute UTC windows so adjacent 25s SAR slices share a key."""
+    utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    half_hour = "00" if utc.minute < 30 else "30"
+    return utc.strftime("%Y%m%d%H") + half_hour
+
+
+def _make_dedup_key(source: str, acquired_at: datetime, lat: float, lon: float) -> str:
+    raw = f"{source}:{_overpass_bucket(acquired_at)}:{lat:.3f}:{lon:.3f}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:40]
 
 
@@ -349,6 +359,7 @@ class Sentinel1SARDetector:
             return {"cataloged": len(scenes), "processed": 0, "detections": 0}
 
         processed = 0
+        merged_slices = 0
         total_detections = 0
         token = await self._get_cdse_token()
         if not token:
@@ -363,15 +374,46 @@ class Sentinel1SARDetector:
                         SatelliteScene.status.in_(("cataloged", "skipped_no_creds")),
                     )
                     .order_by(SatelliteScene.acquired_at.desc())
-                    .limit(3)
+                    .limit(12)
                 )
             ).scalars().all()
 
+            already_processed_times = list(
+                (
+                    await session.execute(
+                        select(SatelliteScene.acquired_at).where(
+                            SatelliteScene.chokepoint_name == "Strait of Hormuz",
+                            SatelliteScene.status == "processed",
+                        )
+                    )
+                ).scalars().all()
+            )
+
+        dedup_window = timedelta(minutes=OVERPASS_DEDUP_WINDOW_MINUTES)
+
         for scene in pending_rows:
+            if processed >= 3:
+                break
+
+            # Sentinel-1 splits a single pass into adjacent ~25s slices; our Process API
+            # query already mosaics ±15 min around acquired_at, so skip redundant slices.
+            if any(abs(scene.acquired_at - pt) <= dedup_window for pt in already_processed_times):
+                async with async_session() as session:
+                    db_scene = await session.get(SatelliteScene, scene.scene_id)
+                    if db_scene:
+                        db_scene.status = "merged_into_pass"
+                        db_scene.detections_count = 0
+                        db_scene.dark_detections_count = 0
+                        db_scene.processed_at = datetime.now(timezone.utc)
+                        await session.commit()
+                merged_slices += 1
+                continue
+
             try:
                 count = await self._process_scene(scene, token)
                 processed += 1
                 total_detections += count
+                already_processed_times.append(scene.acquired_at)
             except Exception as e:
                 logger.error(f"Failed processing Sentinel-1 scene {scene.scene_id}: {e}")
                 async with async_session() as session:
@@ -383,9 +425,14 @@ class Sentinel1SARDetector:
 
         logger.info(
             f"🛰️ Sentinel-1 SAR cycle complete: cataloged={len(scenes)}, "
-            f"processed={processed}, detections={total_detections}"
+            f"processed={processed}, merged_slices={merged_slices}, detections={total_detections}"
         )
-        return {"cataloged": len(scenes), "processed": processed, "detections": total_detections}
+        return {
+            "cataloged": len(scenes),
+            "processed": processed,
+            "merged_slices": merged_slices,
+            "detections": total_detections,
+        }
 
     async def _catalog_hormuz_scenes(self) -> list[dict]:
         """Query the public Copernicus OData Catalog for recent Sentinel-1 GRD passes over Hormuz."""
@@ -590,7 +637,7 @@ class Sentinel1SARDetector:
                 "match_distance_km": round(best_dist, 2) if best_match else None,
                 "detection_count": 1,
                 "dedup_key": _make_dedup_key(
-                    "copernicus_s1", scene.scene_id, t["latitude"], t["longitude"]
+                    "copernicus_s1", scene.acquired_at, t["latitude"], t["longitude"]
                 ),
             })
 

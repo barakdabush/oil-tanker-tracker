@@ -33,18 +33,22 @@ export const STATE_LABELS: Record<string, string> = {
   idle_drifting: "Idle / Drifting",
 };
 
-export function getVesselColor(v: Vessel): string {
+export function getVesselStateKey(v: Vessel): string {
   const hoursSinceLastSeen = v.last_seen
     ? (Date.now() - new Date(v.last_seen).getTime()) / 3600000
     : 999;
 
-  if (hoursSinceLastSeen > 6) return STATE_COLORS.dark;
+  if (hoursSinceLastSeen > 6) return "dark";
   if (v.operational_state && v.operational_state !== "dark" && STATE_COLORS[v.operational_state]) {
-    return STATE_COLORS[v.operational_state];
+    return v.operational_state;
   }
-  if ((v.last_speed || 0) <= 1) return STATE_COLORS.at_port;
-  if ((v.draft || 0) > 12) return STATE_COLORS.in_transit_laden;
-  return STATE_COLORS.in_transit_ballast;
+  if ((v.last_speed || 0) <= 1) return "at_port";
+  if ((v.draft || 0) > 12) return "in_transit_laden";
+  return "in_transit_ballast";
+}
+
+export function getVesselColor(v: Vessel): string {
+  return STATE_COLORS[getVesselStateKey(v)] || STATE_COLORS.in_transit_ballast;
 }
 
 export function getVesselStatus(v: Vessel): string {

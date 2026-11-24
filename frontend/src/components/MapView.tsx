@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, splitTrailSegments, haversineKm, TRAIL_BREAK_DISTANCE_KM } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, getVesselStateKey, splitTrailSegments, haversineKm, TRAIL_BREAK_DISTANCE_KM } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import { SatelliteLayer } from "./map/SatelliteLayer";
 import type { STSEvent, SatelliteDetection } from "@/lib/types";
@@ -242,6 +242,20 @@ export default function MapView() {
     return latest.map(p => [p.latitude, p.longitude]);
   }, [validTrailPoints]);
 
+  const vesselStateCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const v of vessels) {
+      const key = getVesselStateKey(v);
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [vessels]);
+
+  const satelliteMatchedCount = useMemo(
+    () => Math.max(satelliteDetections.length - satelliteDarkCount, 0),
+    [satelliteDetections.length, satelliteDarkCount]
+  );
+
   const showVesselDock = activeDetail === "vessel" && selectedVessel !== null;
   const showStsDock = !showVesselDock && selectedStsEvent !== null;
   const hasBottomPanel = showVesselDock || showStsDock;
@@ -372,8 +386,11 @@ export default function MapView() {
           setShowTrails={setShowTrails}
           showSatellite={showSatellite}
           setShowSatellite={setShowSatellite}
+          vesselStateCounts={vesselStateCounts}
+          portsCount={ports.length}
           satelliteCount={satelliteDetections.length}
           satelliteDarkCount={satelliteDarkCount}
+          satelliteMatchedCount={satelliteMatchedCount}
           selectedVessel={selectedVessel}
           trailLatLngsCount={trailLatLngs.length}
         />
