@@ -36,7 +36,7 @@ def _resolve_providers() -> list[tuple[str, str, str]]:
         providers.append((
             explicit_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             os.getenv("GEMINI_API_KEY", "").strip(),
-            explicit_model or "gemini-2.5-flash",
+            explicit_model or "gemini-3.8-flash",
         ))
     if os.getenv("GROQ_API_KEY", "").strip():
         providers.append((
