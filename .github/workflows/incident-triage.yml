@@ -95,6 +95,17 @@ jobs:
                       tnum = "\n".join(f"{i}: {l}" for i, l in enumerate(tlines[:300], 1))
                       out_parts.append(f"### Pre-loaded test file: {tp}\n```python\n{tnum[:12000]}\n```")
                       break
+          else:
+              svc_m = re.search(r"\*\*Service\*\*\s*\|\s*`([^`]+)`", issue_text)
+              svc_entry = {
+                  "backend": Path("backend/app/main.py"),
+                  "websocket": Path("backend/websocket_app.py"),
+                  "scheduler": Path("backend/worker.py"),
+              }.get(svc_m.group(1).strip() if svc_m else "")
+              if svc_entry and svc_entry.is_file():
+                  lines = svc_entry.read_text(encoding="utf-8", errors="replace").splitlines()
+                  numbered = "\n".join(f"{i}: {l}" for i, l in enumerate(lines[:300], 1))
+                  out_parts.append(f"### Pre-loaded service entrypoint: {svc_entry}\n```python\n{numbered[:16000]}\n```")
 
           out_parts.append("</repo_context>")
           Path(sys.argv[2]).write_text("\n\n".join(out_parts), encoding="utf-8")
@@ -121,7 +132,7 @@ jobs:
         run: |
           python3 .github/agents/run_agent.py \
             --mode fix \
-            --max-turns 15 \
+            --max-turns 25 \
             --prompt-file "$RUNNER_TEMP/prompt.md" \
             --output "$RUNNER_TEMP/summary.md" \
             --stats-output "$RUNNER_TEMP/agent_stats.json"

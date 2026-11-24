@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from pathlib import Path
 
 REPO_ROOT = Path.cwd().resolve()
-MAX_FILE_CHARS = 36000
+MAX_FILE_CHARS = 16000
 MAX_CMD_CHARS = 12000
 LLM_WALL_TIMEOUT_SECONDS = 120
 AGENT_WALL_BUDGET_SECONDS = 20 * 60
@@ -296,12 +296,14 @@ def _post_json(url: str, headers: dict, payload: bytes) -> dict:
 
 
 def _chat_once(url: str, api_key: str, model: str, messages: list, tools: list) -> dict:
-    payload = json.dumps({
+    body_obj: dict = {
         "model": model,
         "messages": messages,
-        "tools": tools,
         "temperature": 0.2,
-    }).encode("utf-8")
+    }
+    if tools:
+        body_obj["tools"] = tools
+    payload = json.dumps(body_obj).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -364,7 +366,7 @@ def main():
     providers = _resolve_providers()
     allow_write = args.mode == "fix"
     tools = READ_TOOLS + (WRITE_TOOLS if allow_write else [])
-    max_turns = args.max_turns or (15 if allow_write else 12)
+    max_turns = args.max_turns or (25 if allow_write else 15)
 
     prompt_text = Path(args.prompt_file).read_text(encoding="utf-8")
     messages: list[dict] = [{"role": "user", "content": prompt_text}]
@@ -413,6 +415,32 @@ def main():
                 "content": result,
             })
         print(f"Turn {turn} ({used_model}): executed {len(tool_calls)} tool(s), +{t_tok} tok", file=sys.stderr)
+
+    if not final_text.strip():
+        messages.append({
+            "role": "user",
+            "content": (
+                "Turn limit reached. Do NOT call any more tools. "
+                "Provide your final Markdown analysis now (### Summary, ### Root cause, "
+                "### Fix (or Proposed Fix if blocked), ### Risk) based on what you observed, "
+                "and end with the exact single line: TRIAGE_RESULT: {\"severity\": \"P2\", \"fixable\": false} "
+                "(set fixable to true only if you already wrote and verified a fix)."
+            ),
+        })
+        try:
+            resp, used_model = _chat(providers, messages, [])
+            last_model = used_model
+            usage = resp.get("usage") or {}
+            p_tok = int(usage.get("prompt_tokens") or 0)
+            c_tok = int(usage.get("completion_tokens") or 0)
+            t_tok = int(usage.get("total_tokens") or (p_tok + c_tok))
+            prompt_tokens += p_tok
+            completion_tokens += c_tok
+            total_tokens += t_tok
+            final_text = (resp["choices"][0]["message"].get("content") or "").strip()
+            print(f"Wrap-up turn ({used_model}): +{t_tok} tok", file=sys.stderr)
+        except Exception as exc:
+            print(f"Wrap-up turn failed: {exc}", file=sys.stderr)
 
     Path(args.output).write_text(final_text, encoding="utf-8")
     stats = {
