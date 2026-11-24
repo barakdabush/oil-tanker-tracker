@@ -478,6 +478,61 @@ async def test_notify_auto_closes_quiet_issue_after_4_rounds():
     assert "Auto-resolved" in client.closed_issues[0][1]
 
 
+@pytest.mark.asyncio
+async def test_notify_shared_issue_waits_until_all_linked_incidents_quiet():
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    inc_quiet = Incident(
+        fingerprint="fp-shared-a",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] news bug A",
+        sample_message="err A",
+        logger_name="app.services.news_fetcher",  # 30m cadence -> 4 rounds = 2h
+        first_seen=now - timedelta(hours=5),
+        last_seen=now - timedelta(hours=3),
+        occurrences=4,
+        occurrences_at_notify=4,
+        status="issued",
+        github_issue_number=91,
+        issue_created_at=now - timedelta(hours=4),
+        last_notified_at=now - timedelta(hours=4),
+    )
+    inc_active = Incident(
+        fingerprint="fp-shared-b",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] news bug B",
+        sample_message="err B",
+        logger_name="app.services.news_fetcher",
+        first_seen=now - timedelta(hours=3),
+        last_seen=now - timedelta(minutes=20),  # still active (< 2h)
+        occurrences=3,
+        occurrences_at_notify=3,
+        status="issued",
+        github_issue_number=91,
+        issue_created_at=now - timedelta(hours=4),
+        last_notified_at=now - timedelta(hours=1),
+    )
+    client = _FakeGitHubClient("open", None)
+    detector = IncidentDetector()
+    detector._client = client
+
+    # While inc_active is still recent, shared issue #91 must stay open.
+    await detector._notify(_FakeSession([inc_quiet, inc_active]), now)
+    assert client.closed_issues == []
+    assert inc_quiet.status == "issued"
+    assert inc_active.status == "issued"
+
+    # Once both have been quiet >= 2h, issue #91 is closed once and both resolve.
+    later = now + timedelta(hours=2)
+    await detector._notify(_FakeSession([inc_quiet, inc_active]), later)
+    assert len(client.closed_issues) == 1
+    assert client.closed_issues[0][0] == 91
+    assert inc_quiet.status == "resolved"
+    assert inc_active.status == "resolved"
+
+
+
 
 
 

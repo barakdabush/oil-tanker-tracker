@@ -497,24 +497,6 @@ class IncidentDetector:
                     logger.info(f"Incident detector: opened GitHub issue #{number} ({inc.kind}).")
 
             elif inc.status == "issued" and inc.github_issue_number:
-                if should_auto_resolve(inc, now):
-                    status_info = await self._client.get_issue_status(inc.github_issue_number)
-                    if status_info and status_info[0] == "closed":
-                        inc.status = "resolved"
-                        inc.occurrences_at_notify = inc.occurrences
-                        continue
-                    quiet_h = round(estimate_quiet_window(inc).total_seconds() / 3600.0, 1)
-                    close_msg = (
-                        f"✅ Auto-resolved: no new occurrences for ~{quiet_h}h "
-                        f"({QUIET_ROUNDS_TO_RESOLVE} job rounds; last seen "
-                        f"{inc.last_seen.strftime('%Y-%m-%d %H:%M UTC')})."
-                    )
-                    if await self._client.close_issue(inc.github_issue_number, comment=close_msg):
-                        inc.status = "resolved"
-                        inc.occurrences_at_notify = inc.occurrences
-                        inc.last_notified_at = now
-                        logger.info(f"Incident detector: auto-closed quiet issue #{inc.github_issue_number}.")
-                    continue
                 new_occ = (inc.occurrences or 0) - (inc.occurrences_at_notify or 0)
                 if not should_comment(new_occ, inc.last_notified_at, now, settings.INCIDENT_COMMENT_INTERVAL_HOURS):
                     continue
@@ -538,3 +520,32 @@ class IncidentDetector:
                     if await self._client.add_comment(inc.github_issue_number, build_recurrence_comment(inc, new_occ)):
                         inc.last_notified_at = now
                         inc.occurrences_at_notify = inc.occurrences
+
+        # Second pass: auto-close a GitHub issue only when ALL issued incidents linked to it are quiet.
+        issued_by_number: dict[int, list[Incident]] = {}
+        for inc in incidents:
+            if inc.status == "issued" and inc.github_issue_number:
+                issued_by_number.setdefault(inc.github_issue_number, []).append(inc)
+
+        for issue_number, group in issued_by_number.items():
+            if not all(should_auto_resolve(inc, now) for inc in group):
+                continue
+            status_info = await self._client.get_issue_status(issue_number)
+            if status_info and status_info[0] == "closed":
+                for inc in group:
+                    inc.status = "resolved"
+                    inc.occurrences_at_notify = inc.occurrences
+                continue
+            latest_seen = max(inc.last_seen for inc in group if inc.last_seen)
+            quiet_h = round(max(estimate_quiet_window(inc).total_seconds() for inc in group) / 3600.0, 1)
+            close_msg = (
+                f"✅ Auto-resolved: no new occurrences for ~{quiet_h}h "
+                f"({QUIET_ROUNDS_TO_RESOLVE} job rounds; last seen "
+                f"{latest_seen.strftime('%Y-%m-%d %H:%M UTC')})."
+            )
+            if await self._client.close_issue(issue_number, comment=close_msg):
+                for inc in group:
+                    inc.status = "resolved"
+                    inc.occurrences_at_notify = inc.occurrences
+                    inc.last_notified_at = now
+                logger.info(f"Incident detector: auto-closed quiet issue #{issue_number}.")
