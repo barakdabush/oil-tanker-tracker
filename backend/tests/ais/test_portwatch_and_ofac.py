@@ -48,3 +48,61 @@ def test_parse_ofac_sdn_csv_extracts_vessels_and_identifiers():
     assert v["mmsi"] == 422012345
     assert v["flag"] == "Iran"
     assert v["vessel_type"] == "Crude Oil Tanker"
+
+
+import logging
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_portwatch_separates_maintenance_from_rate_limit(monkeypatch, caplog):
+    from app.services import portwatch_fetcher
+
+    calls = []
+
+    def _make_client(payload):
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return payload
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def get(self, url, params=None):
+                calls.append(params["where"])
+                return _Resp()
+
+        return _Client
+
+    fetcher = portwatch_fetcher.PortWatchFetcher()
+
+    # Upstream maintenance (Token Required) -> INFO, stops after 1st chokepoint
+    monkeypatch.setattr(portwatch_fetcher.httpx, "AsyncClient", _make_client({"error": {"code": 499, "message": "Token Required"}}))
+    with caplog.at_level(logging.INFO, logger="app.services.portwatch_fetcher"):
+        res = await fetcher.fetch_and_store()
+    assert res == 0
+    assert len(calls) == 1
+    assert any(r.levelno == logging.INFO and "maintenance" in r.message.lower() for r in caplog.records)
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+    calls.clear()
+    caplog.clear()
+
+    # Rate limit (Too many requests) -> ERROR, stops after 1st chokepoint
+    monkeypatch.setattr(portwatch_fetcher.httpx, "AsyncClient", _make_client({"error": {"code": 429, "message": "Unable to perform query. Too many requests."}}))
+    with caplog.at_level(logging.INFO, logger="app.services.portwatch_fetcher"):
+        res = await fetcher.fetch_and_store()
+    assert res == 0
+    assert len(calls) == 1
+    assert any(r.levelno == logging.ERROR and "rate-limited" in r.message.lower() for r in caplog.records)
+

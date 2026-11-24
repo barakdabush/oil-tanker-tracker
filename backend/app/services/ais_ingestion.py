@@ -238,7 +238,8 @@ async def _run_stream_loop(source_name: str, connect_fn):
             backoff = min(backoff * 1.5, 60)
         except (TimeoutError, ConnectionRefusedError):
             consecutive_drops += 1
-            logger.warning(f"AIS ({source_name}) connection timeout/refused. Reconnecting in {backoff}s...")
+            log_fn = logger.info if consecutive_drops < 3 else logger.warning
+            log_fn(f"AIS ({source_name}) connection timeout/refused. Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 60)
         except Exception as e:

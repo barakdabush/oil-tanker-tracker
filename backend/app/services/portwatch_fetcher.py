@@ -115,7 +115,15 @@ class PortWatchFetcher:
                 payload = resp.json()
 
                 if "error" in payload:
-                    logger.error(f"IMF PortWatch ArcGIS error ({portid}): {payload['error']}")
+                    err = payload["error"]
+                    msg = str(err.get("message") or err).lower() if isinstance(err, dict) else str(err).lower()
+                    code = err.get("code") if isinstance(err, dict) else None
+                    if "too many requests" in msg or "quota" in msg or code == 429:
+                        logger.error(f"IMF PortWatch rate-limited ({portid}): {err}")
+                    elif "token required" in msg or "invalid url" in msg or code in (499, 500, 502, 503, 504):
+                        logger.info(f"IMF PortWatch upstream maintenance/unavailable ({portid}): {err}")
+                    else:
+                        logger.error(f"IMF PortWatch ArcGIS error ({portid}): {err}")
                     break
 
                 for feat in payload.get("features") or []:
