@@ -1,7 +1,7 @@
 """Geographic utility functions."""
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional, TypeVar
 
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
@@ -11,8 +11,17 @@ NAUTICAL_MILE_KM = 1.852
 MAX_PLAUSIBLE_TANKER_SPEED_KNOTS = 40.0
 POSITION_JITTER_GRACE_KM = 5.0
 NULL_ISLAND_EPSILON_DEG = 0.001
+ISOLATED_EXCURSION_MIN_KM = 1000.0
+ISOLATED_EXCURSION_SPAN_RATIO = 0.3
 
 T = TypeVar("T")
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Return a timezone-aware UTC datetime so naive/aware subtractions never raise TypeError."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def is_valid_coordinate(lat: Optional[float], lon: Optional[float]) -> bool:
@@ -47,7 +56,7 @@ def is_plausible_move(
     dist_km = haversine_km(prev_lat, prev_lon, lat, lon)
     if dist_km <= jitter_km:
         return True
-    dt_seconds = (timestamp - prev_time).total_seconds()
+    dt_seconds = (_ensure_utc(timestamp) - _ensure_utc(prev_time)).total_seconds()
     if dt_seconds <= 0:
         return False
     dt_hours = max(dt_seconds, 1.0) / 3600.0
@@ -64,15 +73,20 @@ def despike_positions(
     max_speed_knots: float = MAX_PLAUSIBLE_TANKER_SPEED_KNOTS,
     jitter_km: float = POSITION_JITTER_GRACE_KM,
     quorum: int = 3,
+    isolated_excursion_km: float = ISOLATED_EXCURSION_MIN_KM,
 ) -> tuple[list[T], list[T]]:
-    """Filter invalid coordinates and physically impossible teleport spikes from a chronological track.
+    """Filter invalid coordinates, impossible-speed jumps, and isolated V-spikes from a chronological track.
 
     Returns ``(clean_positions, rejected_positions)``.
-    Uses a small confirmation quorum so:
-    - Isolated 1–2 point GPS-spoofing / NMEA-corruption spikes (start, middle, or end) are rejected.
-    - A corrupted initial point is replaced once >=2 consistent points establish the real track.
-    - A genuine relocation after an unrecorded gap or prior corrupted anchor recovers once ``quorum``
-      consecutive consistent reports agree on the new position.
+    Pass 1 (speed + quorum):
+    - Drops invalid / Null Island coordinates.
+    - Rejects isolated 1–2 point GPS-spoofing / NMEA-corruption spikes exceeding ``max_speed_knots``.
+    - Replaces a corrupted initial point once >=2 consistent points establish the real track.
+    - Allows genuine relocations once ``quorum`` consecutive consistent reports agree.
+    Pass 2 (isolated long-range V-spike):
+    - Rejects 1–2 point cross-region excursions (e.g. MMSI collision in another chokepoint after a
+      multi-day gap, where straight-line ``dist / dt`` falls below ``max_speed_knots``) when the
+      excursion jumps > ``isolated_excursion_km`` away and immediately returns near the prior region.
     """
     accepted: list[T] = []
     rejected: list[T] = []
@@ -137,6 +151,47 @@ def despike_positions(
     if pending:
         rejected.extend(pending)
 
+    # Pass 2: remove isolated 1–2 point long-range out-and-back V-spikes (e.g. MMSI collision after a multi-day gap)
+    if isolated_excursion_km > 0 and len(accepted) >= 3:
+        changed = True
+        while changed and len(accepted) >= 3:
+            changed = False
+            for spike_len in (1, 2):
+                i = 1
+                while i + spike_len < len(accepted):
+                    prev_pt = accepted[i - 1]
+                    first_pt = accepted[i]
+                    last_pt = accepted[i + spike_len - 1]
+                    next_pt = accepted[i + spike_len]
+                    d_prev = haversine_km(
+                        get_lat(prev_pt),  # type: ignore[arg-type]
+                        get_lon(prev_pt),  # type: ignore[arg-type]
+                        get_lat(first_pt),  # type: ignore[arg-type]
+                        get_lon(first_pt),  # type: ignore[arg-type]
+                    )
+                    d_next = haversine_km(
+                        get_lat(last_pt),  # type: ignore[arg-type]
+                        get_lon(last_pt),  # type: ignore[arg-type]
+                        get_lat(next_pt),  # type: ignore[arg-type]
+                        get_lon(next_pt),  # type: ignore[arg-type]
+                    )
+                    d_span = haversine_km(
+                        get_lat(prev_pt),  # type: ignore[arg-type]
+                        get_lon(prev_pt),  # type: ignore[arg-type]
+                        get_lat(next_pt),  # type: ignore[arg-type]
+                        get_lon(next_pt),  # type: ignore[arg-type]
+                    )
+                    if (
+                        d_prev > isolated_excursion_km
+                        and d_next > isolated_excursion_km
+                        and d_span < ISOLATED_EXCURSION_SPAN_RATIO * min(d_prev, d_next)
+                    ):
+                        rejected.extend(accepted[i : i + spike_len])
+                        del accepted[i : i + spike_len]
+                        changed = True
+                    else:
+                        i += 1
+
     return accepted, rejected
 
 
@@ -146,6 +201,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    a = min(1.0, max(0.0, a))
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 

@@ -1,6 +1,6 @@
 import React from "react";
 import type { Vessel } from "@/lib/types";
-import { getVesselStatus, timeLabelMap } from "./utils";
+import { getVesselColor, getVesselStatus, timeLabelMap } from "./utils";
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -37,6 +37,7 @@ export function VesselDetailPanel({
   onFetchTrail
 }: VesselDetailPanelProps) {
   const status = getVesselStatus(selectedVessel);
+  const statusColor = getVesselColor(selectedVessel);
   
   return (
     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
@@ -57,12 +58,14 @@ export function VesselDetailPanel({
           <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             🚢 {selectedVessel.name || `MMSI ${selectedVessel.mmsi}`}
           </h3>
-          <span className={`badge ${
-            status === "EXTENDED DARK" ? "badge-dark" :
-            status === "DARK" ? "badge-dark" :
-            status === "At Port" ? "badge-loading" :
-            status === "Loaded" ? "badge-unloading" : "badge-normal"
-          }`}>
+          <span
+            className="badge"
+            style={{
+              background: `${statusColor}22`,
+              color: statusColor,
+              border: `1px solid ${statusColor}66`,
+            }}
+          >
             {status}
           </span>
           {selectedVessel.is_sanctioned && (

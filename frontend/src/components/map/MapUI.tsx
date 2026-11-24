@@ -70,15 +70,11 @@ export function SearchBar({ searchQuery, setSearchQuery, searchResults, isSearch
   );
 }
 
-const VESSEL_LEGEND_ITEMS: Array<{ key: string; label: string; color: string; border?: string }> = [
-  { key: "in_transit_laden", label: "In Transit (Laden)", color: "#ef4444" },
-  { key: "in_transit_ballast", label: "In Transit (Ballast)", color: "#10b981" },
-  { key: "at_port", label: "At Port (Berthed)", color: "#f59e0b" },
-  { key: "anchored_waiting", label: "Anchored (Waiting)", color: "#f97316" },
-  { key: "floating_storage", label: "Floating Storage", color: "#ec4899" },
-  { key: "sts_transfer", label: "STS Transfer", color: "#a855f7" },
-  { key: "idle_drifting", label: "Idle / Drifting", color: "#64748b" },
-  { key: "dark", label: "Dark (AIS off)", color: "#1f2937", border: "1px solid #6b7280" },
+const VESSEL_LEGEND_GROUPS: Array<{ keys: string[]; label: string; color: string }> = [
+  { keys: ["in_transit_laden", "in_transit_ballast"], label: "In Transit (Moving)", color: "#10b981" },
+  { keys: ["at_port", "anchored_waiting", "idle_drifting"], label: "Stationary (Port / Anchored / Idle)", color: "#f59e0b" },
+  { keys: ["sts_transfer", "floating_storage"], label: "STS / Floating Storage", color: "#a855f7" },
+  { keys: ["dark"], label: "Dark (AIS off > 6h)", color: "#ef4444" },
 ];
 
 export function MapControlsAndLegend({
@@ -125,17 +121,20 @@ export function MapControlsAndLegend({
           <span>Vessel State</span>
           <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>{totalVessels}</span>
         </div>
-        {VESSEL_LEGEND_ITEMS.map((item) => (
-          <div key={item.key} className="legend-item" style={{ justifyContent: "space-between", gap: 10 }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className="legend-dot" style={{ background: item.color, border: item.border }} />
-              {item.label}
-            </span>
-            <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
-              {vesselStateCounts[item.key] || 0}
-            </span>
-          </div>
-        ))}
+        {VESSEL_LEGEND_GROUPS.map((group) => {
+          const count = group.keys.reduce((sum, k) => sum + (vesselStateCounts[k] || 0), 0);
+          return (
+            <div key={group.label} className="legend-item" style={{ justifyContent: "space-between", gap: 10 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="legend-dot" style={{ background: group.color }} />
+                {group.label}
+              </span>
+              <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
+                {count}
+              </span>
+            </div>
+          );
+        })}
         {showSatellite && (
           <>
             <div className="legend-item" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8, justifyContent: "space-between", gap: 10 }}>

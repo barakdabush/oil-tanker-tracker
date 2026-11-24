@@ -15,7 +15,7 @@ import { ViewportFetcher } from "./map/ViewportFetcher";
 import { VesselDetailPanel } from "./map/VesselDetailPanel";
 import { STSDetailPanel } from "./map/STSDetailPanel";
 import { SearchBar, MapControlsAndLegend } from "./map/MapUI";
-import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, getVesselStateKey } from "./map/utils";
+import { getCongestionColor, geojsonToLeaflet, geojsonLineToLeaflet, getVesselColor, getVesselStateKey, splitTrailSegments, haversineKm, TRAIL_BREAK_DISTANCE_KM } from "./map/utils";
 import { STSLayer } from "./map/STSLayer";
 import { SatelliteLayer } from "./map/SatelliteLayer";
 import type { STSEvent, SatelliteDetection } from "@/lib/types";
@@ -55,7 +55,7 @@ export default function MapView() {
   const [showSatellite, setShowSatellite] = useState(true);
   const [satelliteDetections, setSatelliteDetections] = useState<SatelliteDetection[]>([]);
   const [satelliteDarkCount, setSatelliteDarkCount] = useState(0);
-  const [trailHours, setTrailHours] = useState(0);
+  const [trailHours, setTrailHours] = useState(168);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Vessel[]>([]);
   const [vesselTrails, setVesselTrails] = useState<Record<number, TrailPoint[]>>({});
@@ -146,7 +146,8 @@ export default function MapView() {
               marker.setLatLng([data.lat, data.lon]);
               const existing = allVesselsRef.current.get(data.mmsi);
               if (existing) {
-                const updated = { ...existing, last_seen: data.timestamp, last_speed: data.speed, last_lat: data.lat, last_lon: data.lon, last_course: data.course, last_source: data.source ?? existing.last_source };
+                const clearedState = existing.operational_state === "dark" ? null : existing.operational_state;
+                const updated = { ...existing, operational_state: clearedState, last_seen: data.timestamp, last_speed: data.speed, last_lat: data.lat, last_lon: data.lon, last_course: data.course, last_source: data.source ?? existing.last_source };
                 allVesselsRef.current.set(data.mmsi, updated);
                 const color = getVesselColor(updated);
                 const isSelected = selectedVesselRef.current?.mmsi === data.mmsi;
@@ -170,7 +171,7 @@ export default function MapView() {
             }
           }
           vesselsRef.current.set(data.mmsi, data);
-          setSelectedVessel(prev => (prev && prev.mmsi === data.mmsi) ? { ...prev, last_lat: data.lat, last_lon: data.lon, last_speed: data.speed, last_course: data.course, last_seen: data.timestamp, last_source: data.source ?? prev.last_source } : prev);
+          setSelectedVessel(prev => (prev && prev.mmsi === data.mmsi) ? { ...prev, operational_state: prev.operational_state === "dark" ? null : prev.operational_state, last_lat: data.lat, last_lon: data.lon, last_speed: data.speed, last_course: data.course, last_seen: data.timestamp, last_source: data.source ?? prev.last_source } : prev);
           if (data.update_ui_trail && selectedVesselRef.current?.mmsi === data.mmsi) {
             setVesselTrails(prev => ({
               ...prev,
@@ -213,14 +214,33 @@ export default function MapView() {
   }, [searchQuery, API]);
 
   const currentTrail = selectedVessel ? (vesselTrails[selectedVessel.mmsi] || []) : [];
-  const validTrailPoints = useMemo(
-    () => currentTrail.filter(p => p.latitude && p.longitude),
-    [currentTrail]
-  );
+  const validTrailPoints = useMemo(() => {
+    const pts = currentTrail.filter(p => p.latitude != null && p.longitude != null);
+    if (selectedVessel?.last_lat != null && selectedVessel?.last_lon != null && pts.length > 0) {
+      const last = pts[pts.length - 1];
+      if (last.latitude !== selectedVessel.last_lat || last.longitude !== selectedVessel.last_lon) {
+        return [
+          ...pts,
+          {
+            time: selectedVessel.last_seen || new Date().toISOString(),
+            latitude: selectedVessel.last_lat,
+            longitude: selectedVessel.last_lon,
+            speed: selectedVessel.last_speed,
+          },
+        ];
+      }
+    }
+    return pts;
+  }, [currentTrail, selectedVessel?.last_lat, selectedVessel?.last_lon, selectedVessel?.last_seen, selectedVessel?.last_speed]);
   const trailLatLngs: [number, number][] = useMemo(
     () => validTrailPoints.map(p => [p.latitude, p.longitude]),
     [validTrailPoints]
   );
+  const focusTrailLatLngs: [number, number][] = useMemo(() => {
+    const segments = splitTrailSegments(validTrailPoints);
+    const latest = segments.length > 0 ? segments[segments.length - 1] : [];
+    return latest.map(p => [p.latitude, p.longitude]);
+  }, [validTrailPoints]);
 
   const vesselStateCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -263,7 +283,7 @@ export default function MapView() {
           <MapResizeHandler hasBottomPanel={hasBottomPanel} />
           <NavigationControls />
           <KeyboardNavigation />
-          <MapUpdater selectedVessel={selectedVessel} trailLatLngs={trailLatLngs} />
+          <MapUpdater selectedVessel={selectedVessel} trailLatLngs={focusTrailLatLngs} />
           <ViewportFetcher apiBase={API} onVesselsLoaded={mergeVessels} />
           <TileLayer
             attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"

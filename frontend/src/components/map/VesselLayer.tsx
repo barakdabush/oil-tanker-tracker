@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 import L from "leaflet";
 import { useMap, CircleMarker, Polyline } from "react-leaflet";
 import type { Vessel } from "@/lib/types";
-import { getVesselColor } from "./utils";
+import { getVesselColor, haversineKm, splitTrailSegments, TRAIL_BREAK_DISTANCE_KM } from "./utils";
 
 export const VesselLayer = React.memo(function VesselLayer({
   vessels,
@@ -167,15 +167,21 @@ export const AnimatedTrail = React.memo(function AnimatedTrail({
     return trailPoints.length > 1 ? idx / (trailPoints.length - 1) : 1;
   };
 
-  // Group consecutive segments into color buckets (max ~48 Polylines) for smooth gradient + fast rendering
+  // Group consecutive segments into color buckets (max ~48 Polylines) for smooth gradient + fast rendering.
+  // Break the polyline across >1,500 km cross-region jumps (e.g. separate voyages months apart).
   const runs: { positions: [number, number][]; color: string }[] = [];
   let currentBucket = -1;
 
   for (let i = 0; i < trailPoints.length - 1; i++) {
-    const midRatio = (getRatio(i) + getRatio(i + 1)) / 2;
-    const bucket = Math.min(TRAIL_COLOR_BUCKETS - 1, Math.floor(midRatio * TRAIL_COLOR_BUCKETS));
     const p1: [number, number] = [trailPoints[i].latitude, trailPoints[i].longitude];
     const p2: [number, number] = [trailPoints[i + 1].latitude, trailPoints[i + 1].longitude];
+    if (haversineKm(p1[0], p1[1], p2[0], p2[1]) > TRAIL_BREAK_DISTANCE_KM) {
+      currentBucket = -1;
+      continue;
+    }
+
+    const midRatio = (getRatio(i) + getRatio(i + 1)) / 2;
+    const bucket = Math.min(TRAIL_COLOR_BUCKETS - 1, Math.floor(midRatio * TRAIL_COLOR_BUCKETS));
 
     if (bucket !== currentBucket || runs.length === 0) {
       currentBucket = bucket;
@@ -188,7 +194,7 @@ export const AnimatedTrail = React.memo(function AnimatedTrail({
     }
   }
 
-  const allLatLngs: [number, number][] = trailPoints.map((p) => [p.latitude, p.longitude]);
+  const contiguousSegments = splitTrailSegments(trailPoints).filter((seg) => seg.length >= 2);
   const dotStep = Math.max(1, Math.floor(trailPoints.length / 30));
 
   return (
@@ -233,15 +239,18 @@ export const AnimatedTrail = React.memo(function AnimatedTrail({
           />
         ))}
 
-      <Polyline
-        positions={allLatLngs}
-        pathOptions={{
-          color: "#ffffff",
-          weight: 2,
-          opacity: 0.3,
-          className: `animated-dash-line-${vesselMmsi}`,
-        }}
-      />
+      {contiguousSegments.map((seg, segIdx) => (
+        <Polyline
+          key={`trail-dash-${vesselMmsi}-${segIdx}`}
+          positions={seg.map((p) => [p.latitude, p.longitude] as [number, number])}
+          pathOptions={{
+            color: "#ffffff",
+            weight: 2,
+            opacity: 0.3,
+            className: `animated-dash-line-${vesselMmsi}`,
+          }}
+        />
+      ))}
     </div>
   );
 }, (prevProps, nextProps) => {
