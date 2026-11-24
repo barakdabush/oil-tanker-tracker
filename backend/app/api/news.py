@@ -441,3 +441,43 @@ async def recompute_news_pipeline(
         "gold_snapshots_recalculated": snapshots_recalculated,
     }
 
+
+@router.post("/backfill")
+async def backfill_historical_news(
+    days: int = Query(365, ge=7, le=730, description="How many days back to backfill via date-sliced Google News RSS."),
+    chunk_days: int = Query(14, ge=7, le=30, description="Date-window size in days per RSS slice."),
+    recalculate_snapshots: bool = Query(True, description="Also update oil_market_snapshots news columns."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill historical oil & maritime news, compute Brent/WTI multi-horizon impacts, and update walk-forward priors."""
+    from app.models.global_oil_features import OilMarketSnapshot
+    from app.services.global_oil_feature_builder import GlobalOilFeatureBuilder
+
+    fetcher = NewsFetcher()
+    backfill_stats = await fetcher.backfill_history(days=days, chunk_days=chunk_days)
+
+    analyzer = NewsImpactAnalyzer()
+    impacts_updated = await analyzer.compute_event_impacts(lookback_days=days + 14)
+    priors_stats = await analyzer.backfill_walkforward_priors(days=min(days, 365))
+
+    snapshots_recalculated = 0
+    if recalculate_snapshots:
+        today = datetime.now(timezone.utc).date()
+        snap_q = (
+            select(OilMarketSnapshot.snapshot_date)
+            .where(OilMarketSnapshot.snapshot_date >= today - timedelta(days=days))
+            .order_by(OilMarketSnapshot.snapshot_date.asc())
+        )
+        existing_dates = (await db.execute(snap_q)).scalars().all()
+        builder = GlobalOilFeatureBuilder()
+        for target_date in sorted(set(existing_dates) | {today - timedelta(days=1), today}):
+            await builder.aggregate(target_date=target_date)
+        snapshots_recalculated = len(set(existing_dates) | {today - timedelta(days=1), today})
+
+    return {
+        "backfill": backfill_stats,
+        "gold_impacts_updated": impacts_updated,
+        "gold_priors": priors_stats,
+        "gold_snapshots_recalculated": snapshots_recalculated,
+    }
+

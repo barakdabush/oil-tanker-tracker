@@ -410,7 +410,7 @@ async def build_news_analog_memory(
                 select(NewsEvent)
                 .where(NewsEvent.first_seen_at >= cutoff)
                 .order_by(NewsEvent.first_seen_at.desc())
-                .limit(2000)
+                .limit(4000)
             )
         ).scalars().all()
     )

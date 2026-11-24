@@ -434,6 +434,90 @@ class NewsFetcher:
         )
         return stats
 
+    async def backfill_history(
+        self,
+        days: int = 365,
+        chunk_days: int = 14,
+    ) -> dict[str, int]:
+        """Backfill historical oil & maritime news across ``days`` using date-sliced Google News RSS."""
+        from urllib.parse import quote_plus
+
+        backfill_queries: list[tuple[str, str]] = [
+            (
+                "Google News - Oil & OPEC",
+                '(OPEC OR "Brent crude" OR "WTI crude" OR "crude oil") AND (cut OR hike OR sanction OR outage OR inventory)',
+            ),
+            (
+                "Google News - Maritime Chokepoints",
+                '("Strait of Hormuz" OR "Bab el-Mandeb" OR "Suez Canal" OR "Red Sea") AND (tanker OR oil OR attack OR blockade OR reroute)',
+            ),
+            (
+                "Google News - Tanker & Dark Fleet",
+                '("oil tanker" OR "shadow fleet" OR "dark fleet" OR "VLCC") AND (sanctions OR Iran OR Russia OR freight OR seized)',
+            ),
+            (
+                "Google News - Refinery & SPR",
+                '("refinery outage" OR "pipeline outage" OR "force majeure" OR "oil stockpiles" OR "EIA crude" OR "floating storage") AND oil',
+            ),
+        ]
+
+        now = datetime.now(timezone.utc)
+        end_date = now.date()
+        start_date = end_date - timedelta(days=days)
+
+        # Build chronological date slices (oldest -> newest) so clustering & novelty stay accurate
+        slices: list[tuple] = []
+        cursor = start_date
+        while cursor < end_date:
+            nxt = min(end_date, cursor + timedelta(days=chunk_days))
+            slices.append((cursor, nxt))
+            cursor = nxt
+
+        headers = {
+            "User-Agent": "oil-tanker-tracker/1.0 (https://github.com/barakdabush/oil-tanker-tracker)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }
+
+        fetched_total = 0
+        new_articles = 0
+        new_events = 0
+        clustered_updates = 0
+        errors = 0
+
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
+            for slice_start, slice_end in slices:
+                slice_items: list[RawNewsItem] = []
+                date_filter = f"after:{slice_start.isoformat()} before:{slice_end.isoformat()}"
+                for source_name, q_base in backfill_queries:
+                    q_encoded = quote_plus(f"{q_base} {date_filter}")
+                    url = f"https://news.google.com/rss/search?q={q_encoded}&hl=en-US&gl=US&ceid=US:en"
+                    try:
+                        items = await self._fetch_rss_feed(client, source_name, 2, url)
+                        slice_items.extend(items)
+                    except Exception as e:
+                        errors += 1
+                        logger.warning(f"Backfill RSS[{source_name} {slice_start}..{slice_end}] failed: {e}")
+                    await asyncio.sleep(0.35)
+
+                fetched_total += len(slice_items)
+                if slice_items:
+                    chunk_stats = await self.ingest_items(slice_items)
+                    new_articles += chunk_stats["new_articles"]
+                    new_events += chunk_stats["new_events"]
+                    clustered_updates += chunk_stats["clustered_updates"]
+
+        result = {
+            "days": days,
+            "windows_scanned": len(slices),
+            "fetched_total": fetched_total,
+            "new_articles": new_articles,
+            "new_events": new_events,
+            "clustered_updates": clustered_updates,
+            "errors": errors,
+        }
+        logger.info(f"NewsFetcher historical backfill complete: {result}")
+        return result
+
     async def ingest_items(self, raw_items: list[RawNewsItem]) -> dict[str, int]:
         """Deduplicate, classify, cluster, and rank a list of RawNewsItem objects."""
         if not raw_items:

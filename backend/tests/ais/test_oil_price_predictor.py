@@ -211,3 +211,4 @@ def test_walkforward_ridge_and_vol_and_routes():
     paths = {r.path for r in app.routes}
     assert "/api/forecast/bottom-line" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
+    assert "/api/news/backfill" in paths
