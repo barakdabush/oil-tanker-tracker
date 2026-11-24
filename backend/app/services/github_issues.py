@@ -84,3 +84,26 @@ class GitHubIssuesClient:
                     return int(issue["number"])
             return None
 
+    async def find_open_issue_for_logger(self, service: str, logger_name: str) -> Optional[int]:
+        """Return an open auto-incident issue number for the same (service, logger_name), if any."""
+        if not service or not logger_name:
+            return None
+        svc_marker = f"| **Service** | `{service}` |"
+        log_marker = f"| **Logger** | `{logger_name}` |"
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{self.repo}/issues",
+                params={"state": "open", "labels": "auto-incident", "per_page": 100},
+            )
+            if resp.status_code >= 300:
+                logger.warning(f"GitHub list_issues failed: HTTP {resp.status_code}")
+                return None
+            for issue in resp.json():
+                if issue.get("pull_request"):
+                    continue
+                body = issue.get("body") or ""
+                if svc_marker in body and log_marker in body:
+                    return int(issue["number"])
+            return None
+
+

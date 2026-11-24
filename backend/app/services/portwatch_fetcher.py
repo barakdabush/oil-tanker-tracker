@@ -115,8 +115,8 @@ class PortWatchFetcher:
                 payload = resp.json()
 
                 if "error" in payload:
-                    logger.error(f"IMF PortWatch ArcGIS error for {portid}: {payload['error']}")
-                    continue
+                    logger.error(f"IMF PortWatch ArcGIS error ({portid}): {payload['error']}")
+                    break
 
                 for feat in payload.get("features") or []:
                     parsed = _parse_portwatch_feature(feat.get("attributes") or {})

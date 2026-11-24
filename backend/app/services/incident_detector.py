@@ -58,7 +58,8 @@ _RE_UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 _RE_TS = re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?")
 _RE_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _RE_HEX = re.compile(r"\b0x[0-9a-f]+\b", re.I)
-_RE_NUM = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")  # keeps identifiers like chokepoint15
+_RE_ENTITY_ID = re.compile(r"\b(chokepoint|portid|port|vessel|tanker)\d+\b", re.I)
+_RE_NUM = re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?")
 _RE_WS = re.compile(r"\s+")
 _RE_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -76,6 +77,7 @@ def normalize_message(message: str) -> str:
     m = _RE_TS.sub("<ts>", m)
     m = _RE_DATE.sub("<date>", m)
     m = _RE_HEX.sub("<hex>", m)
+    m = _RE_ENTITY_ID.sub(lambda match: f"{match.group(1)}<n>", m)
     m = _RE_NUM.sub("<n>", m)
     m = _RE_WS.sub(" ", m).strip()
     return m[:300]
@@ -360,6 +362,8 @@ class IncidentDetector:
             select(Incident).where(Incident.status.in_(("open", "issued"))).order_by(Incident.first_seen)
         )).scalars().all()
 
+        opened_by_logger: dict[tuple[str, str], int] = {}
+
         for inc in incidents:
             if inc.status == "open":
                 if not should_open_issue(
@@ -373,13 +377,25 @@ class IncidentDetector:
                 if issued_24h >= settings.INCIDENT_MAX_ISSUES_PER_DAY:
                     logger.info("Incident detector: daily issue cap reached, deferring new issues.")
                     break
-                existing_number = await self._client.find_open_issue_by_fingerprint(inc.fingerprint)
+                logger_key = (inc.service, inc.logger_name) if inc.logger_name else None
+                existing_number = opened_by_logger.get(logger_key) if logger_key else None
+                matched_by_logger = existing_number is not None
+                if not existing_number:
+                    existing_number = await self._client.find_open_issue_by_fingerprint(inc.fingerprint)
+                if not existing_number and logger_key and hasattr(self._client, "find_open_issue_for_logger"):
+                    existing_number = await self._client.find_open_issue_for_logger(inc.service, inc.logger_name)
+                    matched_by_logger = existing_number is not None
                 if existing_number:
                     inc.status = "issued"
                     inc.github_issue_number = existing_number
                     inc.issue_created_at = inc.issue_created_at or now
                     inc.last_notified_at = now
                     inc.occurrences_at_notify = inc.occurrences
+                    if matched_by_logger:
+                        await self._client.add_comment(
+                            existing_number,
+                            build_recurrence_comment(inc, inc.occurrences or 1),
+                        )
                     logger.info(f"Incident detector: linked existing GitHub issue #{existing_number} ({inc.kind}).")
                     continue
                 number = await self._client.create_issue(
@@ -394,6 +410,8 @@ class IncidentDetector:
                     inc.last_notified_at = now
                     inc.occurrences_at_notify = inc.occurrences
                     issued_24h += 1
+                    if logger_key:
+                        opened_by_logger[logger_key] = number
                     logger.info(f"Incident detector: opened GitHub issue #{number} ({inc.kind}).")
 
             elif inc.status == "issued" and inc.github_issue_number:

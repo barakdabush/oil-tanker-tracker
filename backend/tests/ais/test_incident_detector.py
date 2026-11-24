@@ -306,4 +306,62 @@ def test_warning_logs_grouped_and_thresholded():
     assert should_open_issue("log_warning", 5, 3, 2, 5)
 
 
+def test_normalize_collapses_chokepoint_entity_ids():
+    a = normalize_message("IMF PortWatch ArcGIS error for chokepoint2: {'code': 400, 'message': 'Invalid URL'}")
+    b = normalize_message("IMF PortWatch ArcGIS error for chokepoint15: {'code': 400, 'message': 'Invalid URL'}")
+    assert a == b
+    assert "chokepoint<n>" in a
+
+
+@pytest.mark.asyncio
+async def test_notify_deduplicates_same_logger_in_batch_and_existing():
+    now = datetime(2026, 11, 24, 8, 0, tzinfo=timezone.utc)
+    inc1 = Incident(
+        fingerprint="fp-pw-1",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] IMF PortWatch ArcGIS error: Invalid URL",
+        sample_message="Invalid URL",
+        logger_name="app.services.portwatch_fetcher",
+        first_seen=now - timedelta(minutes=5),
+        last_seen=now,
+        occurrences=3,
+        occurrences_at_notify=0,
+        status="open",
+    )
+    inc2 = Incident(
+        fingerprint="fp-pw-2",
+        kind="log_error",
+        service="scheduler",
+        title="[scheduler] IMF PortWatch ArcGIS error: Token Required",
+        sample_message="Token Required",
+        logger_name="app.services.portwatch_fetcher",
+        first_seen=now - timedelta(minutes=4),
+        last_seen=now,
+        occurrences=3,
+        occurrences_at_notify=0,
+        status="open",
+    )
+
+    class _LoggerDedupClient(_FakeGitHubClient):
+        def __init__(self):
+            super().__init__("open", None, existing_open_issue=None)
+
+        async def find_open_issue_for_logger(self, _service, _logger_name):
+            return None
+
+    client = _LoggerDedupClient()
+    detector = IncidentDetector()
+    detector._client = client
+    await detector._notify(_FakeSession([inc1, inc2]), now)
+
+    assert len(client.created_issues) == 1
+    assert inc1.github_issue_number == 99
+    assert inc2.github_issue_number == 99
+    assert inc2.status == "issued"
+    assert len(client.comments) == 1
+    assert client.comments[0][0] == 99
+
+
+
 
