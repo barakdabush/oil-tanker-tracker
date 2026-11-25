@@ -9,7 +9,7 @@ from app.models.port import Port, PortDailyStat  # noqa: F401
 from app.models.cargo import CargoEvent, VoyageLeg  # noqa: F401
 from app.models.alert import AISGap, STSEvent  # noqa: F401
 from app.models.chokepoint import Chokepoint, ChokepointTransit, PortWatchChokepointDaily  # noqa: F401
-from app.models.global_oil_features import OilMarketSnapshot, OilPrice, StraitRiskDaily, OilMacroDaily  # noqa: F401
+from app.models.global_oil_features import OilMarketSnapshot, OilPrice, StraitRiskDaily, OilMacroDaily, OilFundamentalsWeekly  # noqa: F401
 from app.models.sanctions import OfacSanctionedVessel  # noqa: F401
 from app.models.system_log import SystemLog  # noqa: F401
 from app.models.incident import Incident  # noqa: F401
@@ -40,6 +40,7 @@ __all__ = [
     "OilPrice",
     "StraitRiskDaily",
     "OilMacroDaily",
+    "OilFundamentalsWeekly",
     "OfacSanctionedVessel",
     "SystemLog",
     "Incident",

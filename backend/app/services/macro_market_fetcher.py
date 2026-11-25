@@ -43,7 +43,16 @@ MACRO_SYMBOLS: dict[str, str] = {
     "vix_close": "^VIX",
     "tanker_etf_close": "FRO",
     "energy_etf_close": "XLE",
+    "copper_close": "HG=F",
+    "china_etf_close": "FXI",
+    "natgas_close": "NG=F",
+    "us10y_yield": "^TNX",
+    "product_tanker_close": "STNG",
+    "uso_close": "USO",
+    "usl_close": "USL",
 }
+
+NOAA_NHC_STORMS_URL = "https://www.nhc.noaa.gov/CurrentStorms.json"
 
 
 def compute_crack_spread_321(
@@ -60,8 +69,29 @@ def compute_crack_spread_321(
     return round(product_bbl - wti_bbl, 2)
 
 
+def compute_gulf_hurricane_risk(active_storms: list[dict]) -> float:
+    """Compute a 0..100 Gulf of Mexico oil-infrastructure hurricane risk score from NOAA NHC CurrentStorms."""
+    max_score = 0.0
+    for st in active_storms or []:
+        lat = st.get("latitudeNumeric")
+        lon = st.get("longitudeNumeric")
+        intensity = float(st.get("intensity") or 0.0)  # knots
+        if lat is None or lon is None:
+            continue
+        lat_f, lon_f = float(lat), float(lon)
+        # Gulf of Mexico oil patch core: 18N..31N, -98W..-80W (Caribbean approach: 14N..32N, -99W..-65W)
+        in_gulf = 18.0 <= lat_f <= 31.5 and -98.5 <= lon_f <= -80.0
+        in_approach = 13.0 <= lat_f <= 32.5 and -99.0 <= lon_f <= -65.0
+        if not in_approach:
+            continue
+        base = min(100.0, max(15.0, (intensity / 130.0) * 100.0))
+        score = base if in_gulf else base * 0.45
+        max_score = max(max_score, score)
+    return round(max_score, 1)
+
+
 class MacroMarketFetcher:
-    """Periodic Yahoo Finance fetcher for crack spreads, USD, VIX, and tanker/energy equities."""
+    """Periodic Yahoo Finance + NOAA NHC fetcher for crack spreads, curve, demand proxies, and Gulf hurricane risk."""
 
     async def run_periodic(self):
         await asyncio.sleep(45)
@@ -128,12 +158,21 @@ class MacroMarketFetcher:
             out[d_now] = round(float(mkt_p), 4)
         return out
 
+    async def _fetch_noaa_hurricane_risk(self, client: httpx.AsyncClient) -> float:
+        try:
+            resp = await client.get(NOAA_NHC_STORMS_URL, timeout=15.0)
+            resp.raise_for_status()
+            payload = resp.json()
+            return compute_gulf_hurricane_risk(payload.get("activeStorms") or [])
+        except Exception as e:
+            logger.warning(f"NOAA NHC storm fetch failed: {type(e).__name__}: {e}")
+            return 0.0
+
     async def fetch_and_store(self, days: Optional[int] = None) -> dict[str, int]:
-        """Fetch macro & refining-margin series and upsert into oil_macro_daily."""
+        """Fetch macro, refining-margin, demand, curve, and NOAA Gulf hurricane series and upsert into oil_macro_daily."""
         if days is None:
             async with async_session() as session:
                 count = (await session.execute(select(func.count()).select_from(OilMacroDaily))).scalar() or 0
-            # First run backfills full 5 years; incremental hourly runs fetch 30 days
             days = 1825 if count < 200 else 30
 
         range_str = self._range_for_days(days)
@@ -145,6 +184,7 @@ class MacroMarketFetcher:
                 for sym in MACRO_SYMBOLS.values()
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            gulf_risk_today = await self._fetch_noaa_hurricane_risk(client)
 
         for (col_name, sym), res in zip(MACRO_SYMBOLS.items(), results):
             if isinstance(res, Exception):
@@ -160,6 +200,9 @@ class MacroMarketFetcher:
             return {"rows_upserted": 0, "days": days}
 
         min_d = min(all_dates)
+        today_utc = datetime.now(timezone.utc).date()
+        latest_d = max(all_dates)
+
         async with async_session() as session:
             oil_rows = (
                 await session.execute(
@@ -180,6 +223,13 @@ class MacroMarketFetcher:
                     if (brent is not None and wti is not None)
                     else None
                 )
+                uso = series_by_col["uso_close"].get(d)
+                usl = series_by_col["usl_close"].get(d)
+                curve_proxy = (
+                    round(uso / usl, 4)
+                    if (uso is not None and usl is not None and usl > 0)
+                    else None
+                )
                 records.append({
                     "date": d,
                     "rbob_gasoline_usd": rbob,
@@ -190,6 +240,15 @@ class MacroMarketFetcher:
                     "vix_close": series_by_col["vix_close"].get(d),
                     "tanker_etf_close": series_by_col["tanker_etf_close"].get(d),
                     "energy_etf_close": series_by_col["energy_etf_close"].get(d),
+                    "copper_close": series_by_col["copper_close"].get(d),
+                    "china_etf_close": series_by_col["china_etf_close"].get(d),
+                    "natgas_close": series_by_col["natgas_close"].get(d),
+                    "us10y_yield": series_by_col["us10y_yield"].get(d),
+                    "product_tanker_close": series_by_col["product_tanker_close"].get(d),
+                    "uso_close": uso,
+                    "usl_close": usl,
+                    "curve_backwardation_proxy": curve_proxy,
+                    "gulf_hurricane_risk": gulf_risk_today if d in (today_utc, latest_d) else None,
                     "fetched_at": now,
                 })
 
@@ -200,13 +259,14 @@ class MacroMarketFetcher:
                 upsert = stmt.on_conflict_do_update(
                     index_elements=["date"],
                     set_={
-                        col: getattr(stmt.excluded, col)
+                        col: func.coalesce(getattr(stmt.excluded, col), getattr(OilMacroDaily, col))
                         for col in chunk[0].keys()
-                        if col != "date"
-                    },
+                        if col not in ("date", "fetched_at")
+                    }
+                    | {"fetched_at": stmt.excluded.fetched_at},
                 )
                 await session.execute(upsert)
             await session.commit()
 
-        logger.info(f"MacroMarketFetcher: upserted {len(records)} daily macro rows (range={range_str}).")
-        return {"rows_upserted": len(records), "days": days}
+        logger.info(f"MacroMarketFetcher: upserted {len(records)} daily macro rows (range={range_str}, gulf_risk={gulf_risk_today}).")
+        return {"rows_upserted": len(records), "days": days, "gulf_hurricane_risk": gulf_risk_today}

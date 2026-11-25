@@ -274,3 +274,30 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert wres.wave_state in ("Bullish Wave", "Bearish Wave", "Range-Bound")
     assert wres.signal_samples >= 20
     assert wres.signal_hit_rate_pct is not None and wres.signal_hit_rate_pct > 55.0
+
+
+def test_gulf_hurricane_risk_and_policy_and_oil_majors_news():
+    from app.services.macro_market_fetcher import compute_gulf_hurricane_risk
+
+    assert compute_gulf_hurricane_risk([]) == 0.0
+    # Category 3 hurricane inside Gulf of Mexico
+    gulf_score = compute_gulf_hurricane_risk([
+        {"latitudeNumeric": 26.5, "longitudeNumeric": -90.2, "intensity": 105}
+    ])
+    assert gulf_score >= 70.0
+    # Storm far away in Eastern Pacific should score 0
+    assert compute_gulf_hurricane_risk([
+        {"latitudeNumeric": 15.0, "longitudeNumeric": -130.0, "intensity": 120}
+    ]) == 0.0
+
+    # US Policy / Trump announcement classification
+    trump_ev = classify_article("Trump threatens secondary tariffs on oil buyers as White House declares energy emergency")
+    assert trump_ev.relevant
+    assert trump_ev.event_type == "us_policy_tariffs_trump"
+    assert trump_ev.direction > 0
+
+    # Big Oil Majors / Saudi Aramco OSP classification
+    aramco_ev = classify_article("Saudi Aramco hikes OSP official selling price for Asian crude buyers")
+    assert aramco_ev.relevant
+    assert aramco_ev.event_type == "oil_majors_noc_guidance"
+    assert aramco_ev.direction > 0

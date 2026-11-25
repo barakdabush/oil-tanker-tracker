@@ -21,20 +21,23 @@ async def get_bottom_line_forecast(
 
 @router.post("/backfill-macro")
 async def backfill_macro_features(
-    days: int = Query(1825, ge=30, le=3650, description="Days of Yahoo Finance crack spreads, macro, and IMF PortWatch physical tanker flows to backfill."),
-    include_portwatch: bool = Query(True, description="Also backfill 5-year IMF PortWatch satellite-AIS chokepoint tanker counts."),
+    days: int = Query(1825, ge=30, le=3650, description="Days of macro, CFTC/EIA fundamentals, and IMF PortWatch data to backfill."),
+    include_portwatch: bool = Query(False, description="Also backfill 5-year IMF PortWatch satellite-AIS chokepoint tanker counts."),
 ):
-    """Backfill 5-year daily oil_prices, oil_macro_daily, and IMF PortWatch physical chokepoint tanker data."""
+    """Backfill 5-year daily oil_prices, oil_macro_daily (crack/curve/demand/hurricane), weekly CFTC COT + EIA storage, and optional PortWatch."""
     from app.services.macro_market_fetcher import MacroMarketFetcher
+    from app.services.oil_fundamentals_fetcher import OilFundamentalsFetcher
     from app.services.oil_price_fetcher import OilPriceFetcher
     from app.services.portwatch_fetcher import PortWatchFetcher
 
     await OilPriceFetcher().fetch_prices(days=days + 30)
     macro_stats = await MacroMarketFetcher().fetch_and_store(days=days)
+    fundamentals_stats = await OilFundamentalsFetcher().fetch_and_store(days=days)
     portwatch_rows = 0
     if include_portwatch:
         portwatch_rows = await PortWatchFetcher().fetch_and_store(lookback_days=days)
     return {
         "macro": macro_stats,
+        "fundamentals": fundamentals_stats,
         "portwatch_rows_upserted": portwatch_rows,
     }

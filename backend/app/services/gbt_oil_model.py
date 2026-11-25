@@ -56,6 +56,20 @@ FEATURE_NAMES: tuple[str, ...] = (
     "pw_cape_vs_suez_share",
     "pw_global_tankers_7d_vs_30d",
     "pw_hormuz_cap_z30",
+    # Global demand proxies, futures curve structure, CFTC hedge-fund positioning & EIA physical storage
+    "copper_ret_5d",
+    "copper_ret_20d",
+    "china_ret_5d",
+    "china_ret_20d",
+    "natgas_ret_5d",
+    "us10y_chg_5d",
+    "stng_ret_5d",
+    "curve_chg_5d",
+    "curve_chg_20d",
+    "cftc_mm_net_pct_oi",
+    "cftc_mm_net_z52",
+    "eia_stocks_chg_kbbl",
+    "eia_refinery_util_pct",
 )
 
 
@@ -122,6 +136,20 @@ def _rolling_z30(arr: np.ndarray, idx: int) -> float:
     return float(max(-3.5, min(3.5, (float(np.mean(v7)) - float(np.mean(v30))) / std)))
 
 
+def _rolling_z_window(arr: np.ndarray, idx: int, window: int = 252) -> float:
+    """Rolling z-score of current value vs trailing ``window`` trading days."""
+    if idx < 30 or not math.isfinite(arr[idx]):
+        return np.nan
+    sl = arr[max(0, idx - window + 1) : idx + 1]
+    valid = sl[np.isfinite(sl)]
+    if len(valid) < 20:
+        return np.nan
+    std = float(np.std(valid))
+    if std <= 1e-6:
+        return 0.0
+    return float(max(-3.5, min(3.5, (float(arr[idx]) - float(np.mean(valid))) / std)))
+
+
 def build_gbt_feature_matrix(
     daily_rows: list[dict[str, Any]],
     price_key: str,
@@ -160,6 +188,17 @@ def build_gbt_feature_matrix(
     pw_suez = _col("pw_suez_tankers")
     pw_cape = _col("pw_cape_tankers")
     pw_global = _col("pw_global_tankers")
+
+    # Global demand, futures curve, CFTC COT & EIA physical storage series
+    copper = _col("copper_close")
+    china = _col("china_etf_close")
+    natgas = _col("natgas_close")
+    us10y = _col("us10y_yield")
+    stng = _col("product_tanker_close")
+    curve = _col("curve_backwardation_proxy")
+    cftc_net_pct = _col("cftc_mm_net_pct_oi")
+    eia_chg = _col("eia_crude_stocks_chg_kbbl")
+    eia_util = _col("eia_refinery_util_pct")
 
     daily_rets = np.full(n, np.nan, dtype=np.float64)
     for i in range(1, n):
@@ -257,6 +296,19 @@ def build_gbt_feature_matrix(
             cape_share,
             _rolling_ratio_7_30(pw_global, i),
             _rolling_z30(pw_hormuz_cap, i),
+            _safe_log_ret(copper, i, 5),
+            _safe_log_ret(copper, i, 20),
+            _safe_log_ret(china, i, 5),
+            _safe_log_ret(china, i, 20),
+            _safe_log_ret(natgas, i, 5),
+            _safe_diff(us10y, i, 5),
+            _safe_log_ret(stng, i, 5),
+            _safe_log_ret(curve, i, 5),
+            _safe_log_ret(curve, i, 20),
+            cftc_net_pct[i],
+            _rolling_z_window(cftc_net_pct, i, 252),
+            eia_chg[i],
+            eia_util[i],
         ]
 
     return X, prices, dates

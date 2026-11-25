@@ -79,6 +79,16 @@ RSS_FEEDS: list[tuple[str, int, str]] = [
         2,
         "https://news.google.com/rss/search?q=(%22Brent+crude%22+OR+%22WTI+crude%22+OR+%22oil+prices%22)+AND+(surge+OR+plunge+OR+OPEC+OR+inventory+OR+EIA)+when:2d&hl=en-US&gl=US&ceid=US:en",
     ),
+    (
+        "Google News - White House, Trump & Energy Policy",
+        2,
+        "https://news.google.com/rss/search?q=(Trump+OR+%22White+House%22+OR+OFAC+OR+%22Federal+Reserve%22)+AND+(oil+OR+crude+OR+OPEC+OR+Iran+OR+sanctions+OR+tariffs+OR+SPR)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "Google News - Big Oil Majors & Aramco",
+        2,
+        "https://news.google.com/rss/search?q=(%22Saudi+Aramco%22+OR+ExxonMobil+OR+Chevron+OR+Shell+OR+BP+OR+TotalEnergies+OR+%22IEA+report%22)+AND+(oil+OR+crude+OR+production+OR+refinery+OR+OSP+OR+output)+when:2d&hl=en-US&gl=US&ceid=US:en",
+    ),
 ]
 
 # Focused GDELT DOC 2.0 queries (spaced >= 6s apart to respect GDELT's ~1 req / 5s limit)
@@ -458,6 +468,14 @@ class NewsFetcher:
             (
                 "Google News - Refinery & SPR",
                 '("refinery outage" OR "pipeline outage" OR "force majeure" OR "oil stockpiles" OR "EIA crude" OR "floating storage") AND oil',
+            ),
+            (
+                "Google News - White House, Trump & Energy Policy",
+                '(Trump OR "White House" OR OFAC OR "Federal Reserve") AND (oil OR crude OR OPEC OR Iran OR sanctions OR tariffs OR SPR)',
+            ),
+            (
+                "Google News - Big Oil Majors & Aramco",
+                '("Saudi Aramco" OR ExxonMobil OR Chevron OR Shell OR BP OR TotalEnergies OR "IEA report") AND (oil OR crude OR production OR refinery OR OSP OR output)',
             ),
         ]
 

@@ -180,6 +180,35 @@ EVENT_CATEGORIES: dict[str, CategorySpec] = {
         bearish_cues=("slump", "weak demand", "cut forecast", "slowdown", "recession", "lower demand", "falls"),
         bullish_cues=("strong demand", "stimulus", "raise forecast", "record imports", "rebound", "higher demand"),
     ),
+    "us_policy_tariffs_trump": CategorySpec(
+        code="us_policy_tariffs_trump",
+        label="US Policy, Tariffs & Trump",
+        default_half_life_hours=72.0,
+        base_severity=0.70,
+        default_direction=0.0,
+        keywords=(
+            "trump", "white house", "tariff", "tariffs", "trade war",
+            "drill baby drill", "energy emergency", "us sanctions",
+            "federal reserve", "fomc", "rate cut", "rate hike",
+            "maximum pressure", "secondary tariffs",
+        ),
+        bearish_cues=("tariffs", "trade war", "drill", "boost us output", "lower oil prices", "rate hike", "waiver", "ceasefire", "peace deal"),
+        bullish_cues=("maximum pressure", "sanctions on iran", "secondary tariffs", "rate cut", "stimulus", "spr refill", "military strike", "threatens"),
+    ),
+    "oil_majors_noc_guidance": CategorySpec(
+        code="oil_majors_noc_guidance",
+        label="Big Oil Majors & NOCs",
+        default_half_life_hours=96.0,
+        base_severity=0.55,
+        default_direction=0.0,
+        keywords=(
+            "exxon", "exxonmobil", "chevron", "shell", "bp ", "totalenergies",
+            "conocophillips", "petrobras", "aramco", "official selling price",
+            "osp", "adnoc", "qatar energy", "oil major", "capex cut", "capex hike",
+        ),
+        bearish_cues=("cuts osp", "lowers osp", "boosts output", "record production", "ramps up", "expands output", "raises capex"),
+        bullish_cues=("raises osp", "hikes osp", "cuts output", "capex cut", "slashes spending", "halts production", "output drop", "force majeure"),
+    ),
 }
 
 # Chokepoints & criticality weights (aligned with monitored chokepoints in oil-tanker-tracker)
@@ -201,11 +230,12 @@ CORE_RELEVANCE_TERMS: tuple[str, ...] = (
     "bab al-mandab", "suez", "malacca", "bosphorus", "bosporus", "panama canal",
     "red sea", "eia", "spr", "shadow fleet", "dark fleet", "ofac", "shipping",
     "vessel", "maritime", "fuel", "diesel", "gasoline", "lng", "cargo",
-    "aramco", "energy", "barrels", "bpd",
+    "aramco", "energy", "barrels", "bpd", "exxon", "chevron", "shell", "totalenergies",
 )
 
 ENTITY_KEYWORDS: tuple[str, ...] = (
-    "OPEC", "EIA", "IEA", "OFAC", "UKMTO", "MARAD", "Aramco", "Iran", "Saudi Arabia",
+    "OPEC", "EIA", "IEA", "OFAC", "UKMTO", "MARAD", "Aramco", "ExxonMobil", "Chevron",
+    "Shell", "BP", "TotalEnergies", "Trump", "Fed", "Iran", "Saudi Arabia",
     "Russia", "China", "US", "Houthis", "Venezuela", "Libya", "Iraq", "UAE", "EU",
 )
 

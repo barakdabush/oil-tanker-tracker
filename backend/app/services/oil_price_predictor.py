@@ -28,7 +28,13 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chokepoint import PortWatchChokepointDaily
-from app.models.global_oil_features import OilMacroDaily, OilMarketSnapshot, OilPrice, StraitRiskDaily
+from app.models.global_oil_features import (
+    OilFundamentalsWeekly,
+    OilMacroDaily,
+    OilMarketSnapshot,
+    OilPrice,
+    StraitRiskDaily,
+)
 from app.models.news import AIMarketBriefing
 from app.schemas.forecast import (
     BottomLineForecastResponse,
@@ -280,6 +286,15 @@ async def build_bottom_line_forecast(
                 select(OilMacroDaily)
                 .where(OilMacroDaily.date >= cutoff_5y)
                 .order_by(OilMacroDaily.date.asc())
+            )
+        ).scalars().all()
+    )
+    fundamentals_rows = list(
+        (
+            await db.execute(
+                select(OilFundamentalsWeekly)
+                .where(OilFundamentalsWeekly.report_date >= cutoff_5y)
+                .order_by(OilFundamentalsWeekly.report_date.asc())
             )
         ).scalars().all()
     )
@@ -620,6 +635,52 @@ async def build_bottom_line_forecast(
         fro_5d = ((latest_macro.tanker_etf_close - prev_macro_5d.tanker_etf_close) / prev_macro_5d.tanker_etf_close) * 100.0
         mom_signals.append(_clamp(fro_5d * 8.0, -50.0, 50.0))
         mom_metrics.append(f"Tanker Equity (FRO): {fro_5d:+.1f}% 5d · VIX: {latest_macro.vix_close or '—'}")
+    if (
+        latest_macro
+        and latest_macro.curve_backwardation_proxy is not None
+        and prev_macro_5d
+        and prev_macro_5d.curve_backwardation_proxy
+    ):
+        curve_5d = ((latest_macro.curve_backwardation_proxy / prev_macro_5d.curve_backwardation_proxy) - 1.0) * 100.0
+        mom_signals.append(_clamp(curve_5d * 18.0, -55.0, 55.0))
+        mom_metrics.append(
+            f"Curve (USO/USL): {curve_5d:+.2f}% 5d ({'Backwardation' if curve_5d > 0 else 'Contango'} shift)"
+        )
+    if latest_macro and latest_macro.gulf_hurricane_risk and latest_macro.gulf_hurricane_risk >= 25.0:
+        hr = float(latest_macro.gulf_hurricane_risk)
+        mom_signals.append(_clamp(hr * 0.65, 0.0, 65.0))
+        mom_metrics.append(f"NOAA Gulf Hurricane Risk: {hr:.0f}/100")
+        physical_drivers.insert(
+            0,
+            ForecastDriver(
+                source_type="chokepoint",
+                title=f"NOAA Gulf of Mexico Hurricane Threat ({hr:.0f}/100)",
+                impact_direction="bullish",
+                detail="Active tropical system threatening US Gulf offshore crude production & refining.",
+            ),
+        )
+
+    # Latest weekly CFTC Managed Money & EIA storage signals
+    latest_cftc = next((f for f in reversed(fundamentals_rows) if f.cftc_mm_net_pct_oi is not None), None)
+    if latest_cftc is not None and latest_cftc.cftc_mm_net_pct_oi is not None:
+        mom_metrics.append(
+            f"CFTC Hedge-Fund Net: {latest_cftc.cftc_mm_net_pct_oi:+.1f}% OI ({latest_cftc.report_date.isoformat()})"
+        )
+    latest_eia = next((f for f in reversed(fundamentals_rows) if f.eia_crude_stocks_chg_kbbl is not None), None)
+    if latest_eia is not None and latest_eia.eia_crude_stocks_chg_kbbl is not None:
+        eia_chg_mbbl = latest_eia.eia_crude_stocks_chg_kbbl / 1000.0
+        # Draw (negative change) = bullish; Build (positive change) = bearish
+        mom_signals.append(_clamp(-eia_chg_mbbl * 12.0, -55.0, 55.0))
+        mom_metrics.append(f"EIA Crude Storage: {eia_chg_mbbl:+.2f}M bbl WoW")
+        if abs(eia_chg_mbbl) >= 2.0:
+            physical_drivers.append(
+                ForecastDriver(
+                    source_type="market",
+                    title=f"EIA US Crude Storage {'Draw' if eia_chg_mbbl < 0 else 'Build'} ({eia_chg_mbbl:+.2f}M bbl)",
+                    impact_direction="bullish" if eia_chg_mbbl < 0 else "bearish",
+                    detail=f"Weekly physical inventory shift as of {latest_eia.report_date.isoformat()}.",
+                )
+            )
 
     mom_score = round(_clamp(sum(mom_signals) / max(1, len(mom_signals)), -100.0, 100.0), 1)
     if abs(mom_7d_pct) >= 2.5:
@@ -636,14 +697,14 @@ async def build_bottom_line_forecast(
 
     mom_pillar = ForecastPillar(
         key="market_momentum",
-        label="Macro, Crack Spread & Momentum",
+        label="Macro, Storage, Curve & Margins",
         score=mom_score,
         weight=PILLAR_WEIGHTS["market_momentum"],
         direction=_direction_from_score(mom_score),
         summary=(
-            f"Refining margins & trend lean bullish ({mom_7d_pct:+.2f}% 7d)."
+            f"Refining margins, curve & positioning lean bullish ({mom_7d_pct:+.2f}% 7d)."
             if mom_score >= 15
-            else f"Macro & refining indicators are balanced ({mom_7d_pct:+.2f}% 7d)."
+            else f"Macro, storage & refining indicators are balanced ({mom_7d_pct:+.2f}% 7d)."
             if mom_score > -15
             else f"Downward momentum / softer margins weigh on {sym_label} ({mom_7d_pct:+.2f}% 7d)."
         ),
@@ -677,7 +738,7 @@ async def build_bottom_line_forecast(
                 ),
             )
 
-    # 6. Build 5-year daily feature table (OilPrice + OilMacroDaily + 5y PortWatch + 5y News) for GBT
+    # 6. Build 5-year daily feature table (Prices + Macro/Demand/Curve + CFTC/EIA + 5y PortWatch + 5y News)
     news_dir_by_date: dict = {}
     news_shocks_by_date: dict = {}
     for rec in memory.records:
@@ -687,8 +748,35 @@ async def build_bottom_line_forecast(
         if rec.prior_rank_score >= 55.0:
             news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
 
+    # Strictly anti-leakage forward-fill of weekly CFTC (Tue report -> Fri release, +3d lag) & EIA (Fri -> Wed, +5d lag)
+    cftc_series = [
+        (f.report_date + timedelta(days=3), f.cftc_mm_net_pct_oi)
+        for f in fundamentals_rows
+        if f.cftc_mm_net_pct_oi is not None
+    ]
+    eia_series = [
+        (f.report_date + timedelta(days=5), f.eia_crude_stocks_chg_kbbl, f.eia_refinery_util_pct)
+        for f in fundamentals_rows
+        if f.eia_crude_stocks_chg_kbbl is not None or f.eia_refinery_util_pct is not None
+    ]
+    c_idx = 0
+    e_idx = 0
+    cur_cftc: Optional[float] = None
+    cur_eia_chg: Optional[float] = None
+    cur_eia_util: Optional[float] = None
+
     gbt_daily_rows: list[dict[str, Any]] = []
     for p in price_rows:
+        while c_idx < len(cftc_series) and cftc_series[c_idx][0] <= p.price_date:
+            cur_cftc = cftc_series[c_idx][1]
+            c_idx += 1
+        while e_idx < len(eia_series) and eia_series[e_idx][0] <= p.price_date:
+            if eia_series[e_idx][1] is not None:
+                cur_eia_chg = eia_series[e_idx][1]
+            if eia_series[e_idx][2] is not None:
+                cur_eia_util = eia_series[e_idx][2]
+            e_idx += 1
+
         m = macro_by_date.get(p.price_date)
         pw = pw_by_date.get(p.price_date, {})
         gbt_daily_rows.append({
@@ -709,6 +797,15 @@ async def build_bottom_line_forecast(
             "vix_close": m.vix_close if m else None,
             "tanker_etf_close": m.tanker_etf_close if m else None,
             "energy_etf_close": m.energy_etf_close if m else None,
+            "copper_close": m.copper_close if m else None,
+            "china_etf_close": m.china_etf_close if m else None,
+            "natgas_close": m.natgas_close if m else None,
+            "us10y_yield": m.us10y_yield if m else None,
+            "product_tanker_close": m.product_tanker_close if m else None,
+            "curve_backwardation_proxy": m.curve_backwardation_proxy if m else None,
+            "cftc_mm_net_pct_oi": cur_cftc,
+            "eia_crude_stocks_chg_kbbl": cur_eia_chg,
+            "eia_refinery_util_pct": cur_eia_util,
             "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
             "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
             "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
