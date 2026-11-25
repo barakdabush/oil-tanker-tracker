@@ -144,7 +144,7 @@ async def cleanup_corrupted_positions(
 
     When ``dry_run=True``, computes exact counts without modifying the database.
     """
-    vessel_query = select(Vessel)
+    vessel_query = select(Vessel).order_by(Vessel.mmsi.asc())
     if mmsi is not None:
         vessel_query = vessel_query.where(Vessel.mmsi == mmsi)
 

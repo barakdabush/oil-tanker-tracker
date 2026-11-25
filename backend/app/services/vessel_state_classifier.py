@@ -27,6 +27,7 @@ from app.models import (
     VesselPosition,
     VesselStateHistory,
 )
+from app.services.vessel_writer import run_with_deadlock_retry
 from app.utils.geo import haversine_km
 
 logger = logging.getLogger(__name__)
@@ -141,235 +142,258 @@ class VesselStateClassifier:
         start_time = time.time()
         now = datetime.now(timezone.utc)
         recency_cutoff = now - timedelta(hours=48)
-        transitions = 0
 
-        async with async_session() as session:
-            # 1. Load ports for fast in-memory proximity lookup
-            ports = (
-                await session.execute(
-                    select(Port.id, Port.latitude, Port.longitude)
-                )
-            ).all()
+        async def _classify_once() -> tuple[int, int, int]:
+            transitions = 0
+            port_live_counts: dict[int, dict[str, list[float]]] = {}
 
-            # 2. Load recently seen vessels
-            vessels = (
-                await session.execute(
-                    select(Vessel).where(
-                        Vessel.last_seen >= recency_cutoff,
-                        Vessel.last_lat.isnot(None),
-                        Vessel.last_lon.isnot(None),
-                    )
-                )
-            ).scalars().all()
-
-            if not vessels:
-                return {"classified": 0, "transitions": 0}
-
-            mmsis = [v.mmsi for v in vessels]
-
-            # 3. Open dark gaps
-            dark_mmsis = set(
-                (
+            async with async_session() as session:
+                # 1. Load ports for fast in-memory proximity lookup
+                ports = (
                     await session.execute(
-                        select(AISGap.mmsi).where(
-                            AISGap.mmsi.in_(mmsis),
-                            AISGap.gap_end.is_(None),
-                            AISGap.status.in_(["dark", "extended_dark"]),
+                        select(Port.id, Port.latitude, Port.longitude)
+                    )
+                ).all()
+
+                # 2. Load recently seen vessels in ascending MMSI order so row
+                # locks are acquired in the same order as AIS ingestion upserts
+                vessels = (
+                    await session.execute(
+                        select(Vessel)
+                        .where(
+                            Vessel.last_seen >= recency_cutoff,
+                            Vessel.last_lat.isnot(None),
+                            Vessel.last_lon.isnot(None),
                         )
+                        .order_by(Vessel.mmsi.asc())
                     )
                 ).scalars().all()
-            )
 
-            # 4. Active STS encounters in the last 6h
-            sts_cutoff = now - timedelta(hours=6)
-            sts_rows = (
-                await session.execute(
-                    select(STSEvent.vessel_a_mmsi, STSEvent.vessel_b_mmsi).where(
-                        and_(
-                            STSEvent.start_time >= sts_cutoff,
-                            STSEvent.end_time.is_(None),
-                        )
-                    )
-                )
-            ).all()
-            sts_mmsis = {
-                m for row in sts_rows for m in (row.vessel_a_mmsi, row.vessel_b_mmsi)
-            }
+                if not vessels:
+                    return 0, 0, 0
 
-            # 5. Latest nav_status per MMSI (last 6h)
-            nav_rows = (
-                await session.execute(
-                    text("""
-                        SELECT DISTINCT ON (mmsi) mmsi, nav_status
-                        FROM vessel_positions
-                        WHERE time >= :cutoff AND nav_status IS NOT NULL
-                        ORDER BY mmsi, time DESC
-                    """),
-                    {"cutoff": now - timedelta(hours=6)},
-                )
-            ).all()
-            nav_by_mmsi = {r.mmsi: r.nav_status for r in nav_rows}
+                mmsis = [v.mmsi for v in vessels]
 
-            # 6. Latest cargo event per MMSI (last 30d)
-            cargo_rows = (
-                await session.execute(
-                    text("""
-                        SELECT DISTINCT ON (mmsi) mmsi, event_type
-                        FROM cargo_events
-                        WHERE created_at >= :cutoff
-                        ORDER BY mmsi, created_at DESC
-                    """),
-                    {"cutoff": now - timedelta(days=30)},
-                )
-            ).all()
-            cargo_by_mmsi = {r.mmsi: r.event_type for r in cargo_rows}
-
-            # 7. Classify each vessel
-            port_live_counts: dict[int, dict[str, list[float]]] = {}
-            for v in vessels:
-                # Update observed draft bounds
-                if v.draft is not None and 1.0 < v.draft < 35.0:
-                    if v.min_draft is None or v.draft < v.min_draft:
-                        v.min_draft = v.draft
-                    if v.max_draft is None or v.draft > v.max_draft:
-                        v.max_draft = v.draft
-
-                cargo_status = determine_cargo_status(
-                    v.draft, v.min_draft, v.max_draft, cargo_by_mmsi.get(v.mmsi)
-                )
-                v.cargo_status = cargo_status
-
-                # Find nearest port within ~0.4 deg (~44 km)
-                nearest_port_id = None
-                nearest_dist_km = None
-                for pid, plat, plon in ports:
-                    if abs(v.last_lat - plat) > 0.45 or abs(v.last_lon - plon) > 0.55:
-                        continue
-                    d_km = haversine_km(v.last_lat, v.last_lon, plat, plon)
-                    if nearest_dist_km is None or d_km < nearest_dist_km:
-                        nearest_dist_km = d_km
-                        nearest_port_id = pid
-
-                age_hours = (now - v.last_seen).total_seconds() / 3600.0 if v.last_seen else 999.0
-                stationary_days = 0.0
-                if v.operational_state in ("idle_drifting", "floating_storage") and v.state_since:
-                    stationary_days = (now - v.state_since).total_seconds() / 86400.0
-
-                new_state, new_port_id = classify_vessel_state(
-                    age_hours=age_hours,
-                    speed=v.last_speed,
-                    nav_status=nav_by_mmsi.get(v.mmsi),
-                    cargo_status=cargo_status,
-                    is_dark=(v.mmsi in dark_mmsis and age_hours >= DARK_AGE_HOURS),
-                    in_active_sts=v.mmsi in sts_mmsis,
-                    nearest_port_id=nearest_port_id,
-                    nearest_port_dist_km=nearest_dist_km,
-                    stationary_days=stationary_days,
-                )
-
-                if new_state != v.operational_state or new_port_id != v.current_port_id:
-                    # Close open interval in vessel_state_history
-                    open_rows = (
+                # 3. Open dark gaps
+                dark_mmsis = set(
+                    (
                         await session.execute(
-                            select(VesselStateHistory).where(
-                                VesselStateHistory.mmsi == v.mmsi,
-                                VesselStateHistory.ended_at.is_(None),
+                            select(AISGap.mmsi).where(
+                                AISGap.mmsi.in_(mmsis),
+                                AISGap.gap_end.is_(None),
+                                AISGap.status.in_(["dark", "extended_dark"]),
                             )
                         )
                     ).scalars().all()
-                    for open_row in open_rows:
-                        open_row.ended_at = now
-                        open_row.duration_hours = round(
-                            max(0.0, (now - open_row.started_at).total_seconds() / 3600.0), 2
-                        )
+                )
 
-                    # Open new interval
-                    session.add(
-                        VesselStateHistory(
-                            mmsi=v.mmsi,
-                            state=new_state,
-                            cargo_status=cargo_status,
-                            port_id=new_port_id,
-                            started_at=now,
-                            ended_at=None,
-                            duration_hours=None,
-                            start_lat=v.last_lat,
-                            start_lon=v.last_lon,
-                        )
-                    )
-                    v.operational_state = new_state
-                    v.state_since = now
-                    v.current_port_id = new_port_id
-                    transitions += 1
-
-                # Accumulate live port congestion stats
-                if new_port_id is not None and new_state in ("at_port", "anchored_waiting"):
-                    bucket = port_live_counts.setdefault(
-                        new_port_id, {"berthed": [], "anchored": []}
-                    )
-                    wait_h = (
-                        max(0.0, (now - v.state_since).total_seconds() / 3600.0)
-                        if v.state_since
-                        else 0.0
-                    )
-                    if new_state == "at_port":
-                        bucket["berthed"].append(wait_h)
-                    else:
-                        bucket["anchored"].append(wait_h)
-
-            # 8. Upsert today's port_daily_stats
-            today = now.date()
-            if port_live_counts:
-                # Fetch 90-day peak per port for utilization_pct
-                peak_rows = (
+                # 4. Active STS encounters in the last 6h
+                sts_cutoff = now - timedelta(hours=6)
+                sts_rows = (
                     await session.execute(
-                        select(
-                            PortDailyStat.port_id,
-                            func.max(PortDailyStat.berthed_count + PortDailyStat.anchored_waiting_count).label("peak"),
+                        select(STSEvent.vessel_a_mmsi, STSEvent.vessel_b_mmsi).where(
+                            and_(
+                                STSEvent.start_time >= sts_cutoff,
+                                STSEvent.end_time.is_(None),
+                            )
                         )
-                        .where(PortDailyStat.stat_date >= today - timedelta(days=90))
-                        .group_by(PortDailyStat.port_id)
                     )
                 ).all()
-                peaks = {r.port_id: int(r.peak or 0) for r in peak_rows}
+                sts_mmsis = {
+                    m for row in sts_rows for m in (row.vessel_a_mmsi, row.vessel_b_mmsi)
+                }
 
-                for pid, counts in port_live_counts.items():
-                    berthed = len(counts["berthed"])
-                    anchored = len(counts["anchored"])
-                    total_at_port = berthed + anchored
-                    peak = max(peaks.get(pid, 0), total_at_port, 1)
-                    util_pct = round(min(100.0, (total_at_port / peak) * 100.0), 1)
-                    avg_wait = (
-                        round(sum(counts["anchored"]) / anchored, 2) if anchored > 0 else 0.0
+                # 5. Latest nav_status per MMSI (last 6h)
+                nav_rows = (
+                    await session.execute(
+                        text("""
+                            SELECT DISTINCT ON (mmsi) mmsi, nav_status
+                            FROM vessel_positions
+                            WHERE time >= :cutoff AND nav_status IS NOT NULL
+                            ORDER BY mmsi, time DESC
+                        """),
+                        {"cutoff": now - timedelta(hours=6)},
+                    )
+                ).all()
+                nav_by_mmsi = {r.mmsi: r.nav_status for r in nav_rows}
+
+                # 6. Latest cargo event per MMSI (last 30d)
+                cargo_rows = (
+                    await session.execute(
+                        text("""
+                            SELECT DISTINCT ON (mmsi) mmsi, event_type
+                            FROM cargo_events
+                            WHERE created_at >= :cutoff
+                            ORDER BY mmsi, created_at DESC
+                        """),
+                        {"cutoff": now - timedelta(days=30)},
+                    )
+                ).all()
+                cargo_by_mmsi = {r.mmsi: r.event_type for r in cargo_rows}
+
+                # 7. Prefetch all open state history intervals in a single query
+                # before mutating Vessel objects so SQLAlchemy never autoflushes
+                # partial UPDATEs mid-loop and holds locks during SELECTs.
+                open_history_rows = (
+                    await session.execute(
+                        select(VesselStateHistory).where(
+                            VesselStateHistory.mmsi.in_(mmsis),
+                            VesselStateHistory.ended_at.is_(None),
+                        )
+                    )
+                ).scalars().all()
+                open_history_by_mmsi: dict[int, list[VesselStateHistory]] = {}
+                for row in open_history_rows:
+                    open_history_by_mmsi.setdefault(row.mmsi, []).append(row)
+
+                # 8. Classify each vessel in memory (no DB round-trips inside loop)
+                for v in vessels:
+                    # Update observed draft bounds
+                    if v.draft is not None and 1.0 < v.draft < 35.0:
+                        if v.min_draft is None or v.draft < v.min_draft:
+                            v.min_draft = v.draft
+                        if v.max_draft is None or v.draft > v.max_draft:
+                            v.max_draft = v.draft
+
+                    cargo_status = determine_cargo_status(
+                        v.draft, v.min_draft, v.max_draft, cargo_by_mmsi.get(v.mmsi)
+                    )
+                    v.cargo_status = cargo_status
+
+                    # Find nearest port within ~0.4 deg (~44 km)
+                    nearest_port_id = None
+                    nearest_dist_km = None
+                    for pid, plat, plon in ports:
+                        if abs(v.last_lat - plat) > 0.45 or abs(v.last_lon - plon) > 0.55:
+                            continue
+                        d_km = haversine_km(v.last_lat, v.last_lon, plat, plon)
+                        if nearest_dist_km is None or d_km < nearest_dist_km:
+                            nearest_dist_km = d_km
+                            nearest_port_id = pid
+
+                    age_hours = (now - v.last_seen).total_seconds() / 3600.0 if v.last_seen else 999.0
+                    stationary_days = 0.0
+                    if v.operational_state in ("idle_drifting", "floating_storage") and v.state_since:
+                        stationary_days = (now - v.state_since).total_seconds() / 86400.0
+
+                    new_state, new_port_id = classify_vessel_state(
+                        age_hours=age_hours,
+                        speed=v.last_speed,
+                        nav_status=nav_by_mmsi.get(v.mmsi),
+                        cargo_status=cargo_status,
+                        is_dark=(v.mmsi in dark_mmsis and age_hours >= DARK_AGE_HOURS),
+                        in_active_sts=v.mmsi in sts_mmsis,
+                        nearest_port_id=nearest_port_id,
+                        nearest_port_dist_km=nearest_dist_km,
+                        stationary_days=stationary_days,
                     )
 
-                    stmt = pg_insert(PortDailyStat).values(
-                        port_id=pid,
-                        stat_date=today,
-                        berthed_count=berthed,
-                        anchored_waiting_count=anchored,
-                        avg_wait_hours=avg_wait,
-                        utilization_pct=util_pct,
-                        updated_at=now,
-                    )
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["port_id", "stat_date"],
-                        set_={
-                            "berthed_count": stmt.excluded.berthed_count,
-                            "anchored_waiting_count": stmt.excluded.anchored_waiting_count,
-                            "avg_wait_hours": stmt.excluded.avg_wait_hours,
-                            "utilization_pct": stmt.excluded.utilization_pct,
-                            "updated_at": stmt.excluded.updated_at,
-                        },
-                    )
-                    await session.execute(stmt)
+                    if new_state != v.operational_state or new_port_id != v.current_port_id:
+                        # Close open interval in vessel_state_history
+                        for open_row in open_history_by_mmsi.get(v.mmsi, ()):
+                            open_row.ended_at = now
+                            open_row.duration_hours = round(
+                                max(0.0, (now - open_row.started_at).total_seconds() / 3600.0), 2
+                            )
 
-            await session.commit()
+                        # Open new interval
+                        session.add(
+                            VesselStateHistory(
+                                mmsi=v.mmsi,
+                                state=new_state,
+                                cargo_status=cargo_status,
+                                port_id=new_port_id,
+                                started_at=now,
+                                ended_at=None,
+                                duration_hours=None,
+                                start_lat=v.last_lat,
+                                start_lon=v.last_lon,
+                            )
+                        )
+                        v.operational_state = new_state
+                        v.state_since = now
+                        v.current_port_id = new_port_id
+                        transitions += 1
+
+                    # Accumulate live port congestion stats
+                    if new_port_id is not None and new_state in ("at_port", "anchored_waiting"):
+                        bucket = port_live_counts.setdefault(
+                            new_port_id, {"berthed": [], "anchored": []}
+                        )
+                        wait_h = (
+                            max(0.0, (now - v.state_since).total_seconds() / 3600.0)
+                            if v.state_since
+                            else 0.0
+                        )
+                        if new_state == "at_port":
+                            bucket["berthed"].append(wait_h)
+                        else:
+                            bucket["anchored"].append(wait_h)
+
+                # 9. Upsert today's port_daily_stats (with no_autoflush on the
+                # read so Vessel UPDATEs flush together right before commit)
+                today = now.date()
+                if port_live_counts:
+                    with session.no_autoflush:
+                        peak_rows = (
+                            await session.execute(
+                                select(
+                                    PortDailyStat.port_id,
+                                    func.max(
+                                        PortDailyStat.berthed_count
+                                        + PortDailyStat.anchored_waiting_count
+                                    ).label("peak"),
+                                )
+                                .where(PortDailyStat.stat_date >= today - timedelta(days=90))
+                                .group_by(PortDailyStat.port_id)
+                            )
+                        ).all()
+                    peaks = {r.port_id: int(r.peak or 0) for r in peak_rows}
+
+                    for pid, counts in sorted(port_live_counts.items()):
+                        berthed = len(counts["berthed"])
+                        anchored = len(counts["anchored"])
+                        total_at_port = berthed + anchored
+                        peak = max(peaks.get(pid, 0), total_at_port, 1)
+                        util_pct = round(min(100.0, (total_at_port / peak) * 100.0), 1)
+                        avg_wait = (
+                            round(sum(counts["anchored"]) / anchored, 2) if anchored > 0 else 0.0
+                        )
+
+                        stmt = pg_insert(PortDailyStat).values(
+                            port_id=pid,
+                            stat_date=today,
+                            berthed_count=berthed,
+                            anchored_waiting_count=anchored,
+                            avg_wait_hours=avg_wait,
+                            utilization_pct=util_pct,
+                            updated_at=now,
+                        )
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["port_id", "stat_date"],
+                            set_={
+                                "berthed_count": stmt.excluded.berthed_count,
+                                "anchored_waiting_count": stmt.excluded.anchored_waiting_count,
+                                "avg_wait_hours": stmt.excluded.avg_wait_hours,
+                                "utilization_pct": stmt.excluded.utilization_pct,
+                                "updated_at": stmt.excluded.updated_at,
+                            },
+                        )
+                        await session.execute(stmt)
+
+                await session.commit()
+
+            return len(vessels), transitions, len(port_live_counts)
+
+        classified, transitions, ports_touched = await run_with_deadlock_retry(
+            _classify_once,
+            label="vessel_state_classifier.classify_all",
+        )
 
         elapsed = round(time.time() - start_time, 2)
         if transitions > 0:
             logger.info(
-                f"VesselStateClassifier: classified {len(vessels)} vessels, "
-                f"{transitions} transitions across {len(port_live_counts)} ports in {elapsed}s"
+                f"VesselStateClassifier: classified {classified} vessels, "
+                f"{transitions} transitions across {ports_touched} ports in {elapsed}s"
             )
-        return {"classified": len(vessels), "transitions": transitions}
+        return {"classified": classified, "transitions": transitions}
