@@ -336,3 +336,16 @@ def test_gulf_hurricane_risk_and_policy_and_oil_majors_news():
     assert aramco_ev.relevant
     assert aramco_ev.event_type == "oil_majors_noc_guidance"
     assert aramco_ev.direction > 0
+
+    # Keyless EIA weekly HTML table parser
+    from app.services.oil_fundamentals_fetcher import parse_eia_weekly_html
+
+    sample_html = """
+    <tr>
+      <td class='B6'>&nbsp;&nbsp;2025-Jan</td>
+      <td class='B5'>01/03&nbsp;</td><td class='B3'>414,642&nbsp;</td>
+      <td class='B5'>01/10&nbsp;</td><td class='B3'>412,680&nbsp;</td>
+    </tr>
+    """
+    parsed = parse_eia_weekly_html(sample_html, start_date=date(2025, 1, 1))
+    assert parsed == {date(2025, 1, 3): 414642.0, date(2025, 1, 10): 412680.0}
