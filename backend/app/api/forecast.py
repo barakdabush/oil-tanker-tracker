@@ -5,7 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.schemas.forecast import BottomLineForecastResponse
-from app.services.oil_price_predictor import build_bottom_line_forecast
+from app.services.oil_price_predictor import (
+    build_bottom_line_forecast,
+    build_feature_importance_report,
+)
 
 router = APIRouter()
 
@@ -15,8 +18,24 @@ async def get_bottom_line_forecast(
     symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the unified Bottom-Line oil price forecast (24h, 3d, 7d) for Brent (BZ=F) or WTI (CL=F)."""
+    """Return the unified Bottom-Line oil price forecast (3d, 7d, 14d) for Brent (BZ=F) or WTI (CL=F)."""
     return await build_bottom_line_forecast(db, symbol=symbol)
+
+
+@router.get("/feature-importance")
+async def get_feature_importance(
+    symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
+    horizon: str = Query("14d", pattern="^(3d|7d|14d)$"),
+    include_all_candidates: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return strictly out-of-sample permutation feature importance ranked by OOS accuracy lift."""
+    return await build_feature_importance_report(
+        db,
+        symbol=symbol,
+        horizon=horizon,
+        include_all_candidates=include_all_candidates,
+    )
 
 
 @router.post("/backfill-macro")

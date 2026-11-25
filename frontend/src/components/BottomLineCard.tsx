@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { getApiUrl } from "@/lib/config";
-import type { BottomLineForecastResponse, ForecastDriver, ForecastPillar } from "@/lib/types";
+import type {
+  BottomLineForecastResponse,
+  FeatureImportanceResponse,
+  ForecastDriver,
+  ForecastPillar,
+} from "@/lib/types";
 
 interface BottomLineCardProps {
   compact?: boolean;
@@ -53,6 +58,10 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
   const [forecast, setForecast] = useState<BottomLineForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showImportance, setShowImportance] = useState(false);
+  const [showAllFeatures, setShowAllFeatures] = useState(false);
+  const [importance, setImportance] = useState<FeatureImportanceResponse | null>(null);
+  const [impLoading, setImpLoading] = useState(false);
 
   const loadForecast = useCallback(async (sym: "BZ=F" | "CL=F") => {
     const API = getApiUrl();
@@ -79,6 +88,28 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
   useEffect(() => {
     loadForecast(symbol);
   }, [symbol, loadForecast]);
+
+  useEffect(() => {
+    if (compact || !showImportance) return;
+    let cancelled = false;
+    const API = getApiUrl();
+    setImpLoading(true);
+    fetch(
+      `${API}/api/forecast/feature-importance?symbol=${encodeURIComponent(symbol)}&horizon=${encodeURIComponent(horizon)}&include_all_candidates=true`,
+      { cache: "no-store" }
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: FeatureImportanceResponse | null) => {
+        if (!cancelled && data) setImportance(data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setImpLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [compact, showImportance, symbol, horizon]);
 
   if (loading && !forecast) {
     return (
@@ -478,6 +509,159 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Collapsible Measured Out-of-Sample Feature Importance (Full /market view) */}
+      {!compact && (
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: "1px solid rgba(148, 163, 184, 0.14)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => setShowImportance((v) => !v)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                background: "rgba(56, 189, 248, 0.1)",
+                border: "1px solid rgba(56, 189, 248, 0.28)",
+                color: "#7dd3fc",
+                borderRadius: 8,
+                padding: "6px 12px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              <span>🔬 Top Model Features (Measured OOS Importance)</span>
+              <span style={{ fontSize: 10 }}>{showImportance ? "▲ Hide" : "▼ Inspect"}</span>
+            </button>
+            {showImportance && importance && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--text-muted)", flexWrap: "wrap" }}>
+                <span>
+                  OOS Test: <strong style={{ color: "#e2e8f0" }}>{importance.test_days}d</strong> (Train {importance.train_days}d)
+                </span>
+                {importance.baseline_oos_accuracy_pct != null && (
+                  <span>
+                    Baseline Acc: <strong style={{ color: "#38bdf8" }}>{importance.baseline_oos_accuracy_pct.toFixed(1)}%</strong>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAllFeatures((v) => !v)}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid var(--border)",
+                    color: "var(--text-secondary)",
+                    borderRadius: 6,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    cursor: "pointer",
+                  }}
+                >
+                  {showAllFeatures ? "Top 15" : `All ${importance.features.length}`}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {showImportance && (
+            <div style={{ marginTop: 12 }}>
+              {impLoading && !importance ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Measuring out-of-sample permutation importance across all candidate features…
+                </div>
+              ) : importance && importance.features.length > 0 ? (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid rgba(148,163,184,0.18)", color: "var(--text-muted)", textAlign: "left" }}>
+                        <th style={{ padding: "6px 8px", fontWeight: 600 }}>#</th>
+                        <th style={{ padding: "6px 8px", fontWeight: 600 }}>Feature</th>
+                        <th style={{ padding: "6px 8px", fontWeight: 600 }}>Group</th>
+                        <th style={{ padding: "6px 8px", fontWeight: 600 }}>Model</th>
+                        <th style={{ padding: "6px 8px", fontWeight: 600, textAlign: "right" }}>OOS Accuracy Lift</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(showAllFeatures ? importance.features : importance.features.slice(0, 15)).map((f, i) => {
+                        const liftColor =
+                          f.importance_pct >= 0.25
+                            ? "#34d399"
+                            : f.importance_pct <= -0.25
+                            ? "#f87171"
+                            : "#94a3b8";
+                        return (
+                          <tr
+                            key={f.feature}
+                            style={{ borderBottom: "1px solid rgba(148,163,184,0.08)" }}
+                          >
+                            <td style={{ padding: "6px 8px", color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>
+                              {i + 1}
+                            </td>
+                            <td style={{ padding: "6px 8px", color: "var(--text-primary)", fontWeight: 600 }}>
+                              {f.label}
+                            </td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "2px 7px",
+                                  borderRadius: 999,
+                                  background: "rgba(148,163,184,0.14)",
+                                  color: "#cbd5e1",
+                                }}
+                              >
+                                {f.group}
+                              </span>
+                            </td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "2px 7px",
+                                  borderRadius: 999,
+                                  background: f.in_active_model ? "rgba(56,189,248,0.14)" : "rgba(148,163,184,0.1)",
+                                  color: f.in_active_model ? "#7dd3fc" : "#94a3b8",
+                                }}
+                              >
+                                {f.in_active_model ? "Active" : "Candidate"}
+                              </span>
+                            </td>
+                            <td
+                              style={{
+                                padding: "6px 8px",
+                                textAlign: "right",
+                                fontWeight: 700,
+                                color: liftColor,
+                                fontVariantNumeric: "tabular-nums",
+                              }}
+                            >
+                              {f.importance_pct >= 0 ? "+" : ""}
+                              {f.importance_pct.toFixed(2)}%{" "}
+                              <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-muted)" }}>
+                                (±{f.std_pct.toFixed(2)})
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Not enough historical trading days to compute out-of-sample feature importance.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

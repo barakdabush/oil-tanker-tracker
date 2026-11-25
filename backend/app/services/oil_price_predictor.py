@@ -42,7 +42,10 @@ from app.schemas.forecast import (
     ForecastPillar,
     HorizonForecast,
 )
-from app.services.gbt_oil_model import run_walkforward_wave_classifier
+from app.services.gbt_oil_model import (
+    compute_oos_feature_importance,
+    run_walkforward_wave_classifier,
+)
 from app.services.news_predictor import build_news_analog_memory
 
 PILLAR_WEIGHTS = {
@@ -739,82 +742,13 @@ async def build_bottom_line_forecast(
             )
 
     # 6. Build 5-year daily feature table (Prices + Macro/Demand/Curve + CFTC/EIA + 5y PortWatch + 5y News)
-    news_dir_by_date: dict = {}
-    news_shocks_by_date: dict = {}
-    for rec in memory.records:
-        d = rec.market_aligned_at.date()
-        w = max(0.2, rec.prior_rank_score / 100.0)
-        news_dir_by_date[d] = news_dir_by_date.get(d, 0.0) + rec.effective_direction * w
-        if rec.prior_rank_score >= 55.0:
-            news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
-
-    # Strictly anti-leakage forward-fill of weekly CFTC (Tue report -> Fri release, +3d lag) & EIA (Fri -> Wed, +5d lag)
-    cftc_series = [
-        (f.report_date + timedelta(days=3), f.cftc_mm_net_pct_oi)
-        for f in fundamentals_rows
-        if f.cftc_mm_net_pct_oi is not None
-    ]
-    eia_series = [
-        (f.report_date + timedelta(days=5), f.eia_crude_stocks_chg_kbbl, f.eia_refinery_util_pct)
-        for f in fundamentals_rows
-        if f.eia_crude_stocks_chg_kbbl is not None or f.eia_refinery_util_pct is not None
-    ]
-    c_idx = 0
-    e_idx = 0
-    cur_cftc: Optional[float] = None
-    cur_eia_chg: Optional[float] = None
-    cur_eia_util: Optional[float] = None
-
-    gbt_daily_rows: list[dict[str, Any]] = []
-    for p in price_rows:
-        while c_idx < len(cftc_series) and cftc_series[c_idx][0] <= p.price_date:
-            cur_cftc = cftc_series[c_idx][1]
-            c_idx += 1
-        while e_idx < len(eia_series) and eia_series[e_idx][0] <= p.price_date:
-            if eia_series[e_idx][1] is not None:
-                cur_eia_chg = eia_series[e_idx][1]
-            if eia_series[e_idx][2] is not None:
-                cur_eia_util = eia_series[e_idx][2]
-            e_idx += 1
-
-        m = macro_by_date.get(p.price_date)
-        pw = pw_by_date.get(p.price_date, {})
-        gbt_daily_rows.append({
-            "date": p.price_date,
-            "brent_close_usd": p.brent_close_usd,
-            "wti_close_usd": p.wti_close_usd,
-            "crack_spread_321_usd": m.crack_spread_321_usd if m else None,
-            "brent_wti_spread_usd": (
-                m.brent_wti_spread_usd
-                if (m and m.brent_wti_spread_usd is not None)
-                else (
-                    round(p.brent_close_usd - p.wti_close_usd, 2)
-                    if (p.brent_close_usd is not None and p.wti_close_usd is not None)
-                    else None
-                )
-            ),
-            "dxy_close": m.dxy_close if m else None,
-            "vix_close": m.vix_close if m else None,
-            "tanker_etf_close": m.tanker_etf_close if m else None,
-            "energy_etf_close": m.energy_etf_close if m else None,
-            "copper_close": m.copper_close if m else None,
-            "china_etf_close": m.china_etf_close if m else None,
-            "natgas_close": m.natgas_close if m else None,
-            "us10y_yield": m.us10y_yield if m else None,
-            "product_tanker_close": m.product_tanker_close if m else None,
-            "curve_backwardation_proxy": m.curve_backwardation_proxy if m else None,
-            "cftc_mm_net_pct_oi": cur_cftc,
-            "eia_crude_stocks_chg_kbbl": cur_eia_chg,
-            "eia_refinery_util_pct": cur_eia_util,
-            "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
-            "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
-            "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
-            "pw_hormuz_capacity": pw.get("pw_hormuz_capacity"),
-            "pw_bab_tankers": pw.get("pw_bab_tankers"),
-            "pw_suez_tankers": pw.get("pw_suez_tankers"),
-            "pw_cape_tankers": pw.get("pw_cape_tankers"),
-            "pw_global_tankers": pw.get("pw_global_tankers"),
-        })
+    gbt_daily_rows = _assemble_gbt_daily_rows(
+        price_rows=price_rows,
+        macro_by_date=macro_by_date,
+        pw_by_date=pw_by_date,
+        fundamentals_rows=fundamentals_rows,
+        news_records=memory.records,
+    )
 
     # 7. Multi-day Wave Forecasts (3d / 7d / 14d) blending Pillars + News Analogs + 5y Wave GBT
     news_ret_map = {"3d": news_ret_3d, "7d": news_ret_7d, "14d": news_ret_7d * 1.25}
@@ -992,3 +926,194 @@ async def build_bottom_line_forecast(
         latest_briefing_bias=latest_briefing.market_bias if latest_briefing else None,
         latest_briefing_summary=latest_briefing.executive_summary if latest_briefing else None,
     )
+
+
+def _assemble_gbt_daily_rows(
+    price_rows: list[OilPrice],
+    macro_by_date: dict[Any, OilMacroDaily],
+    pw_by_date: dict[Any, dict[str, float]],
+    fundamentals_rows: list[OilFundamentalsWeekly],
+    news_records: list[Any],
+) -> list[dict[str, Any]]:
+    """Build 5-year daily feature rows with strict +3d CFTC / +5d EIA publication lags."""
+    news_dir_by_date: dict = {}
+    news_shocks_by_date: dict = {}
+    for rec in news_records:
+        d = rec.market_aligned_at.date()
+        w = max(0.2, rec.prior_rank_score / 100.0)
+        news_dir_by_date[d] = news_dir_by_date.get(d, 0.0) + rec.effective_direction * w
+        if rec.prior_rank_score >= 55.0:
+            news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
+
+    cftc_series = [
+        (f.report_date + timedelta(days=3), f.cftc_mm_net_pct_oi)
+        for f in fundamentals_rows
+        if f.cftc_mm_net_pct_oi is not None
+    ]
+    eia_series = [
+        (f.report_date + timedelta(days=5), f.eia_crude_stocks_chg_kbbl, f.eia_refinery_util_pct)
+        for f in fundamentals_rows
+        if f.eia_crude_stocks_chg_kbbl is not None or f.eia_refinery_util_pct is not None
+    ]
+    c_idx = 0
+    e_idx = 0
+    cur_cftc: Optional[float] = None
+    cur_eia_chg: Optional[float] = None
+    cur_eia_util: Optional[float] = None
+
+    gbt_daily_rows: list[dict[str, Any]] = []
+    for p in price_rows:
+        while c_idx < len(cftc_series) and cftc_series[c_idx][0] <= p.price_date:
+            cur_cftc = cftc_series[c_idx][1]
+            c_idx += 1
+        while e_idx < len(eia_series) and eia_series[e_idx][0] <= p.price_date:
+            if eia_series[e_idx][1] is not None:
+                cur_eia_chg = eia_series[e_idx][1]
+            if eia_series[e_idx][2] is not None:
+                cur_eia_util = eia_series[e_idx][2]
+            e_idx += 1
+
+        m = macro_by_date.get(p.price_date)
+        pw = pw_by_date.get(p.price_date, {})
+        gbt_daily_rows.append({
+            "date": p.price_date,
+            "brent_close_usd": p.brent_close_usd,
+            "wti_close_usd": p.wti_close_usd,
+            "crack_spread_321_usd": m.crack_spread_321_usd if m else None,
+            "brent_wti_spread_usd": (
+                m.brent_wti_spread_usd
+                if (m and m.brent_wti_spread_usd is not None)
+                else (
+                    round(p.brent_close_usd - p.wti_close_usd, 2)
+                    if (p.brent_close_usd is not None and p.wti_close_usd is not None)
+                    else None
+                )
+            ),
+            "dxy_close": m.dxy_close if m else None,
+            "vix_close": m.vix_close if m else None,
+            "tanker_etf_close": m.tanker_etf_close if m else None,
+            "energy_etf_close": m.energy_etf_close if m else None,
+            "copper_close": m.copper_close if m else None,
+            "china_etf_close": m.china_etf_close if m else None,
+            "natgas_close": m.natgas_close if m else None,
+            "us10y_yield": m.us10y_yield if m else None,
+            "product_tanker_close": m.product_tanker_close if m else None,
+            "curve_backwardation_proxy": m.curve_backwardation_proxy if m else None,
+            "cftc_mm_net_pct_oi": cur_cftc,
+            "eia_crude_stocks_chg_kbbl": cur_eia_chg,
+            "eia_refinery_util_pct": cur_eia_util,
+            "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
+            "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
+            "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
+            "pw_hormuz_capacity": pw.get("pw_hormuz_capacity"),
+            "pw_bab_tankers": pw.get("pw_bab_tankers"),
+            "pw_suez_tankers": pw.get("pw_suez_tankers"),
+            "pw_cape_tankers": pw.get("pw_cape_tankers"),
+            "pw_global_tankers": pw.get("pw_global_tankers"),
+        })
+    return gbt_daily_rows
+
+
+async def build_feature_importance_report(
+    db: AsyncSession,
+    symbol: str = "BZ=F",
+    horizon: str = "14d",
+    include_all_candidates: bool = True,
+) -> dict[str, Any]:
+    """Compute strictly out-of-sample permutation feature importance across 5-year history."""
+    now = datetime.now(timezone.utc)
+    cutoff_5y = (now - timedelta(days=1850)).date()
+    sym_label = "Brent Crude" if symbol == "BZ=F" else "WTI Crude"
+    price_key = "brent_close_usd" if symbol == "BZ=F" else "wti_close_usd"
+    horizon_days = {"3d": 3, "7d": 7, "14d": 14}.get(horizon, 14)
+
+    price_rows = list(
+        (
+            await db.execute(
+                select(OilPrice)
+                .where(OilPrice.price_date >= cutoff_5y)
+                .order_by(OilPrice.price_date.asc())
+            )
+        ).scalars().all()
+    )
+    macro_rows = list(
+        (
+            await db.execute(
+                select(OilMacroDaily)
+                .where(OilMacroDaily.date >= cutoff_5y)
+                .order_by(OilMacroDaily.date.asc())
+            )
+        ).scalars().all()
+    )
+    fundamentals_rows = list(
+        (
+            await db.execute(
+                select(OilFundamentalsWeekly)
+                .where(OilFundamentalsWeekly.report_date >= cutoff_5y)
+                .order_by(OilFundamentalsWeekly.report_date.asc())
+            )
+        ).scalars().all()
+    )
+    pw_rows = list(
+        (
+            await db.execute(
+                select(
+                    PortWatchChokepointDaily.date,
+                    PortWatchChokepointDaily.portname,
+                    PortWatchChokepointDaily.n_tanker,
+                    PortWatchChokepointDaily.capacity_tanker,
+                )
+                .where(PortWatchChokepointDaily.date >= cutoff_5y)
+            )
+        ).all()
+    )
+    pw_by_date: dict = {}
+    for pw_d, pname, n_t, cap_t in pw_rows:
+        bucket = pw_by_date.setdefault(
+            pw_d,
+            {
+                "pw_hormuz_tankers": 0.0,
+                "pw_hormuz_capacity": 0.0,
+                "pw_bab_tankers": 0.0,
+                "pw_suez_tankers": 0.0,
+                "pw_cape_tankers": 0.0,
+                "pw_global_tankers": 0.0,
+            },
+        )
+        nt_val = float(n_t or 0.0)
+        cap_val = float(cap_t or 0.0)
+        bucket["pw_global_tankers"] += nt_val
+        p_low = (pname or "").lower()
+        if "hormuz" in p_low:
+            bucket["pw_hormuz_tankers"] += nt_val
+            bucket["pw_hormuz_capacity"] += cap_val
+        elif "mandeb" in p_low:
+            bucket["pw_bab_tankers"] += nt_val
+        elif "suez" in p_low:
+            bucket["pw_suez_tankers"] += nt_val
+        elif "good hope" in p_low or "cape" in p_low:
+            bucket["pw_cape_tankers"] += nt_val
+
+    memory = await build_news_analog_memory(db, symbol=symbol)
+    daily_rows = _assemble_gbt_daily_rows(
+        price_rows=price_rows,
+        macro_by_date={m.date: m for m in macro_rows},
+        pw_by_date=pw_by_date,
+        fundamentals_rows=fundamentals_rows,
+        news_records=memory.records,
+    )
+    report = compute_oos_feature_importance(
+        daily_rows=daily_rows,
+        price_key=price_key,
+        horizon_days=horizon_days,
+        include_all_candidates=include_all_candidates,
+        n_repeats=5,
+    )
+    return {
+        "symbol": symbol,
+        "symbol_label": sym_label,
+        "horizon": horizon,
+        "include_all_candidates": include_all_candidates,
+        **report,
+    }
+

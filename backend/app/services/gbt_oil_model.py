@@ -19,22 +19,112 @@ from typing import Any, Optional
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.inspection import permutation_importance
 
-# Pruned 12-feature orthogonal core (each represents a distinct physical/structural oil driver)
+# Winning 34-feature core (55.2% / 57.5% HC OOS on Brent 14d, 53.3% on WTI 7d)
 FEATURE_NAMES: tuple[str, ...] = (
-    "dist_ma20",                   # Mean-reversion / priced-in stretch
-    "vol_20d",                     # Calm vs. crisis volatility regime
-    "crack_321_chg_5d",            # 3-2-1 Refinery Crack Spread 5d shift
-    "brent_wti_spread",            # Global seaborne vs. US inland tightness
-    "curve_chg_20d",               # Futures Curve (USO/USL) 20d Backwardation/Contango shift
-    "cftc_mm_net_z52",             # CFTC Hedge-Fund Positioning 52-week crowding Z-score
-    "eia_stocks_chg_kbbl",         # EIA Physical Crude Storage weekly build/draw
-    "news_dir_7d",                 # 5-Year News Intelligence 7d directional pressure
-    "pw_hormuz_cap_z30",           # IMF PortWatch Hormuz Tanker Capacity 30d Z-score
-    "pw_cape_vs_suez_share",       # IMF PortWatch Cape vs. Suez/Bab Rerouting Share
-    "pw_global_tankers_7d_vs_30d", # IMF PortWatch Global Seaborne Tanker Flow 7d/30d momentum
-    "copper_ret_20d",              # Global Industrial Demand (Copper 20d trend)
+    "ret_1d",
+    "ret_3d",
+    "ret_5d",
+    "ret_10d",
+    "ret_20d",
+    "dist_ma20",
+    "dist_ma50",
+    "vol_5d",
+    "vol_20d",
+    "vol_ratio",
+    "rsi_14",
+    "crack_321_level",
+    "crack_321_chg_5d",
+    "crack_321_chg_20d",
+    "brent_wti_spread",
+    "brent_wti_chg_5d",
+    "dxy_ret_5d",
+    "vix_level",
+    "vix_chg_5d",
+    "fro_ret_5d",
+    "fro_ret_20d",
+    "xle_ret_5d",
+    "news_dir_1d",
+    "news_dir_3d",
+    "news_dir_7d",
+    "news_shock_count_3d",
+    "pw_hormuz_7d_vs_30d",
+    "pw_hormuz_cap_7d_vs_30d",
+    "pw_bab_7d_vs_30d",
+    "pw_suez_7d_vs_30d",
+    "pw_cape_7d_vs_30d",
+    "pw_cape_vs_suez_share",
+    "pw_global_tankers_7d_vs_30d",
+    "pw_hormuz_cap_z30",
 )
+
+# Full 47-feature candidate pool (includes all 5 newly added data packs for empirical OOS importance)
+ALL_CANDIDATE_FEATURE_NAMES: tuple[str, ...] = FEATURE_NAMES + (
+    "copper_ret_5d",
+    "copper_ret_20d",
+    "china_ret_5d",
+    "china_ret_20d",
+    "natgas_ret_5d",
+    "us10y_chg_5d",
+    "stng_ret_5d",
+    "curve_chg_5d",
+    "curve_chg_20d",
+    "cftc_mm_net_pct_oi",
+    "cftc_mm_net_z52",
+    "eia_stocks_chg_kbbl",
+    "eia_refinery_util_pct",
+)
+
+FEATURE_METADATA: dict[str, tuple[str, str]] = {
+    "ret_1d": ("Crude 1d Return", "Price Regime"),
+    "ret_3d": ("Crude 3d Return", "Price Regime"),
+    "ret_5d": ("Crude 5d Return", "Price Regime"),
+    "ret_10d": ("Crude 10d Return", "Price Regime"),
+    "ret_20d": ("Crude 20d Return", "Price Regime"),
+    "dist_ma20": ("Distance from 20d MA", "Price Regime"),
+    "dist_ma50": ("Distance from 50d MA", "Price Regime"),
+    "vol_5d": ("5d Realized Volatility", "Price Regime"),
+    "vol_20d": ("20d Realized Volatility", "Price Regime"),
+    "vol_ratio": ("Volatility Ratio (5d/20d)", "Price Regime"),
+    "rsi_14": ("RSI-14 Momentum", "Price Regime"),
+    "crack_321_level": ("3-2-1 Crack Spread ($/bbl)", "Refining & Curve"),
+    "crack_321_chg_5d": ("3-2-1 Crack Spread 5d Chg", "Refining & Curve"),
+    "crack_321_chg_20d": ("3-2-1 Crack Spread 20d Chg", "Refining & Curve"),
+    "brent_wti_spread": ("Brent–WTI Spread ($/bbl)", "Refining & Curve"),
+    "brent_wti_chg_5d": ("Brent–WTI Spread 5d Chg", "Refining & Curve"),
+    "dxy_ret_5d": ("US Dollar (DXY) 5d Return", "Macro & Demand"),
+    "vix_level": ("VIX Volatility Level", "Macro & Demand"),
+    "vix_chg_5d": ("VIX 5d Change", "Macro & Demand"),
+    "fro_ret_5d": ("VLCC Tanker Stock (FRO) 5d", "Shipping Equities"),
+    "fro_ret_20d": ("VLCC Tanker Stock (FRO) 20d", "Shipping Equities"),
+    "xle_ret_5d": ("Energy ETF (XLE) 5d", "Macro & Demand"),
+    "news_dir_1d": ("News Directional Score (1d)", "News Memory"),
+    "news_dir_3d": ("News Directional Score (3d)", "News Memory"),
+    "news_dir_7d": ("News Directional Score (7d)", "News Memory"),
+    "news_shock_count_3d": ("High-Rank News Shocks (3d)", "News Memory"),
+    "pw_hormuz_7d_vs_30d": ("PortWatch Hormuz Tankers (7d/30d)", "Physical Ships"),
+    "pw_hormuz_cap_7d_vs_30d": ("PortWatch Hormuz Capacity (7d/30d)", "Physical Ships"),
+    "pw_bab_7d_vs_30d": ("PortWatch Bab el-Mandeb (7d/30d)", "Physical Ships"),
+    "pw_suez_7d_vs_30d": ("PortWatch Suez Canal (7d/30d)", "Physical Ships"),
+    "pw_cape_7d_vs_30d": ("PortWatch Cape of Good Hope (7d/30d)", "Physical Ships"),
+    "pw_cape_vs_suez_share": ("PortWatch Cape Rerouting Share", "Physical Ships"),
+    "pw_global_tankers_7d_vs_30d": ("PortWatch Global Tankers (7d/30d)", "Physical Ships"),
+    "pw_hormuz_cap_z30": ("PortWatch Hormuz Capacity Z-Score", "Physical Ships"),
+    "copper_ret_5d": ("Copper (HG=F) 5d Return", "Macro & Demand"),
+    "copper_ret_20d": ("Copper (HG=F) 20d Return", "Macro & Demand"),
+    "china_ret_5d": ("China ETF (FXI) 5d Return", "Macro & Demand"),
+    "china_ret_20d": ("China ETF (FXI) 20d Return", "Macro & Demand"),
+    "natgas_ret_5d": ("Natural Gas (NG=F) 5d Return", "Macro & Demand"),
+    "us10y_chg_5d": ("US 10Y Treasury Yield 5d Chg", "Macro & Demand"),
+    "stng_ret_5d": ("Product Tanker Stock (STNG) 5d", "Shipping Equities"),
+    "curve_chg_5d": ("Futures Curve (USO/USL) 5d Shift", "Refining & Curve"),
+    "curve_chg_20d": ("Futures Curve (USO/USL) 20d Shift", "Refining & Curve"),
+    "cftc_mm_net_pct_oi": ("CFTC Hedge-Fund Net % OI", "Positioning & Storage"),
+    "cftc_mm_net_z52": ("CFTC Hedge-Fund 52w Crowding Z", "Positioning & Storage"),
+    "eia_stocks_chg_kbbl": ("EIA Weekly Crude Storage Chg", "Positioning & Storage"),
+    "eia_refinery_util_pct": ("EIA US Refinery Utilization %", "Positioning & Storage"),
+}
 
 
 @dataclass
@@ -117,15 +207,17 @@ def _rolling_z_window(arr: np.ndarray, idx: int, window: int = 252) -> float:
 def build_gbt_feature_matrix(
     daily_rows: list[dict[str, Any]],
     price_key: str,
+    include_all_candidates: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[date]]:
-    """Build strictly backward-looking (n x 12) orthogonal feature matrix from chronologically sorted daily rows."""
+    """Build strictly backward-looking feature matrix (34 active features, or 47 when include_all_candidates=True)."""
     priced = [
         r for r in daily_rows
         if r.get(price_key) is not None and float(r[price_key]) > 0
     ]
     n = len(priced)
+    n_cols = len(ALL_CANDIDATE_FEATURE_NAMES) if include_all_candidates else len(FEATURE_NAMES)
     if n == 0:
-        return np.zeros((0, len(FEATURE_NAMES))), np.zeros(0), []
+        return np.zeros((0, n_cols)), np.zeros(0), []
 
     dates = [r["date"] for r in priced]
     prices = np.array([float(r[price_key]) for r in priced], dtype=np.float64)
@@ -138,32 +230,75 @@ def build_gbt_feature_matrix(
 
     crack = _col("crack_spread_321_usd")
     bw = _col("brent_wti_spread_usd")
+    dxy = _col("dxy_close")
+    vix = _col("vix_close")
+    fro = _col("tanker_etf_close")
+    xle = _col("energy_etf_close")
     news_1d = _col("news_dir_1d")
+    news_shocks = _col("news_shock_count_1d")
+    pw_hormuz = _col("pw_hormuz_tankers")
     pw_hormuz_cap = _col("pw_hormuz_capacity")
     pw_bab = _col("pw_bab_tankers")
     pw_suez = _col("pw_suez_tankers")
     pw_cape = _col("pw_cape_tankers")
     pw_global = _col("pw_global_tankers")
-    copper = _col("copper_close")
-    curve = _col("curve_backwardation_proxy")
-    cftc_net_pct = _col("cftc_mm_net_pct_oi")
-    eia_chg = _col("eia_crude_stocks_chg_kbbl")
+
+    if include_all_candidates:
+        copper = _col("copper_close")
+        china = _col("china_etf_close")
+        natgas = _col("natgas_close")
+        us10y = _col("us10y_yield")
+        stng = _col("product_tanker_close")
+        curve = _col("curve_backwardation_proxy")
+        cftc_net_pct = _col("cftc_mm_net_pct_oi")
+        eia_chg = _col("eia_crude_stocks_chg_kbbl")
+        eia_util = _col("eia_refinery_util_pct")
 
     daily_rets = np.full(n, np.nan, dtype=np.float64)
     for i in range(1, n):
         daily_rets[i] = math.log(prices[i] / prices[i - 1])
 
-    X = np.full((n, len(FEATURE_NAMES)), np.nan, dtype=np.float64)
+    X = np.full((n, n_cols), np.nan, dtype=np.float64)
     for i in range(n):
+        r1 = _safe_log_ret(prices, i, 1)
+        r3 = _safe_log_ret(prices, i, 3)
+        r5 = _safe_log_ret(prices, i, 5)
+        r10 = _safe_log_ret(prices, i, 10)
+        r20 = _safe_log_ret(prices, i, 20)
+
         ma20 = float(np.mean(prices[max(0, i - 19) : i + 1])) if i >= 5 else np.nan
+        ma50 = float(np.mean(prices[max(0, i - 49) : i + 1])) if i >= 15 else np.nan
         dist_ma20 = (prices[i] / ma20 - 1.0) if (math.isfinite(ma20) and ma20 > 0) else np.nan
+        dist_ma50 = (prices[i] / ma50 - 1.0) if (math.isfinite(ma50) and ma50 > 0) else np.nan
+
+        v5_slice = daily_rets[max(1, i - 4) : i + 1]
+        v5_valid = v5_slice[np.isfinite(v5_slice)]
+        vol5 = float(np.std(v5_valid, ddof=1)) if len(v5_valid) >= 3 else np.nan
 
         v20_slice = daily_rets[max(1, i - 19) : i + 1]
         v20_valid = v20_slice[np.isfinite(v20_slice)]
         vol20 = float(np.std(v20_valid, ddof=1)) if len(v20_valid) >= 8 else np.nan
+        vol_ratio = (vol5 / vol20) if (math.isfinite(vol5) and math.isfinite(vol20) and vol20 > 1e-6) else np.nan
 
+        if i >= 14:
+            r14 = daily_rets[i - 13 : i + 1]
+            r14 = r14[np.isfinite(r14)]
+            if len(r14) >= 10:
+                gains = float(np.mean(np.maximum(r14, 0.0)))
+                losses = float(np.mean(np.maximum(-r14, 0.0)))
+                rsi14 = 100.0 - (100.0 / (1.0 + gains / losses)) if losses > 1e-9 else 100.0
+            else:
+                rsi14 = np.nan
+        else:
+            rsi14 = np.nan
+
+        n1 = news_1d[i] if math.isfinite(news_1d[i]) else 0.0
+        n3_slice = news_1d[max(0, i - 2) : i + 1]
+        n3 = float(np.nansum(n3_slice)) if np.any(np.isfinite(n3_slice)) else 0.0
         n7_slice = news_1d[max(0, i - 6) : i + 1]
         n7 = float(np.nansum(n7_slice)) if np.any(np.isfinite(n7_slice)) else 0.0
+        sh3_slice = news_shocks[max(0, i - 2) : i + 1]
+        sh3 = float(np.nansum(sh3_slice)) if np.any(np.isfinite(sh3_slice)) else 0.0
 
         c7 = pw_cape[max(0, i - 6) : i + 1]
         s7 = pw_suez[max(0, i - 6) : i + 1]
@@ -175,20 +310,59 @@ def build_gbt_feature_matrix(
         else:
             cape_share = np.nan
 
-        X[i] = [
+        row = [
+            r1,
+            r3,
+            r5,
+            r10,
+            r20,
             dist_ma20,
+            dist_ma50,
+            vol5,
             vol20,
+            vol_ratio,
+            rsi14,
+            crack[i],
             _safe_diff(crack, i, 5),
+            _safe_diff(crack, i, 20),
             bw[i],
-            _safe_log_ret(curve, i, 20),
-            _rolling_z_window(cftc_net_pct, i, 252),
-            eia_chg[i],
+            _safe_diff(bw, i, 5),
+            _safe_log_ret(dxy, i, 5),
+            vix[i],
+            _safe_diff(vix, i, 5),
+            _safe_log_ret(fro, i, 5),
+            _safe_log_ret(fro, i, 20),
+            _safe_log_ret(xle, i, 5),
+            n1,
+            n3,
             n7,
-            _rolling_z30(pw_hormuz_cap, i),
+            sh3,
+            _rolling_ratio_7_30(pw_hormuz, i),
+            _rolling_ratio_7_30(pw_hormuz_cap, i),
+            _rolling_ratio_7_30(pw_bab, i),
+            _rolling_ratio_7_30(pw_suez, i),
+            _rolling_ratio_7_30(pw_cape, i),
             cape_share,
             _rolling_ratio_7_30(pw_global, i),
-            _safe_log_ret(copper, i, 20),
+            _rolling_z30(pw_hormuz_cap, i),
         ]
+        if include_all_candidates:
+            row.extend([
+                _safe_log_ret(copper, i, 5),
+                _safe_log_ret(copper, i, 20),
+                _safe_log_ret(china, i, 5),
+                _safe_log_ret(china, i, 20),
+                _safe_log_ret(natgas, i, 5),
+                _safe_diff(us10y, i, 5),
+                _safe_log_ret(stng, i, 5),
+                _safe_log_ret(curve, i, 5),
+                _safe_log_ret(curve, i, 20),
+                cftc_net_pct[i],
+                _rolling_z_window(cftc_net_pct, i, 252),
+                eia_chg[i],
+                eia_util[i],
+            ])
+        X[i] = row
 
     return X, prices, dates
 
@@ -196,11 +370,11 @@ def build_gbt_feature_matrix(
 def _make_gbt(loss: str = "squared_error", quantile: Optional[float] = None) -> HistGradientBoostingRegressor:
     kwargs: dict[str, Any] = {
         "loss": loss,
-        "max_iter": 60,
-        "max_depth": 2,
+        "max_iter": 75,
+        "max_depth": 3,
         "learning_rate": 0.05,
-        "l2_regularization": 5.0,
-        "min_samples_leaf": 30,
+        "l2_regularization": 3.0,
+        "min_samples_leaf": 20,
         "max_bins": 128,
         "random_state": 42,
     }
@@ -405,11 +579,11 @@ def run_walkforward_wave_classifier(
 
     def _make_clf() -> HistGradientBoostingClassifier:
         return HistGradientBoostingClassifier(
-            max_iter=65,
-            max_depth=2,
+            max_iter=80,
+            max_depth=3,
             learning_rate=0.05,
-            l2_regularization=5.0,
-            min_samples_leaf=30,
+            l2_regularization=3.0,
+            min_samples_leaf=20,
             max_bins=128,
             random_state=42,
         )
@@ -444,7 +618,6 @@ def run_walkforward_wave_classifier(
                 continue
             clf = _make_clf()
             clf.fit(X[:train_end][mask], y_tr[mask])
-            # Empirical average up/down wave magnitudes from training set only
             w_tr = wave_ret[:train_end][mask]
             up_vals = w_tr[y_tr[mask] == 2]
             dn_vals = w_tr[y_tr[mask] == 0]
@@ -458,7 +631,6 @@ def run_walkforward_wave_classifier(
         expected_pct = p_up * avg_up_pct + p_down * avg_down_pct
         actual_pct = (math.exp(float(wave_ret[t])) - 1.0) * 100.0
 
-        # Fire a wave signal only when one side clearly dominates
         if p_up >= 0.45 and (p_up - p_down) >= 0.12:
             sig_total += 1
             is_hit = actual_pct > 0
@@ -517,7 +689,6 @@ def run_walkforward_wave_classifier(
     else:
         wave_state = "Range-Bound"
 
-    # Empirical P15 / P85 wave range from historical wave returns
     q15_pct = round(float(np.percentile(w_full, 15)) * 100.0, 2)
     q85_pct = round(float(np.percentile(w_full, 85)) * 100.0, 2)
 
@@ -535,4 +706,115 @@ def run_walkforward_wave_classifier(
         high_conviction_samples=hc_total,
         mae_pct=round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else None,
     )
+
+
+def compute_oos_feature_importance(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int = 14,
+    include_all_candidates: bool = True,
+    n_repeats: int = 5,
+) -> dict[str, Any]:
+    """Measure strictly out-of-sample permutation importance for every feature on held-out recent trading days.
+
+    Trains HistGradientBoostingClassifier on the oldest ~75% of matured trading days and
+    runs permutation importance on the newest ~25% held-out out-of-sample days (strictly
+    separated by ``horizon_days`` gap to prevent target overlap leakage).
+    """
+    names = ALL_CANDIDATE_FEATURE_NAMES if include_all_candidates else FEATURE_NAMES
+    active_set = set(FEATURE_NAMES)
+    X, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        include_all_candidates=include_all_candidates,
+    )
+    n = len(prices)
+    if n < 260:
+        return {
+            "train_days": 0,
+            "test_days": 0,
+            "baseline_oos_accuracy_pct": None,
+            "features": [],
+        }
+
+    wave_ret = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n - horizon_days):
+        fwd = prices[i + 1 : i + 1 + horizon_days]
+        if prices[i] > 0 and len(fwd) == horizon_days and np.all(fwd > 0):
+            wave_ret[i] = math.log(float(np.mean(fwd)) / prices[i])
+
+    wave_th = 0.008 if horizon_days <= 3 else (0.012 if horizon_days <= 7 else 0.018)
+    y_cls = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        if not math.isfinite(wave_ret[i]):
+            continue
+        if wave_ret[i] >= wave_th:
+            y_cls[i] = 2
+        elif wave_ret[i] <= -wave_th:
+            y_cls[i] = 0
+        else:
+            y_cls[i] = 1
+
+    valid_end = n - horizon_days
+    test_size = min(280, max(80, valid_end // 4))
+    test_start = valid_end - test_size
+    train_end = max(180, test_start - horizon_days)  # gap avoids overlap leakage
+
+    X_tr, y_tr = X[:train_end], y_cls[:train_end]
+    m_tr = y_tr >= 0
+    X_te, y_te = X[test_start:valid_end], y_cls[test_start:valid_end]
+    m_te = y_te >= 0
+
+    if int(m_tr.sum()) < 150 or int(m_te.sum()) < 50:
+        return {
+            "train_days": int(m_tr.sum()),
+            "test_days": int(m_te.sum()),
+            "baseline_oos_accuracy_pct": None,
+            "features": [],
+        }
+
+    clf = HistGradientBoostingClassifier(
+        max_iter=80,
+        max_depth=3,
+        learning_rate=0.05,
+        l2_regularization=3.0,
+        min_samples_leaf=20,
+        max_bins=128,
+        random_state=42,
+    )
+    clf.fit(X_tr[m_tr], y_tr[m_tr])
+    baseline_acc = float(clf.score(X_te[m_te], y_te[m_te])) * 100.0
+
+    perm = permutation_importance(
+        clf,
+        X_te[m_te],
+        y_te[m_te],
+        n_repeats=n_repeats,
+        random_state=42,
+        scoring="accuracy",
+    )
+
+    ranked: list[dict[str, Any]] = []
+    for idx, fname in enumerate(names):
+        imp_pct = round(float(perm.importances_mean[idx]) * 100.0, 2)
+        std_pct = round(float(perm.importances_std[idx]) * 100.0, 2)
+        label, group = FEATURE_METADATA.get(fname, (fname, "Other"))
+        status = "helpful" if imp_pct >= 0.25 else ("noisy" if imp_pct <= -0.25 else "neutral")
+        ranked.append({
+            "feature": fname,
+            "label": label,
+            "group": group,
+            "importance_pct": imp_pct,
+            "std_pct": std_pct,
+            "in_active_model": fname in active_set,
+            "status": status,
+        })
+
+    ranked.sort(key=lambda r: r["importance_pct"], reverse=True)
+    return {
+        "train_days": int(m_tr.sum()),
+        "test_days": int(m_te.sum()),
+        "baseline_oos_accuracy_pct": round(baseline_acc, 1),
+        "features": ranked,
+    }
 

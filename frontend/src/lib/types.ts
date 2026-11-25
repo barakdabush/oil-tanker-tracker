@@ -444,6 +444,27 @@ export interface BottomLineForecastResponse {
   latest_briefing_summary: string | null;
 }
 
+export interface FeatureImportanceItem {
+  feature: string;
+  label: string;
+  group: string;
+  importance_pct: number;
+  std_pct: number;
+  in_active_model: boolean;
+  status: "helpful" | "neutral" | "noisy";
+}
+
+export interface FeatureImportanceResponse {
+  symbol: string;
+  symbol_label: string;
+  horizon: string;
+  include_all_candidates: boolean;
+  train_days: number;
+  test_days: number;
+  baseline_oos_accuracy_pct: number | null;
+  features: FeatureImportanceItem[];
+}
+
 export interface HorizonStatCell {
   horizon: string;
   sample_count: number;

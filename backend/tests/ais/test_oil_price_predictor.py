@@ -210,6 +210,7 @@ def test_walkforward_ridge_and_vol_and_routes():
     # Verify new API routes are registered on FastAPI app
     paths = {r.path for r in app.routes}
     assert "/api/forecast/bottom-line" in paths
+    assert "/api/forecast/feature-importance" in paths
     assert "/api/forecast/backfill-macro" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
     assert "/api/news/backfill" in paths
@@ -218,7 +219,11 @@ def test_walkforward_ridge_and_vol_and_routes():
 
 
 def test_crack_spread_and_walkforward_gbt_model():
-    from app.services.gbt_oil_model import run_walkforward_gbt
+    from app.services.gbt_oil_model import (
+        compute_oos_feature_importance,
+        run_walkforward_gbt,
+        run_walkforward_wave_classifier,
+    )
     from app.services.macro_market_fetcher import compute_crack_spread_321
 
     # 3-2-1 crack spread: ((2*2.50*42 + 1*2.80*42) / 3) - 80.0 = 109.20 - 80.0 = 29.20 $/bbl
@@ -261,8 +266,6 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert res.samples >= 100
     assert res.hit_rate_pct is not None and res.hit_rate_pct > 55.0
 
-    from app.services.gbt_oil_model import run_walkforward_wave_classifier
-
     wres = run_walkforward_wave_classifier(
         daily_rows=rows,
         price_key="brent_close_usd",
@@ -274,6 +277,23 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert wres.wave_state in ("Bullish Wave", "Bearish Wave", "Range-Bound")
     assert wres.signal_samples >= 20
     assert wres.signal_hit_rate_pct is not None and wres.signal_hit_rate_pct > 55.0
+
+    imp = compute_oos_feature_importance(
+        daily_rows=rows,
+        price_key="brent_close_usd",
+        horizon_days=7,
+        include_all_candidates=True,
+        n_repeats=3,
+    )
+    assert imp["baseline_oos_accuracy_pct"] is not None
+    assert imp["train_days"] >= 150
+    assert imp["test_days"] >= 50
+    assert len(imp["features"]) >= 34
+    assert imp["features"][0]["importance_pct"] >= imp["features"][-1]["importance_pct"]
+    assert all(
+        {"feature", "label", "group", "importance_pct", "in_active_model", "status"} <= set(f.keys())
+        for f in imp["features"]
+    )
 
 
 def test_gulf_hurricane_risk_and_policy_and_oil_majors_news():
