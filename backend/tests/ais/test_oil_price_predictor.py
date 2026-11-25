@@ -211,6 +211,7 @@ def test_walkforward_ridge_and_vol_and_routes():
     paths = {r.path for r in app.routes}
     assert "/api/forecast/bottom-line" in paths
     assert "/api/forecast/feature-importance" in paths
+    assert "/api/forecast/model-benchmark" in paths
     assert "/api/forecast/backfill-macro" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
     assert "/api/news/backfill" in paths
@@ -222,6 +223,7 @@ def test_crack_spread_and_walkforward_gbt_model():
     from app.services.gbt_oil_model import (
         compute_oos_feature_importance,
         run_walkforward_gbt,
+        run_walkforward_regularized_wave,
         run_walkforward_wave_classifier,
     )
     from app.services.macro_market_fetcher import compute_crack_spread_321
@@ -269,7 +271,7 @@ def test_crack_spread_and_walkforward_gbt_model():
     wres = run_walkforward_wave_classifier(
         daily_rows=rows,
         price_key="brent_close_usd",
-        horizon_days=7,
+        horizon_days=5,
         min_train_rows=180,
         refit_every=25,
     )
@@ -277,11 +279,24 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert wres.wave_state in ("Bullish Wave", "Bearish Wave", "Range-Bound")
     assert wres.signal_samples >= 20
     assert wres.signal_hit_rate_pct is not None and wres.signal_hit_rate_pct > 55.0
+    assert wres.indep_samples >= 5
+    assert wres.indep_p_value is not None and 0.0 <= wres.indep_p_value <= 1.0
+
+    rres = run_walkforward_regularized_wave(
+        daily_rows=rows,
+        price_key="brent_close_usd",
+        horizon_days=5,
+        min_train_rows=180,
+        refit_every=25,
+    )
+    assert rres.up_wave_prob_pct is not None and rres.down_wave_prob_pct is not None
+    assert rres.indep_samples >= 5
+    assert rres.indep_p_value is not None and 0.0 <= rres.indep_p_value <= 1.0
 
     imp = compute_oos_feature_importance(
         daily_rows=rows,
         price_key="brent_close_usd",
-        horizon_days=7,
+        horizon_days=5,
         include_all_candidates=True,
         n_repeats=3,
     )

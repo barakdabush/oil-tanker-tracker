@@ -416,6 +416,9 @@ export interface HorizonForecast {
   backtest_samples: number;
   high_conviction_hit_rate_pct?: number | null;
   high_conviction_samples?: number;
+  indep_hit_rate_pct?: number | null;
+  indep_samples?: number;
+  indep_p_value?: number | null;
   up_wave_prob_pct?: number | null;
   down_wave_prob_pct?: number | null;
   range_prob_pct?: number | null;

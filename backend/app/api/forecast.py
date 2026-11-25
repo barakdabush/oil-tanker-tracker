@@ -8,6 +8,7 @@ from app.schemas.forecast import BottomLineForecastResponse
 from app.services.oil_price_predictor import (
     build_bottom_line_forecast,
     build_feature_importance_report,
+    build_model_benchmark_report,
 )
 
 router = APIRouter()
@@ -18,14 +19,14 @@ async def get_bottom_line_forecast(
     symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the unified Bottom-Line oil price forecast (3d, 7d, 14d) for Brent (BZ=F) or WTI (CL=F)."""
+    """Return the unified Bottom-Line oil price forecast (3d, 5d, 7d) for Brent (BZ=F) or WTI (CL=F)."""
     return await build_bottom_line_forecast(db, symbol=symbol)
 
 
 @router.get("/feature-importance")
 async def get_feature_importance(
     symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
-    horizon: str = Query("14d", pattern="^(3d|7d|14d)$"),
+    horizon: str = Query("5d", pattern="^(3d|5d|7d|14d)$"),
     include_all_candidates: bool = Query(True),
     db: AsyncSession = Depends(get_db),
 ):
@@ -36,6 +37,14 @@ async def get_feature_importance(
         horizon=horizon,
         include_all_candidates=include_all_candidates,
     )
+
+
+@router.get("/model-benchmark")
+async def get_model_benchmark(
+    db: AsyncSession = Depends(get_db),
+):
+    """Benchmark 10-Factor Regularized Logistic vs 33-Feature GBT across 3d/5d/7d on Brent & WTI with non-overlapping p-values."""
+    return await build_model_benchmark_report(db)
 
 
 @router.post("/backfill-macro")

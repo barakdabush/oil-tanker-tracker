@@ -43,6 +43,9 @@ class HorizonForecast(BaseModel):
     backtest_samples: int = 0
     high_conviction_hit_rate_pct: Optional[float] = None
     high_conviction_samples: int = 0
+    indep_hit_rate_pct: Optional[float] = None
+    indep_samples: int = 0
+    indep_p_value: Optional[float] = None
     up_wave_prob_pct: Optional[float] = None
     down_wave_prob_pct: Optional[float] = None
     range_prob_pct: Optional[float] = None

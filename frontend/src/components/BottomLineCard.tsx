@@ -54,7 +54,7 @@ function driverIcon(sourceType: string): string {
 
 export default function BottomLineCard({ compact = false }: BottomLineCardProps) {
   const [symbol, setSymbol] = useState<"BZ=F" | "CL=F">("BZ=F");
-  const [horizon, setHorizon] = useState<string>("7d");
+  const [horizon, setHorizon] = useState<string>("5d");
   const [forecast, setForecast] = useState<BottomLineForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -342,17 +342,33 @@ export default function BottomLineCard({ compact = false }: BottomLineCardProps)
             {activeH.backtest_samples > 0 && activeH.backtest_hit_rate_pct != null ? (
               <>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#38bdf8" }}>
-                  {activeH.backtest_hit_rate_pct.toFixed(1)}%{" "}
+                  {(activeH.indep_hit_rate_pct ?? activeH.backtest_hit_rate_pct).toFixed(1)}%{" "}
                   <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
-                    directional hit rate
+                    {activeH.indep_hit_rate_pct != null ? "independent wave hit rate" : "directional hit rate"}
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  MAE {activeH.backtest_mae_pct?.toFixed(2)}% over {activeH.backtest_samples} OOS days ·
-                  ML blend {Math.round(activeH.ml_weight * 100)}%
-                  {activeH.high_conviction_hit_rate_pct != null && activeH.high_conviction_samples
-                    ? ` · High-conv ${activeH.high_conviction_hit_rate_pct.toFixed(1)}% (${activeH.high_conviction_samples})`
-                    : ""}
+                  {activeH.indep_samples ? (
+                    <>
+                      <strong style={{ color: "#e2e8f0" }}>n={activeH.indep_samples}</strong> non-overlapping ·{" "}
+                      <span
+                        style={{
+                          color:
+                            activeH.indep_p_value != null && activeH.indep_p_value <= 0.05
+                              ? "#34d399"
+                              : activeH.indep_p_value != null && activeH.indep_p_value <= 0.15
+                              ? "#38bdf8"
+                              : "#fbbf24",
+                          fontWeight: 700,
+                        }}
+                      >
+                        p={activeH.indep_p_value != null ? activeH.indep_p_value.toFixed(3) : "—"}
+                      </span>
+                      {" · "}
+                    </>
+                  ) : null}
+                  Rolling {activeH.backtest_hit_rate_pct.toFixed(1)}% ({activeH.backtest_samples}d) · MAE{" "}
+                  {activeH.backtest_mae_pct?.toFixed(2)}% · ML blend {Math.round(activeH.ml_weight * 100)}%
                 </div>
                 {activeH.model_name && (
                   <div style={{ fontSize: 10, color: "#94a3b8" }}>Model: {activeH.model_name}</div>

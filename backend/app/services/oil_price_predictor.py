@@ -44,6 +44,7 @@ from app.schemas.forecast import (
 )
 from app.services.gbt_oil_model import (
     compute_oos_feature_importance,
+    run_walkforward_regularized_wave,
     run_walkforward_wave_classifier,
 )
 from app.services.news_predictor import build_news_analog_memory
@@ -74,8 +75,8 @@ RIDGE_FEATURE_KEYS: tuple[str, ...] = (
 
 FORECAST_HORIZONS: tuple[tuple[str, int], ...] = (
     ("3d", 3),
+    ("5d", 5),
     ("7d", 7),
-    ("14d", 14),
 )
 
 DEFAULT_DAILY_VOL_PCT = 2.0
@@ -750,8 +751,8 @@ async def build_bottom_line_forecast(
         news_records=memory.records,
     )
 
-    # 7. Multi-day Wave Forecasts (3d / 7d / 14d) blending Pillars + News Analogs + 5y Wave GBT
-    news_ret_map = {"3d": news_ret_3d, "7d": news_ret_7d, "14d": news_ret_7d * 1.25}
+    # 7. Multi-day Wave Forecasts (3d / 5d / 7d) blending Pillars + News Analogs + 10-Factor Regularized Wave
+    news_ret_map = {"3d": news_ret_3d, "5d": (news_ret_3d + news_ret_7d) / 2.0, "7d": news_ret_7d}
     analog_bt = memory.evaluate_walkforward_accuracy(symbol=symbol, sample_limit=160)
     horizons_out: dict[str, HorizonForecast] = {}
 
@@ -768,39 +769,33 @@ async def build_bottom_line_forecast(
             2,
         )
 
-        wave_res = run_walkforward_wave_classifier(
+        wave_res = run_walkforward_regularized_wave(
             daily_rows=gbt_daily_rows,
             price_key=price_key,
             horizon_days=h_days,
         )
 
-        # Gate Wave GBT strictly: blend when fired-wave OOS precision >= 53% (or high-conv >= 56%)
+        # Strict statistical gating: blend only when non-overlapping independent waves show real edge (p <= 0.15)
         wave_has_edge = (
             wave_res.expected_wave_pct is not None
-            and wave_res.signal_samples >= 20
-            and (
-                (wave_res.signal_hit_rate_pct is not None and wave_res.signal_hit_rate_pct >= 53.0)
-                or (
-                    wave_res.high_conviction_hit_rate_pct is not None
-                    and wave_res.high_conviction_hit_rate_pct >= 56.0
-                )
-            )
+            and wave_res.indep_samples >= 15
+            and wave_res.indep_hit_rate_pct is not None
+            and wave_res.indep_hit_rate_pct >= 53.0
+            and wave_res.indep_p_value is not None
+            and wave_res.indep_p_value <= 0.15
         )
 
         if wave_has_edge and wave_res.expected_wave_pct is not None:
             ml_pred = wave_res.expected_wave_pct
-            edge_pts = max(
-                (wave_res.signal_hit_rate_pct or 50.0) - 50.0,
-                (wave_res.high_conviction_hit_rate_pct or 50.0) - 53.0,
-            )
-            ml_weight = round(_clamp(0.35 + edge_pts * 0.035, 0.35, 0.65), 2)
+            edge_pts = max(0.0, (wave_res.indep_hit_rate_pct or 50.0) - 50.0)
+            ml_weight = round(_clamp(0.35 + edge_pts * 0.03, 0.35, 0.65), 2)
             blended_ret = round((1.0 - ml_weight) * pillar_ret + ml_weight * ml_pred, 2)
             hit_rate = wave_res.signal_hit_rate_pct
             mae = wave_res.mae_pct
             bt_samples = wave_res.signal_samples
             hc_hit = wave_res.high_conviction_hit_rate_pct
             hc_samples = wave_res.high_conviction_samples
-            model_name = "5y Wave GBT + 4-Pillar Hybrid"
+            model_name = "10-Factor Regularized Wave + 4-Pillar"
         else:
             ml_pred = wave_res.expected_wave_pct
             ml_weight = 0.0
@@ -809,9 +804,9 @@ async def build_bottom_line_forecast(
             hc_samples = wave_res.high_conviction_samples
             if wave_res.signal_samples >= 20 and wave_res.signal_hit_rate_pct is not None:
                 hit_rate, mae, bt_samples = wave_res.signal_hit_rate_pct, wave_res.mae_pct, wave_res.signal_samples
-                model_name = "4-Pillar + News Analogs (Wave GBT Gated)"
+                model_name = "4-Pillar + News Analogs (ML Gated: p > 0.15)"
             else:
-                abt = analog_bt.get("7d" if h_label == "14d" else h_label)
+                abt = analog_bt.get("3d" if h_label == "5d" else h_label)
                 if abt:
                     hit_rate, mae, bt_samples = abt["hit_rate_pct"], abt["mae_pct"], abt["samples"]
                 else:
@@ -821,7 +816,6 @@ async def build_bottom_line_forecast(
         blended_ret = round(_clamp(blended_ret, -12.0, 12.0), 2)
         verdict, direction = _verdict_from_return(blended_ret, h_days)
 
-        # If Wave GBT is active and detects a clear wave, reflect it in wave_state
         wave_state = wave_res.wave_state
         if wave_state == "Range-Bound" and abs(blended_ret) >= (1.1 * math.sqrt(h_days / 3.0)):
             wave_state = "Bullish Wave" if blended_ret > 0 else "Bearish Wave"
@@ -870,6 +864,9 @@ async def build_bottom_line_forecast(
             backtest_samples=bt_samples,
             high_conviction_hit_rate_pct=hc_hit,
             high_conviction_samples=hc_samples,
+            indep_hit_rate_pct=wave_res.indep_hit_rate_pct,
+            indep_samples=wave_res.indep_samples,
+            indep_p_value=wave_res.indep_p_value,
             up_wave_prob_pct=wave_res.up_wave_prob_pct,
             down_wave_prob_pct=wave_res.down_wave_prob_pct,
             range_prob_pct=wave_res.range_prob_pct,
@@ -877,7 +874,7 @@ async def build_bottom_line_forecast(
             model_name=model_name,
         )
 
-    primary = horizons_out["7d"]
+    primary = horizons_out["5d"]
     price_clause = (
         f" (~${primary.predicted_price_usd:.2f} vs ${current_price:.2f} now)"
         if (primary.predicted_price_usd is not None and current_price is not None)
@@ -900,7 +897,7 @@ async def build_bottom_line_forecast(
         )
 
     headline_summary = (
-        f"{primary.wave_state.upper()} ({primary.predicted_return_pct:+.2f}% over next 7d{price_clause}) — "
+        f"{primary.wave_state.upper()} ({primary.predicted_return_pct:+.2f}% over next 5d{price_clause}) — "
         f"led by {strongest_pillar.label.lower()}{counter_clause}{wave_prob_clause}."
     )
 
@@ -914,7 +911,7 @@ async def build_bottom_line_forecast(
         price_date=price_date,
         daily_vol_pct=daily_vol_pct,
         composite_score=composite_score,
-        primary_horizon="7d",
+        primary_horizon="5d",
         verdict=primary.verdict,
         direction=primary.direction,
         headline_summary=headline_summary,
@@ -935,15 +932,22 @@ def _assemble_gbt_daily_rows(
     fundamentals_rows: list[OilFundamentalsWeekly],
     news_records: list[Any],
 ) -> list[dict[str, Any]]:
-    """Build 5-year daily feature rows with strict +3d CFTC / +5d EIA publication lags."""
-    news_dir_by_date: dict = {}
+    """Build 5-year daily feature rows with strict +3d CFTC / +5d EIA publication lags and volume-normalized news polarity."""
+    news_dir_num: dict = {}
+    news_dir_den: dict = {}
     news_shocks_by_date: dict = {}
     for rec in news_records:
         d = rec.market_aligned_at.date()
         w = max(0.2, rec.prior_rank_score / 100.0)
-        news_dir_by_date[d] = news_dir_by_date.get(d, 0.0) + rec.effective_direction * w
+        news_dir_num[d] = news_dir_num.get(d, 0.0) + rec.effective_direction * w
+        news_dir_den[d] = news_dir_den.get(d, 0.0) + w
         if rec.prior_rank_score >= 55.0:
             news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
+    news_dir_by_date = {
+        d: round(max(-1.0, min(1.0, news_dir_num[d] / news_dir_den[d])), 4)
+        for d in news_dir_num
+        if news_dir_den.get(d, 0.0) > 0
+    }
 
     cftc_series = [
         (f.report_date + timedelta(days=3), f.cftc_mm_net_pct_oi)
@@ -1014,18 +1018,13 @@ def _assemble_gbt_daily_rows(
     return gbt_daily_rows
 
 
-async def build_feature_importance_report(
+async def _load_5y_daily_rows(
     db: AsyncSession,
     symbol: str = "BZ=F",
-    horizon: str = "14d",
-    include_all_candidates: bool = True,
-) -> dict[str, Any]:
-    """Compute strictly out-of-sample permutation feature importance across 5-year history."""
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Load 5-year daily feature rows and return (daily_rows, data_coverage_counts)."""
     now = datetime.now(timezone.utc)
     cutoff_5y = (now - timedelta(days=1850)).date()
-    sym_label = "Brent Crude" if symbol == "BZ=F" else "WTI Crude"
-    price_key = "brent_close_usd" if symbol == "BZ=F" else "wti_close_usd"
-    horizon_days = {"3d": 3, "7d": 7, "14d": 14}.get(horizon, 14)
 
     price_rows = list(
         (
@@ -1102,6 +1101,28 @@ async def build_feature_importance_report(
         fundamentals_rows=fundamentals_rows,
         news_records=memory.records,
     )
+    coverage = {
+        "trading_days": len(daily_rows),
+        "macro_days": len(macro_rows),
+        "portwatch_days": len(pw_by_date),
+        "cftc_weeks": sum(1 for f in fundamentals_rows if f.cftc_mm_net_pct_oi is not None),
+        "eia_weeks": sum(1 for f in fundamentals_rows if f.eia_crude_stocks_chg_kbbl is not None),
+        "news_events": len(memory.records),
+    }
+    return daily_rows, coverage
+
+
+async def build_feature_importance_report(
+    db: AsyncSession,
+    symbol: str = "BZ=F",
+    horizon: str = "5d",
+    include_all_candidates: bool = True,
+) -> dict[str, Any]:
+    """Compute strictly out-of-sample permutation feature importance across 5-year history."""
+    sym_label = "Brent Crude" if symbol == "BZ=F" else "WTI Crude"
+    price_key = "brent_close_usd" if symbol == "BZ=F" else "wti_close_usd"
+    horizon_days = {"3d": 3, "5d": 5, "7d": 7, "14d": 14}.get(horizon, 5)
+    daily_rows, _ = await _load_5y_daily_rows(db, symbol=symbol)
     report = compute_oos_feature_importance(
         daily_rows=daily_rows,
         price_key=price_key,
@@ -1116,4 +1137,44 @@ async def build_feature_importance_report(
         "include_all_candidates": include_all_candidates,
         **report,
     }
+
+
+async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
+    """Head-to-head full-4y OOS benchmark: 10-Factor Regularized Logistic vs 33-Feature Wave GBT."""
+    daily_rows, coverage = await _load_5y_daily_rows(db, symbol="BZ=F")
+    results: dict[str, dict[str, Any]] = {}
+    for sym, price_key in (("BZ=F", "brent_close_usd"), ("CL=F", "wti_close_usd")):
+        sym_out: dict[str, Any] = {}
+        for h_label, h_days in FORECAST_HORIZONS:
+            reg = run_walkforward_regularized_wave(daily_rows, price_key=price_key, horizon_days=h_days)
+            gbt = run_walkforward_wave_classifier(daily_rows, price_key=price_key, horizon_days=h_days)
+            sym_out[h_label] = {
+                "regularized_10f": {
+                    "indep_hit_rate_pct": reg.indep_hit_rate_pct,
+                    "indep_samples": reg.indep_samples,
+                    "indep_p_value": reg.indep_p_value,
+                    "rolling_hit_rate_pct": reg.signal_hit_rate_pct,
+                    "rolling_samples": reg.signal_samples,
+                    "hc_hit_rate_pct": reg.high_conviction_hit_rate_pct,
+                    "hc_samples": reg.high_conviction_samples,
+                    "mae_pct": reg.mae_pct,
+                },
+                "gbt_33f": {
+                    "indep_hit_rate_pct": gbt.indep_hit_rate_pct,
+                    "indep_samples": gbt.indep_samples,
+                    "indep_p_value": gbt.indep_p_value,
+                    "rolling_hit_rate_pct": gbt.signal_hit_rate_pct,
+                    "rolling_samples": gbt.signal_samples,
+                    "hc_hit_rate_pct": gbt.high_conviction_hit_rate_pct,
+                    "hc_samples": gbt.high_conviction_samples,
+                    "mae_pct": gbt.mae_pct,
+                },
+            }
+        results[sym] = sym_out
+    return {
+        "data_coverage": coverage,
+        "horizons": [h for h, _ in FORECAST_HORIZONS],
+        "benchmarks": results,
+    }
+
 

@@ -19,7 +19,35 @@ from typing import Any, Optional
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# 10 economically orthogonal, zero-drift factors (identical for Brent & WTI — zero symbol p-hacking)
+ORTHOGONAL_FEATURE_NAMES: tuple[str, ...] = (
+    "dist_ma50",
+    "vol_ratio",
+    "crack_321_chg_20d",
+    "brent_wti_spread",
+    "fro_ret_5d",
+    "pw_hormuz_7d_vs_30d",
+    "pw_global_tankers_7d_vs_30d",
+    "cftc_mm_net_z52",
+    "eia_stocks_chg_kbbl",
+    "news_dir_7d",
+)
+
+
+def _binomial_p_value_gt_half(hits: int, n: int) -> Optional[float]:
+    """Exact one-sided binomial p-value for H0: true hit rate <= 50%."""
+    if n <= 0:
+        return None
+    hits = max(0, min(n, hits))
+    tail = sum(math.comb(n, k) for k in range(hits, n + 1))
+    return round(tail / (2 ** n), 4)
+
 
 # Full 47-feature candidate pool (used for strictly out-of-sample permutation importance audits)
 ALL_CANDIDATE_FEATURE_NAMES: tuple[str, ...] = (
@@ -243,14 +271,20 @@ def build_gbt_feature_matrix(
     daily_rows: list[dict[str, Any]],
     price_key: str,
     include_all_candidates: bool = False,
+    feature_names: Optional[tuple[str, ...]] = None,
 ) -> tuple[np.ndarray, np.ndarray, list[date]]:
-    """Build strictly backward-looking feature matrix (34 active features, or 47 when include_all_candidates=True)."""
+    """Build strictly backward-looking feature matrix."""
+    selected_names = (
+        feature_names
+        if feature_names is not None
+        else (ALL_CANDIDATE_FEATURE_NAMES if include_all_candidates else FEATURE_NAMES)
+    )
     priced = [
         r for r in daily_rows
         if r.get(price_key) is not None and float(r[price_key]) > 0
     ]
     n = len(priced)
-    n_cols = len(ALL_CANDIDATE_FEATURE_NAMES) if include_all_candidates else len(FEATURE_NAMES)
+    n_cols = len(selected_names)
     if n == 0:
         return np.zeros((0, n_cols)), np.zeros(0), []
 
@@ -287,8 +321,6 @@ def build_gbt_feature_matrix(
     cftc_net_pct = _col("cftc_mm_net_pct_oi")
     eia_chg = _col("eia_crude_stocks_chg_kbbl")
     eia_util = _col("eia_refinery_util_pct")
-
-    selected_names = ALL_CANDIDATE_FEATURE_NAMES if include_all_candidates else FEATURE_NAMES
 
     daily_rets = np.full(n, np.nan, dtype=np.float64)
     for i in range(1, n):
@@ -328,11 +360,14 @@ def build_gbt_feature_matrix(
         else:
             rsi14 = np.nan
 
-        n1 = news_1d[i] if math.isfinite(news_1d[i]) else 0.0
+        # Bounded [-1, +1] average polarity (immune to 2021-2025 vs 2026 article volume drift)
+        n1 = max(-1.0, min(1.0, news_1d[i])) if math.isfinite(news_1d[i]) else 0.0
         n3_slice = news_1d[max(0, i - 2) : i + 1]
-        n3 = float(np.nansum(n3_slice)) if np.any(np.isfinite(n3_slice)) else 0.0
+        n3_valid = n3_slice[np.isfinite(n3_slice)]
+        n3 = max(-1.0, min(1.0, float(np.mean(n3_valid)))) if len(n3_valid) > 0 else 0.0
         n7_slice = news_1d[max(0, i - 6) : i + 1]
-        n7 = float(np.nansum(n7_slice)) if np.any(np.isfinite(n7_slice)) else 0.0
+        n7_valid = n7_slice[np.isfinite(n7_slice)]
+        n7 = max(-1.0, min(1.0, float(np.mean(n7_valid)))) if len(n7_valid) > 0 else 0.0
         sh3_slice = news_shocks[max(0, i - 2) : i + 1]
         sh3 = float(np.nansum(sh3_slice)) if np.any(np.isfinite(sh3_slice)) else 0.0
 
@@ -552,41 +587,44 @@ class WaveForecastResult:
     high_conviction_hit_rate_pct: Optional[float]
     high_conviction_samples: int
     mae_pct: Optional[float]
+    indep_hit_rate_pct: Optional[float] = None
+    indep_samples: int = 0
+    indep_p_value: Optional[float] = None
 
 
-def run_walkforward_wave_classifier(
-    daily_rows: list[dict[str, Any]],
-    price_key: str,
+def _empty_wave_result() -> WaveForecastResult:
+    return WaveForecastResult(
+        wave_state="Range-Bound",
+        up_wave_prob_pct=None,
+        down_wave_prob_pct=None,
+        range_prob_pct=None,
+        expected_wave_pct=None,
+        q15_pct=None,
+        q85_pct=None,
+        signal_hit_rate_pct=None,
+        signal_samples=0,
+        high_conviction_hit_rate_pct=None,
+        high_conviction_samples=0,
+        mae_pct=None,
+        indep_hit_rate_pct=None,
+        indep_samples=0,
+        indep_p_value=None,
+    )
+
+
+def _run_wave_engine(
+    X: np.ndarray,
+    prices: np.ndarray,
     horizon_days: int,
-    min_train_rows: int = 220,
+    make_clf,
+    min_train_rows: int = 240,
     refit_every: int = 25,
-    max_eval_days: int = 400,
+    max_eval_days: int = 1000,
 ) -> WaveForecastResult:
-    """Multi-day Oil Price Wave Detector (Bullish Wave / Range-Bound / Bearish Wave).
-
-    Instead of noisy single-day close-to-close prediction, targets the smoothed
-    forward H-day wave return ``ln(mean(P[t+1..t+H]) / P[t])`` using a 3-class
-    HistGradientBoostingClassifier with strict expanding-window walk-forward validation.
-    Abstains (Range-Bound) on quiet/ambiguous days and measures precision strictly on
-    fired wave alerts.
-    """
-    X, prices, _ = build_gbt_feature_matrix(daily_rows, price_key=price_key)
+    """Expanding-window walk-forward 3-class wave engine with non-overlapping independent p-value."""
     n = len(prices)
     if n < min_train_rows + horizon_days + 25:
-        return WaveForecastResult(
-            wave_state="Range-Bound",
-            up_wave_prob_pct=None,
-            down_wave_prob_pct=None,
-            range_prob_pct=None,
-            expected_wave_pct=None,
-            q15_pct=None,
-            q85_pct=None,
-            signal_hit_rate_pct=None,
-            signal_samples=0,
-            high_conviction_hit_rate_pct=None,
-            high_conviction_samples=0,
-            mae_pct=None,
-        )
+        return _empty_wave_result()
 
     # Smoothed forward wave return over the next H trading days
     wave_ret = np.full(n, np.nan, dtype=np.float64)
@@ -595,8 +633,15 @@ def run_walkforward_wave_classifier(
         if prices[i] > 0 and len(fwd_window) == horizon_days and np.all(fwd_window > 0):
             wave_ret[i] = math.log(float(np.mean(fwd_window)) / prices[i])
 
-    # Wave threshold scales with horizon (3d: 0.8%, 7d: 1.2%, 14d: 1.8%)
-    wave_th = 0.008 if horizon_days <= 3 else (0.012 if horizon_days <= 7 else 0.018)
+    # Wave threshold scales with horizon (3d: 0.8%, 5d: 1.0%, 7d: 1.2%, 14d: 1.8%)
+    if horizon_days <= 3:
+        wave_th = 0.008
+    elif horizon_days <= 5:
+        wave_th = 0.010
+    elif horizon_days <= 7:
+        wave_th = 0.012
+    else:
+        wave_th = 0.018
 
     # Labels: 0 = Down Wave, 1 = Range-Bound, 2 = Up Wave
     y_cls = np.full(n, -1, dtype=np.int64)
@@ -610,26 +655,16 @@ def run_walkforward_wave_classifier(
         else:
             y_cls[i] = 1
 
-    def _make_clf() -> HistGradientBoostingClassifier:
-        return HistGradientBoostingClassifier(
-            max_iter=80,
-            max_depth=3,
-            learning_rate=0.05,
-            l2_regularization=3.0,
-            min_samples_leaf=20,
-            max_bins=128,
-            random_state=42,
-        )
-
-    def _extract_probs(clf: HistGradientBoostingClassifier, x_row: np.ndarray) -> tuple[float, float, float]:
+    def _extract_probs(clf: Any, x_row: np.ndarray) -> tuple[float, float, float]:
         probs = clf.predict_proba(x_row)[0]
-        cls_map = {int(c): float(p) for c, p in zip(clf.classes_, probs)}
+        classes = clf.classes_ if hasattr(clf, "classes_") else clf[-1].classes_
+        cls_map = {int(c): float(p) for c, p in zip(classes, probs)}
         return cls_map.get(0, 0.0), cls_map.get(1, 0.0), cls_map.get(2, 0.0)
 
     eval_end = n - horizon_days
     eval_start = max(min_train_rows + horizon_days, eval_end - max_eval_days)
 
-    clf: Optional[HistGradientBoostingClassifier] = None
+    clf: Any = None
     last_fit_t = -9999
     avg_up_pct = 2.0
     avg_down_pct = -2.0
@@ -638,6 +673,9 @@ def run_walkforward_wave_classifier(
     sig_total = 0
     hc_hits = 0
     hc_total = 0
+    indep_hits = 0
+    indep_total = 0
+    next_indep_t = -1
     abs_errs: list[float] = []
 
     for t in range(eval_start, eval_end):
@@ -649,7 +687,7 @@ def run_walkforward_wave_classifier(
             mask = y_tr >= 0
             if int(mask.sum()) < min_train_rows or len(set(y_tr[mask].tolist())) < 2:
                 continue
-            clf = _make_clf()
+            clf = make_clf()
             clf.fit(X[:train_end][mask], y_tr[mask])
             w_tr = wave_ret[:train_end][mask]
             up_vals = w_tr[y_tr[mask] == 2]
@@ -664,47 +702,39 @@ def run_walkforward_wave_classifier(
         expected_pct = p_up * avg_up_pct + p_down * avg_down_pct
         actual_pct = (math.exp(float(wave_ret[t])) - 1.0) * 100.0
 
+        fired_dir = 0
+        is_hc = False
         if p_up >= 0.45 and (p_up - p_down) >= 0.12:
-            sig_total += 1
-            is_hit = actual_pct > 0
-            if is_hit:
-                sig_hits += 1
-            abs_errs.append(abs(expected_pct - actual_pct))
-            if p_up >= 0.55 and (p_up - p_down) >= 0.22:
-                hc_total += 1
-                if is_hit:
-                    hc_hits += 1
+            fired_dir = 1
+            is_hc = p_up >= 0.55 and (p_up - p_down) >= 0.22
         elif p_down >= 0.45 and (p_down - p_up) >= 0.12:
+            fired_dir = -1
+            is_hc = p_down >= 0.55 and (p_down - p_up) >= 0.22
+
+        if fired_dir != 0:
             sig_total += 1
-            is_hit = actual_pct < 0
+            is_hit = (actual_pct > 0) if fired_dir > 0 else (actual_pct < 0)
             if is_hit:
                 sig_hits += 1
             abs_errs.append(abs(expected_pct - actual_pct))
-            if p_down >= 0.55 and (p_down - p_up) >= 0.22:
+            if is_hc:
                 hc_total += 1
                 if is_hit:
                     hc_hits += 1
+            # Strictly non-overlapping independent bet tracking (zero target overlap)
+            if t >= next_indep_t:
+                indep_total += 1
+                if is_hit:
+                    indep_hits += 1
+                next_indep_t = t + horizon_days
 
     # Fit final wave classifier on all matured rows up to today
     y_full = y_cls[:eval_end]
     full_mask = y_full >= 0
     if int(full_mask.sum()) < min_train_rows or len(set(y_full[full_mask].tolist())) < 2:
-        return WaveForecastResult(
-            wave_state="Range-Bound",
-            up_wave_prob_pct=None,
-            down_wave_prob_pct=None,
-            range_prob_pct=None,
-            expected_wave_pct=None,
-            q15_pct=None,
-            q85_pct=None,
-            signal_hit_rate_pct=None,
-            signal_samples=0,
-            high_conviction_hit_rate_pct=None,
-            high_conviction_samples=0,
-            mae_pct=None,
-        )
+        return _empty_wave_result()
 
-    final_clf = _make_clf()
+    final_clf = make_clf()
     final_clf.fit(X[:eval_end][full_mask], y_full[full_mask])
     p_down, p_range, p_up = _extract_probs(final_clf, X[n - 1 : n])
 
@@ -738,6 +768,75 @@ def run_walkforward_wave_classifier(
         high_conviction_hit_rate_pct=round((hc_hits / hc_total) * 100.0, 1) if hc_total >= 8 else None,
         high_conviction_samples=hc_total,
         mae_pct=round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else None,
+        indep_hit_rate_pct=round((indep_hits / indep_total) * 100.0, 1) if indep_total >= 5 else None,
+        indep_samples=indep_total,
+        indep_p_value=_binomial_p_value_gt_half(indep_hits, indep_total) if indep_total >= 5 else None,
+    )
+
+
+def run_walkforward_wave_classifier(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int,
+    min_train_rows: int = 240,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> WaveForecastResult:
+    """Multi-day Oil Price Wave Detector using HistGradientBoostingClassifier (33 features)."""
+    X, prices, _ = build_gbt_feature_matrix(daily_rows, price_key=price_key)
+
+    def _make_gbt_clf() -> HistGradientBoostingClassifier:
+        return HistGradientBoostingClassifier(
+            max_iter=80,
+            max_depth=3,
+            learning_rate=0.05,
+            l2_regularization=3.0,
+            min_samples_leaf=20,
+            max_bins=128,
+            random_state=42,
+        )
+
+    return _run_wave_engine(
+        X=X,
+        prices=prices,
+        horizon_days=horizon_days,
+        make_clf=_make_gbt_clf,
+        min_train_rows=min_train_rows,
+        refit_every=refit_every,
+        max_eval_days=max_eval_days,
+    )
+
+
+def run_walkforward_regularized_wave(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int,
+    min_train_rows: int = 240,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> WaveForecastResult:
+    """Low-variance 10-factor L2-regularized Logistic Regression wave classifier (identical for Brent & WTI)."""
+    X, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        feature_names=ORTHOGONAL_FEATURE_NAMES,
+    )
+
+    def _make_reg_clf() -> Pipeline:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(C=0.20, max_iter=500, random_state=42)),
+        ])
+
+    return _run_wave_engine(
+        X=X,
+        prices=prices,
+        horizon_days=horizon_days,
+        make_clf=_make_reg_clf,
+        min_train_rows=min_train_rows,
+        refit_every=refit_every,
+        max_eval_days=max_eval_days,
     )
 
 
