@@ -21,8 +21,8 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
-# Winning 34-feature core (55.2% / 57.5% HC OOS on Brent 14d, 53.3% on WTI 7d)
-FEATURE_NAMES: tuple[str, ...] = (
+# Full 47-feature candidate pool (used for strictly out-of-sample permutation importance audits)
+ALL_CANDIDATE_FEATURE_NAMES: tuple[str, ...] = (
     "ret_1d",
     "ret_3d",
     "ret_5d",
@@ -57,10 +57,6 @@ FEATURE_NAMES: tuple[str, ...] = (
     "pw_cape_vs_suez_share",
     "pw_global_tankers_7d_vs_30d",
     "pw_hormuz_cap_z30",
-)
-
-# Full 47-feature candidate pool (includes all 5 newly added data packs for empirical OOS importance)
-ALL_CANDIDATE_FEATURE_NAMES: tuple[str, ...] = FEATURE_NAMES + (
     "copper_ret_5d",
     "copper_ret_20d",
     "china_ret_5d",
@@ -74,6 +70,45 @@ ALL_CANDIDATE_FEATURE_NAMES: tuple[str, ...] = FEATURE_NAMES + (
     "cftc_mm_net_z52",
     "eia_stocks_chg_kbbl",
     "eia_refinery_util_pct",
+)
+
+# Empirically pruned 33-feature active set (from OOS permutation importance on 280 held-out days):
+# Promoted: copper_ret_20d (+1.07%), stng_ret_5d (+0.93%), us10y_chg_5d (+0.79%), china_ret_20d (+0.57%)
+# Dropped noisy features: vol_20d (-1.36%), ret_5d (-1.36%), ret_10d (-1.43%), dxy_ret_5d (-0.71%), pw_bab_7d_vs_30d (-0.64%)
+FEATURE_NAMES: tuple[str, ...] = (
+    "ret_1d",
+    "ret_3d",
+    "ret_20d",
+    "dist_ma20",
+    "dist_ma50",
+    "vol_5d",
+    "vol_ratio",
+    "rsi_14",
+    "crack_321_level",
+    "crack_321_chg_5d",
+    "crack_321_chg_20d",
+    "brent_wti_spread",
+    "brent_wti_chg_5d",
+    "vix_level",
+    "vix_chg_5d",
+    "fro_ret_5d",
+    "fro_ret_20d",
+    "xle_ret_5d",
+    "news_dir_1d",
+    "news_dir_3d",
+    "news_dir_7d",
+    "news_shock_count_3d",
+    "pw_hormuz_7d_vs_30d",
+    "pw_hormuz_cap_7d_vs_30d",
+    "pw_suez_7d_vs_30d",
+    "pw_cape_7d_vs_30d",
+    "pw_cape_vs_suez_share",
+    "pw_global_tankers_7d_vs_30d",
+    "pw_hormuz_cap_z30",
+    "copper_ret_20d",
+    "china_ret_20d",
+    "us10y_chg_5d",
+    "stng_ret_5d",
 )
 
 FEATURE_METADATA: dict[str, tuple[str, str]] = {
@@ -243,16 +278,17 @@ def build_gbt_feature_matrix(
     pw_cape = _col("pw_cape_tankers")
     pw_global = _col("pw_global_tankers")
 
-    if include_all_candidates:
-        copper = _col("copper_close")
-        china = _col("china_etf_close")
-        natgas = _col("natgas_close")
-        us10y = _col("us10y_yield")
-        stng = _col("product_tanker_close")
-        curve = _col("curve_backwardation_proxy")
-        cftc_net_pct = _col("cftc_mm_net_pct_oi")
-        eia_chg = _col("eia_crude_stocks_chg_kbbl")
-        eia_util = _col("eia_refinery_util_pct")
+    copper = _col("copper_close")
+    china = _col("china_etf_close")
+    natgas = _col("natgas_close")
+    us10y = _col("us10y_yield")
+    stng = _col("product_tanker_close")
+    curve = _col("curve_backwardation_proxy")
+    cftc_net_pct = _col("cftc_mm_net_pct_oi")
+    eia_chg = _col("eia_crude_stocks_chg_kbbl")
+    eia_util = _col("eia_refinery_util_pct")
+
+    selected_names = ALL_CANDIDATE_FEATURE_NAMES if include_all_candidates else FEATURE_NAMES
 
     daily_rets = np.full(n, np.nan, dtype=np.float64)
     for i in range(1, n):
@@ -310,59 +346,56 @@ def build_gbt_feature_matrix(
         else:
             cape_share = np.nan
 
-        row = [
-            r1,
-            r3,
-            r5,
-            r10,
-            r20,
-            dist_ma20,
-            dist_ma50,
-            vol5,
-            vol20,
-            vol_ratio,
-            rsi14,
-            crack[i],
-            _safe_diff(crack, i, 5),
-            _safe_diff(crack, i, 20),
-            bw[i],
-            _safe_diff(bw, i, 5),
-            _safe_log_ret(dxy, i, 5),
-            vix[i],
-            _safe_diff(vix, i, 5),
-            _safe_log_ret(fro, i, 5),
-            _safe_log_ret(fro, i, 20),
-            _safe_log_ret(xle, i, 5),
-            n1,
-            n3,
-            n7,
-            sh3,
-            _rolling_ratio_7_30(pw_hormuz, i),
-            _rolling_ratio_7_30(pw_hormuz_cap, i),
-            _rolling_ratio_7_30(pw_bab, i),
-            _rolling_ratio_7_30(pw_suez, i),
-            _rolling_ratio_7_30(pw_cape, i),
-            cape_share,
-            _rolling_ratio_7_30(pw_global, i),
-            _rolling_z30(pw_hormuz_cap, i),
-        ]
-        if include_all_candidates:
-            row.extend([
-                _safe_log_ret(copper, i, 5),
-                _safe_log_ret(copper, i, 20),
-                _safe_log_ret(china, i, 5),
-                _safe_log_ret(china, i, 20),
-                _safe_log_ret(natgas, i, 5),
-                _safe_diff(us10y, i, 5),
-                _safe_log_ret(stng, i, 5),
-                _safe_log_ret(curve, i, 5),
-                _safe_log_ret(curve, i, 20),
-                cftc_net_pct[i],
-                _rolling_z_window(cftc_net_pct, i, 252),
-                eia_chg[i],
-                eia_util[i],
-            ])
-        X[i] = row
+        feat_map = {
+            "ret_1d": r1,
+            "ret_3d": r3,
+            "ret_5d": r5,
+            "ret_10d": r10,
+            "ret_20d": r20,
+            "dist_ma20": dist_ma20,
+            "dist_ma50": dist_ma50,
+            "vol_5d": vol5,
+            "vol_20d": vol20,
+            "vol_ratio": vol_ratio,
+            "rsi_14": rsi14,
+            "crack_321_level": crack[i],
+            "crack_321_chg_5d": _safe_diff(crack, i, 5),
+            "crack_321_chg_20d": _safe_diff(crack, i, 20),
+            "brent_wti_spread": bw[i],
+            "brent_wti_chg_5d": _safe_diff(bw, i, 5),
+            "dxy_ret_5d": _safe_log_ret(dxy, i, 5),
+            "vix_level": vix[i],
+            "vix_chg_5d": _safe_diff(vix, i, 5),
+            "fro_ret_5d": _safe_log_ret(fro, i, 5),
+            "fro_ret_20d": _safe_log_ret(fro, i, 20),
+            "xle_ret_5d": _safe_log_ret(xle, i, 5),
+            "news_dir_1d": n1,
+            "news_dir_3d": n3,
+            "news_dir_7d": n7,
+            "news_shock_count_3d": sh3,
+            "pw_hormuz_7d_vs_30d": _rolling_ratio_7_30(pw_hormuz, i),
+            "pw_hormuz_cap_7d_vs_30d": _rolling_ratio_7_30(pw_hormuz_cap, i),
+            "pw_bab_7d_vs_30d": _rolling_ratio_7_30(pw_bab, i),
+            "pw_suez_7d_vs_30d": _rolling_ratio_7_30(pw_suez, i),
+            "pw_cape_7d_vs_30d": _rolling_ratio_7_30(pw_cape, i),
+            "pw_cape_vs_suez_share": cape_share,
+            "pw_global_tankers_7d_vs_30d": _rolling_ratio_7_30(pw_global, i),
+            "pw_hormuz_cap_z30": _rolling_z30(pw_hormuz_cap, i),
+            "copper_ret_5d": _safe_log_ret(copper, i, 5),
+            "copper_ret_20d": _safe_log_ret(copper, i, 20),
+            "china_ret_5d": _safe_log_ret(china, i, 5),
+            "china_ret_20d": _safe_log_ret(china, i, 20),
+            "natgas_ret_5d": _safe_log_ret(natgas, i, 5),
+            "us10y_chg_5d": _safe_diff(us10y, i, 5),
+            "stng_ret_5d": _safe_log_ret(stng, i, 5),
+            "curve_chg_5d": _safe_log_ret(curve, i, 5),
+            "curve_chg_20d": _safe_log_ret(curve, i, 20),
+            "cftc_mm_net_pct_oi": cftc_net_pct[i],
+            "cftc_mm_net_z52": _rolling_z_window(cftc_net_pct, i, 252),
+            "eia_stocks_chg_kbbl": eia_chg[i],
+            "eia_refinery_util_pct": eia_util[i],
+        }
+        X[i] = [feat_map[name] for name in selected_names]
 
     return X, prices, dates
 
