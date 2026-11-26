@@ -23,7 +23,12 @@ from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer, RobustScaler
+
+
+def _clip_z(arr: np.ndarray) -> np.ndarray:
+    """Winsorize robustly scaled features to [-3.5, +3.5] so fat-tail spikes cannot distort linear models."""
+    return np.clip(arr, -3.5, 3.5)
 
 # 10 economically orthogonal, zero-drift factors (identical for Brent & WTI — zero symbol p-hacking)
 ORTHOGONAL_FEATURE_NAMES: tuple[str, ...] = (
@@ -836,7 +841,8 @@ def run_walkforward_regularized_wave(
     def _make_reg_clf() -> Pipeline:
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
-            ("scaler", StandardScaler()),
+            ("scaler", RobustScaler()),
+            ("clip", FunctionTransformer(_clip_z)),
             ("clf", LogisticRegression(C=0.20, max_iter=500, random_state=42)),
         ])
 
@@ -917,6 +923,14 @@ def run_walkforward_volatility_alert(
     y_true_indep: list[int] = []
     y_prob_indep: list[float] = []
 
+    def _make_vol_clf() -> Pipeline:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", RobustScaler()),
+            ("clip", FunctionTransformer(_clip_z)),
+            ("clf", LogisticRegression(C=0.25, max_iter=500, random_state=42)),
+        ])
+
     for t in range(eval_start, eval_end):
         if y_bin[t] < 0:
             continue
@@ -927,11 +941,7 @@ def run_walkforward_volatility_alert(
             m = y_tr >= 0
             if int(m.sum()) < 140 or len(set(y_tr[m].tolist())) < 2:
                 continue
-            clf = Pipeline([
-                ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
-                ("scaler", StandardScaler()),
-                ("clf", LogisticRegression(C=0.25, max_iter=500, random_state=42)),
-            ])
+            clf = _make_vol_clf()
             clf.fit(X[train_start:train_end][m], y_tr[m])
             last_fit_t = t
 
@@ -953,11 +963,7 @@ def run_walkforward_volatility_alert(
     fm = y_full >= 0
     live_prob: Optional[float] = None
     if int(fm.sum()) >= 140 and len(set(y_full[fm].tolist())) >= 2:
-        final_clf = Pipeline([
-            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
-            ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(C=0.25, max_iter=500, random_state=42)),
-        ])
+        final_clf = _make_vol_clf()
         final_clf.fit(X[final_start:eval_end][fm], y_full[fm])
         live_prob = round(float(final_clf.predict_proba(X[n - 1 : n])[0][1]) * 100.0, 1)
 

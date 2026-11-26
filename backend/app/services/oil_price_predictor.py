@@ -979,7 +979,15 @@ def _assemble_gbt_daily_rows(
             e_idx += 1
 
         m = macro_by_date.get(p.price_date)
-        pw = pw_by_date.get(p.price_date, {})
+        pw = pw_by_date.get(p.price_date)
+        if not pw:
+            # Backward-only forward-fill up to 5d to cover IMF PortWatch's ~3-4 day satellite lag
+            for lag in range(1, 6):
+                prev_pw = pw_by_date.get(p.price_date - timedelta(days=lag))
+                if prev_pw:
+                    pw = prev_pw
+                    break
+        pw = pw or {}
         gbt_daily_rows.append({
             "date": p.price_date,
             "brent_close_usd": p.brent_close_usd,
@@ -1007,7 +1015,8 @@ def _assemble_gbt_daily_rows(
             "cftc_mm_net_pct_oi": cur_cftc,
             "eia_crude_stocks_chg_kbbl": cur_eia_chg,
             "eia_refinery_util_pct": cur_eia_util,
-            "news_dir_1d": news_dir_by_date.get(p.price_date, 0.0),
+            # None on zero-news days so 3d/7d averages ignore silent days (eliminates 2022 vs 2026 volume drift)
+            "news_dir_1d": news_dir_by_date.get(p.price_date),
             "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
             "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
             "pw_hormuz_capacity": pw.get("pw_hormuz_capacity"),
