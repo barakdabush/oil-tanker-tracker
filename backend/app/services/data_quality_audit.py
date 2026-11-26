@@ -187,6 +187,25 @@ def audit_feature_matrix(
             continue
 
         std_all = float(np.std(valid))
+        mean_all = float(np.mean(valid))
+        skew: Optional[float] = None
+        kurt: Optional[float] = None
+        outlier_pct: float = 0.0
+        max_abs_z: Optional[float] = None
+        if std_all > 1e-9:
+            z_vals = (valid - mean_all) / std_all
+            skew = round(float(np.mean(z_vals ** 3)), 2)
+            kurt = round(float(np.mean(z_vals ** 4) - 3.0), 2)
+            outlier_pct = round(float(np.mean(np.abs(z_vals) > 3.0)) * 100.0, 2)
+            max_abs_z = round(float(np.max(np.abs(z_vals))), 2)
+
+        needs_robust = (
+            (skew is not None and abs(skew) >= 1.5)
+            or (kurt is not None and kurt >= 5.0)
+            or (max_abs_z is not None and max_abs_z >= 5.0)
+        )
+        recommended_scaler = "RobustScaler + Clip" if needs_robust else "StandardScaler OK"
+
         early = col[:mid]
         late = col[mid:]
         early_v = early[np.isfinite(early)]
@@ -206,6 +225,9 @@ def audit_feature_matrix(
         elif drift_z is not None and drift_z >= 1.0:
             status = "WARNING"
             issue = f"Distribution shift between first half & second half (drift={drift_z}σ)"
+        elif needs_robust:
+            status = "WARNING"
+            issue = f"Non-normal distribution (skew={skew}, kurt={kurt}, max|z|={max_abs_z}) — use RobustScaler + Clip"
         elif nan_pct >= 8.0:
             status = "WARNING"
             issue = f"{nan_pct}% NaN (mostly warmup or missing history)"
@@ -217,6 +239,11 @@ def audit_feature_matrix(
             "in_10f_model": fname in ortho_set,
             "nan_pct": nan_pct,
             "std": round(std_all, 4),
+            "skewness": skew,
+            "excess_kurtosis": kurt,
+            "outlier_pct_gt_3sigma": outlier_pct,
+            "max_abs_z": max_abs_z,
+            "recommended_scaler": recommended_scaler,
             "drift_z": drift_z,
             "status": status,
             "issue": issue,

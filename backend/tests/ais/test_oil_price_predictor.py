@@ -385,3 +385,19 @@ def test_data_quality_audit_catches_nulls_outliers_and_flatlines():
     assert res["out_of_range_count"] == 1
     assert res["extreme_jump_count"] >= 1
     assert res["max_stuck_run"] == 12
+
+    from app.services.data_quality_audit import audit_feature_matrix
+
+    # 40-day synthetic series with one massive crack spread spike -> should flag RobustScaler + Clip
+    frows = [
+        {
+            "date": d0 + timedelta(days=i),
+            "brent_close_usd": 80.0 + 0.1 * i,
+            "wti_close_usd": 76.0 + 0.1 * i,
+            "crack_spread_321_usd": 95.0 if i == 35 else 25.0 + 0.05 * i,
+        }
+        for i in range(40)
+    ]
+    faudit = {f["feature"]: f for f in audit_feature_matrix(frows)}
+    assert faudit["crack_321_level"]["max_abs_z"] >= 5.0
+    assert faudit["crack_321_level"]["recommended_scaler"] == "RobustScaler + Clip"
