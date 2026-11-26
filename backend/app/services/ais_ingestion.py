@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import websockets
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
 from app.models import Vessel, VesselPosition
+from app.services.vessel_writer import flush_vessels_and_positions
 from app.utils.geo import haversine_km, is_plausible_move, is_valid_coordinate
 from app.ws_manager import manager
 
@@ -820,57 +820,15 @@ async def flush_batch():
     now = datetime.now(timezone.utc)
     
     try:
-        async with async_session() as session:
-            # 1. Bulk Upsert Vessels
-            if current_vessels:
-                vessel_list = list(current_vessels.values())
-                
-                # Gather all keys across all vessels to normalize the dictionaries
-                # SQLAlchemy multi-row inserts require consistent keys across all dicts
-                all_keys = set()
-                for v in vessel_list:
-                    all_keys.update(v.keys())
-                
-                for v in vessel_list:
-                    v["updated_at"] = now
-                    # Add missing keys as None
-                    for key in all_keys:
-                        if key not in v:
-                            v[key] = None
-                
-                v_stmt = pg_insert(Vessel).values(vessel_list)
-                
-                # Build DO UPDATE set dict cleanly
-                set_clause = {}
-                for col_name in all_keys:
-                    if col_name in ["mmsi", "created_at"]:
-                        continue
-                    if col_name == "updated_at":
-                        set_clause[col_name] = v_stmt.excluded[col_name]
-                    else:
-                        # Only update if the new value is not NULL
-                        set_clause[col_name] = func.coalesce(v_stmt.excluded[col_name], getattr(Vessel, col_name))
-                        
-                upsert_stmt = v_stmt.on_conflict_do_update(
-                    index_elements=["mmsi"],
-                    set_=set_clause,
-                    # Only update if the incoming data is newer or existing has no last_seen
-                    where=(
-                        (v_stmt.excluded.last_seen == None) | 
-                        (Vessel.last_seen == None) | 
-                        (v_stmt.excluded.last_seen >= Vessel.last_seen)
-                    )
-                )
-                await session.execute(upsert_stmt)
-                
-            # 2. Bulk Insert Positions
-            if current_positions:
-                p_stmt = pg_insert(VesselPosition).values(current_positions)
-                p_upsert_stmt = p_stmt.on_conflict_do_nothing()
-                await session.execute(p_upsert_stmt)
-                
-            await session.commit()
-            logger.info(f"💾 Flushed {len(current_vessels)} vessels and {len(current_positions)} positions to DB")
+        flushed_vessels, flushed_positions = await flush_vessels_and_positions(
+            async_session,
+            current_vessels.values(),
+            current_positions,
+            now=now,
+        )
+        logger.info(
+            f"💾 Flushed {flushed_vessels} vessels and {flushed_positions} positions to DB"
+        )
     except Exception as e:
         logger.error(f"Error flushing DB batch: {e}")
 
