@@ -212,6 +212,7 @@ def test_walkforward_ridge_and_vol_and_routes():
     assert "/api/forecast/bottom-line" in paths
     assert "/api/forecast/feature-importance" in paths
     assert "/api/forecast/model-benchmark" in paths
+    assert "/api/forecast/data-quality" in paths
     assert "/api/forecast/backfill-macro" in paths
     assert "/api/news/events/{event_id}/prediction" in paths
     assert "/api/news/backfill" in paths
@@ -362,3 +363,25 @@ def test_gulf_hurricane_risk_and_policy_and_oil_majors_news():
     """
     parsed = parse_eia_weekly_html(sample_html, start_date=date(2025, 1, 1))
     assert parsed == {date(2025, 1, 3): 414642.0, date(2025, 1, 10): 412680.0}
+
+
+def test_data_quality_audit_catches_nulls_outliers_and_flatlines():
+    from app.services.data_quality_audit import _audit_numeric_series
+
+    d0 = date(2026, 1, 1)
+    dates = [d0 + timedelta(days=i) for i in range(20)]
+    # Stuck value for 12 days + one 50% jump + one negative out-of-range value
+    vals = [80.0] * 12 + [125.0, 82.0, -5.0, None, None, None, None, None]
+    res = _audit_numeric_series(
+        "brent_close_usd",
+        vals,
+        dates,
+        min_ok=10.0,
+        max_ok=250.0,
+        max_daily_pct_jump=15.0,
+    )
+    assert res["status"] == "CRITICAL"
+    assert res["null_pct"] == 25.0
+    assert res["out_of_range_count"] == 1
+    assert res["extreme_jump_count"] >= 1
+    assert res["max_stuck_run"] == 12

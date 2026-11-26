@@ -43,8 +43,18 @@ async def get_feature_importance(
 async def get_model_benchmark(
     db: AsyncSession = Depends(get_db),
 ):
-    """Benchmark 10-Factor Regularized Logistic vs 33-Feature GBT across 3d/5d/7d on Brent & WTI with non-overlapping p-values."""
+    """Benchmark Expanding vs Rolling 300d vs Extreme-Only vs Big-Move Volatility Alert across Brent & WTI."""
     return await build_model_benchmark_report(db)
+
+
+@router.get("/data-quality")
+async def get_data_quality_audit(
+    db: AsyncSession = Depends(get_db),
+):
+    """Run full data quality, null-rate, outlier, join-alignment, and feature drift audit across all forecasting tables."""
+    from app.services.data_quality_audit import run_data_quality_audit
+
+    return await run_data_quality_audit(db)
 
 
 @router.post("/backfill-macro")
