@@ -620,8 +620,11 @@ def _run_wave_engine(
     min_train_rows: int = 240,
     refit_every: int = 25,
     max_eval_days: int = 1000,
+    train_window_days: Optional[int] = None,
+    min_prob: float = 0.45,
+    min_margin: float = 0.12,
 ) -> WaveForecastResult:
-    """Expanding-window walk-forward 3-class wave engine with non-overlapping independent p-value."""
+    """Expanding or rolling-window walk-forward 3-class wave engine with non-overlapping independent p-value."""
     n = len(prices)
     if n < min_train_rows + horizon_days + 25:
         return _empty_wave_result()
@@ -682,14 +685,16 @@ def _run_wave_engine(
         if y_cls[t] < 0 or not math.isfinite(wave_ret[t]):
             continue
         train_end = t - horizon_days + 1
+        train_start = max(0, train_end - train_window_days) if train_window_days else 0
         if clf is None or (t - last_fit_t) >= refit_every:
-            y_tr = y_cls[:train_end]
+            y_tr = y_cls[train_start:train_end]
             mask = y_tr >= 0
-            if int(mask.sum()) < min_train_rows or len(set(y_tr[mask].tolist())) < 2:
+            eff_min = min(min_train_rows, train_window_days - 20) if train_window_days else min_train_rows
+            if int(mask.sum()) < max(120, eff_min) or len(set(y_tr[mask].tolist())) < 2:
                 continue
             clf = make_clf()
-            clf.fit(X[:train_end][mask], y_tr[mask])
-            w_tr = wave_ret[:train_end][mask]
+            clf.fit(X[train_start:train_end][mask], y_tr[mask])
+            w_tr = wave_ret[train_start:train_end][mask]
             up_vals = w_tr[y_tr[mask] == 2]
             dn_vals = w_tr[y_tr[mask] == 0]
             if len(up_vals) > 0:
@@ -704,10 +709,10 @@ def _run_wave_engine(
 
         fired_dir = 0
         is_hc = False
-        if p_up >= 0.45 and (p_up - p_down) >= 0.12:
+        if p_up >= min_prob and (p_up - p_down) >= min_margin:
             fired_dir = 1
             is_hc = p_up >= 0.55 and (p_up - p_down) >= 0.22
-        elif p_down >= 0.45 and (p_down - p_up) >= 0.12:
+        elif p_down >= min_prob and (p_down - p_up) >= min_margin:
             fired_dir = -1
             is_hc = p_down >= 0.55 and (p_down - p_up) >= 0.22
 
@@ -728,26 +733,27 @@ def _run_wave_engine(
                     indep_hits += 1
                 next_indep_t = t + horizon_days
 
-    # Fit final wave classifier on all matured rows up to today
-    y_full = y_cls[:eval_end]
+    # Fit final wave classifier on most recent window up to today
+    final_start = max(0, eval_end - train_window_days) if train_window_days else 0
+    y_full = y_cls[final_start:eval_end]
     full_mask = y_full >= 0
-    if int(full_mask.sum()) < min_train_rows or len(set(y_full[full_mask].tolist())) < 2:
+    if int(full_mask.sum()) < 120 or len(set(y_full[full_mask].tolist())) < 2:
         return _empty_wave_result()
 
     final_clf = make_clf()
-    final_clf.fit(X[:eval_end][full_mask], y_full[full_mask])
+    final_clf.fit(X[final_start:eval_end][full_mask], y_full[full_mask])
     p_down, p_range, p_up = _extract_probs(final_clf, X[n - 1 : n])
 
-    w_full = wave_ret[:eval_end][full_mask]
+    w_full = wave_ret[final_start:eval_end][full_mask]
     up_vals = w_full[y_full[full_mask] == 2]
     dn_vals = w_full[y_full[full_mask] == 0]
     avg_up_pct = float(np.mean(up_vals)) * 100.0 if len(up_vals) > 0 else 2.0
     avg_down_pct = float(np.mean(dn_vals)) * 100.0 if len(dn_vals) > 0 else -2.0
     expected_pct = round(max(-12.0, min(12.0, p_up * avg_up_pct + p_down * avg_down_pct)), 2)
 
-    if p_up >= 0.45 and (p_up - p_down) >= 0.12:
+    if p_up >= min_prob and (p_up - p_down) >= min_margin:
         wave_state = "Bullish Wave"
-    elif p_down >= 0.45 and (p_down - p_up) >= 0.12:
+    elif p_down >= min_prob and (p_down - p_up) >= min_margin:
         wave_state = "Bearish Wave"
     else:
         wave_state = "Range-Bound"
@@ -781,6 +787,7 @@ def run_walkforward_wave_classifier(
     min_train_rows: int = 240,
     refit_every: int = 25,
     max_eval_days: int = 1000,
+    train_window_days: Optional[int] = None,
 ) -> WaveForecastResult:
     """Multi-day Oil Price Wave Detector using HistGradientBoostingClassifier (33 features)."""
     X, prices, _ = build_gbt_feature_matrix(daily_rows, price_key=price_key)
@@ -804,6 +811,7 @@ def run_walkforward_wave_classifier(
         min_train_rows=min_train_rows,
         refit_every=refit_every,
         max_eval_days=max_eval_days,
+        train_window_days=train_window_days,
     )
 
 
@@ -814,6 +822,9 @@ def run_walkforward_regularized_wave(
     min_train_rows: int = 240,
     refit_every: int = 25,
     max_eval_days: int = 1000,
+    train_window_days: Optional[int] = None,
+    min_prob: float = 0.45,
+    min_margin: float = 0.12,
 ) -> WaveForecastResult:
     """Low-variance 10-factor L2-regularized Logistic Regression wave classifier (identical for Brent & WTI)."""
     X, prices, _ = build_gbt_feature_matrix(
@@ -837,7 +848,132 @@ def run_walkforward_regularized_wave(
         min_train_rows=min_train_rows,
         refit_every=refit_every,
         max_eval_days=max_eval_days,
+        train_window_days=train_window_days,
+        min_prob=min_prob,
+        min_margin=min_margin,
     )
+
+
+VOLATILITY_FEATURE_NAMES: tuple[str, ...] = (
+    "vol_5d",
+    "vol_20d",
+    "vol_ratio",
+    "vix_level",
+    "vix_chg_5d",
+    "dist_ma50",
+    "pw_hormuz_7d_vs_30d",
+    "crack_321_chg_5d",
+)
+
+
+def run_walkforward_volatility_alert(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int = 5,
+    train_window_days: int = 300,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> dict[str, Any]:
+    """Predict Big-Move / Volatility Regime Alert: will max |return| over next H days exceed threshold?
+
+    Strictly out-of-sample rolling-window walk-forward with non-overlapping accuracy,
+    exact one-sided binomial p-value, and ROC-AUC.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    X, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        feature_names=VOLATILITY_FEATURE_NAMES,
+    )
+    n = len(prices)
+    if n < 260 + horizon_days:
+        return {
+            "threshold_pct": None,
+            "big_move_prob_pct": None,
+            "alert_state": "Normal",
+            "indep_accuracy_pct": None,
+            "indep_samples": 0,
+            "indep_p_value": None,
+            "roc_auc": None,
+        }
+
+    move_th = 0.025 if horizon_days <= 3 else (0.032 if horizon_days <= 5 else 0.038)
+    y_bin = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        fwd = prices[i + 1 : i + 1 + horizon_days]
+        if prices[i] > 0 and len(fwd) == horizon_days and np.all(fwd > 0):
+            max_abs = float(np.max(np.abs(fwd / prices[i] - 1.0)))
+            y_bin[i] = 1 if max_abs >= move_th else 0
+
+    eval_end = n - horizon_days
+    eval_start = max(240 + horizon_days, eval_end - max_eval_days)
+
+    clf: Any = None
+    last_fit_t = -9999
+    indep_hits = 0
+    indep_total = 0
+    next_indep_t = -1
+    y_true_indep: list[int] = []
+    y_prob_indep: list[float] = []
+
+    for t in range(eval_start, eval_end):
+        if y_bin[t] < 0:
+            continue
+        train_end = t - horizon_days + 1
+        train_start = max(0, train_end - train_window_days)
+        if clf is None or (t - last_fit_t) >= refit_every:
+            y_tr = y_bin[train_start:train_end]
+            m = y_tr >= 0
+            if int(m.sum()) < 140 or len(set(y_tr[m].tolist())) < 2:
+                continue
+            clf = Pipeline([
+                ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+                ("scaler", StandardScaler()),
+                ("clf", LogisticRegression(C=0.25, max_iter=500, random_state=42)),
+            ])
+            clf.fit(X[train_start:train_end][m], y_tr[m])
+            last_fit_t = t
+
+        if clf is None:
+            continue
+        prob_hi = float(clf.predict_proba(X[t : t + 1])[0][1])
+        pred_hi = 1 if prob_hi >= 0.50 else 0
+
+        if t >= next_indep_t:
+            indep_total += 1
+            if pred_hi == int(y_bin[t]):
+                indep_hits += 1
+            y_true_indep.append(int(y_bin[t]))
+            y_prob_indep.append(prob_hi)
+            next_indep_t = t + horizon_days
+
+    final_start = max(0, eval_end - train_window_days)
+    y_full = y_bin[final_start:eval_end]
+    fm = y_full >= 0
+    live_prob: Optional[float] = None
+    if int(fm.sum()) >= 140 and len(set(y_full[fm].tolist())) >= 2:
+        final_clf = Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(C=0.25, max_iter=500, random_state=42)),
+        ])
+        final_clf.fit(X[final_start:eval_end][fm], y_full[fm])
+        live_prob = round(float(final_clf.predict_proba(X[n - 1 : n])[0][1]) * 100.0, 1)
+
+    auc: Optional[float] = None
+    if len(set(y_true_indep)) >= 2:
+        auc = round(float(roc_auc_score(y_true_indep, y_prob_indep)), 3)
+
+    return {
+        "threshold_pct": round(move_th * 100.0, 1),
+        "big_move_prob_pct": live_prob,
+        "alert_state": "High Volatility Alert" if (live_prob is not None and live_prob >= 55.0) else "Normal",
+        "indep_accuracy_pct": round((indep_hits / indep_total) * 100.0, 1) if indep_total >= 5 else None,
+        "indep_samples": indep_total,
+        "indep_p_value": _binomial_p_value_gt_half(indep_hits, indep_total) if indep_total >= 5 else None,
+        "roc_auc": auc,
+    }
 
 
 def compute_oos_feature_importance(

@@ -288,10 +288,23 @@ def test_crack_spread_and_walkforward_gbt_model():
         horizon_days=5,
         min_train_rows=180,
         refit_every=25,
+        train_window_days=200,
     )
     assert rres.up_wave_prob_pct is not None and rres.down_wave_prob_pct is not None
     assert rres.indep_samples >= 5
     assert rres.indep_p_value is not None and 0.0 <= rres.indep_p_value <= 1.0
+
+    from app.services.gbt_oil_model import run_walkforward_volatility_alert
+
+    vres = run_walkforward_volatility_alert(
+        daily_rows=rows,
+        price_key="brent_close_usd",
+        horizon_days=5,
+        train_window_days=220,
+    )
+    assert vres["threshold_pct"] == 3.2
+    assert vres["indep_samples"] >= 5
+    assert vres["alert_state"] in ("High Volatility Alert", "Normal")
 
     imp = compute_oos_feature_importance(
         daily_rows=rows,

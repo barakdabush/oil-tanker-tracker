@@ -45,6 +45,7 @@ from app.schemas.forecast import (
 from app.services.gbt_oil_model import (
     compute_oos_feature_importance,
     run_walkforward_regularized_wave,
+    run_walkforward_volatility_alert,
     run_walkforward_wave_classifier,
 )
 from app.services.news_predictor import build_news_analog_memory
@@ -1140,35 +1141,45 @@ async def build_feature_importance_report(
 
 
 async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
-    """Head-to-head full-4y OOS benchmark: 10-Factor Regularized Logistic vs 33-Feature Wave GBT."""
+    """Head-to-head full-4y OOS benchmark: Expanding vs Rolling 300d vs Extreme-Only vs Volatility Alert."""
     daily_rows, coverage = await _load_5y_daily_rows(db, symbol="BZ=F")
     results: dict[str, dict[str, Any]] = {}
+
+    def _pack(res) -> dict[str, Any]:
+        return {
+            "indep_hit_rate_pct": res.indep_hit_rate_pct,
+            "indep_samples": res.indep_samples,
+            "indep_p_value": res.indep_p_value,
+            "rolling_hit_rate_pct": res.signal_hit_rate_pct,
+            "rolling_samples": res.signal_samples,
+            "mae_pct": res.mae_pct,
+        }
+
     for sym, price_key in (("BZ=F", "brent_close_usd"), ("CL=F", "wti_close_usd")):
         sym_out: dict[str, Any] = {}
         for h_label, h_days in FORECAST_HORIZONS:
-            reg = run_walkforward_regularized_wave(daily_rows, price_key=price_key, horizon_days=h_days)
-            gbt = run_walkforward_wave_classifier(daily_rows, price_key=price_key, horizon_days=h_days)
+            exp_10f = run_walkforward_regularized_wave(
+                daily_rows, price_key=price_key, horizon_days=h_days
+            )
+            rol_10f = run_walkforward_regularized_wave(
+                daily_rows, price_key=price_key, horizon_days=h_days, train_window_days=300
+            )
+            rol_ext = run_walkforward_regularized_wave(
+                daily_rows,
+                price_key=price_key,
+                horizon_days=h_days,
+                train_window_days=300,
+                min_prob=0.55,
+                min_margin=0.22,
+            )
+            vol_alert = run_walkforward_volatility_alert(
+                daily_rows, price_key=price_key, horizon_days=h_days, train_window_days=300
+            )
             sym_out[h_label] = {
-                "regularized_10f": {
-                    "indep_hit_rate_pct": reg.indep_hit_rate_pct,
-                    "indep_samples": reg.indep_samples,
-                    "indep_p_value": reg.indep_p_value,
-                    "rolling_hit_rate_pct": reg.signal_hit_rate_pct,
-                    "rolling_samples": reg.signal_samples,
-                    "hc_hit_rate_pct": reg.high_conviction_hit_rate_pct,
-                    "hc_samples": reg.high_conviction_samples,
-                    "mae_pct": reg.mae_pct,
-                },
-                "gbt_33f": {
-                    "indep_hit_rate_pct": gbt.indep_hit_rate_pct,
-                    "indep_samples": gbt.indep_samples,
-                    "indep_p_value": gbt.indep_p_value,
-                    "rolling_hit_rate_pct": gbt.signal_hit_rate_pct,
-                    "rolling_samples": gbt.signal_samples,
-                    "hc_hit_rate_pct": gbt.high_conviction_hit_rate_pct,
-                    "hc_samples": gbt.high_conviction_samples,
-                    "mae_pct": gbt.mae_pct,
-                },
+                "expanding_10f": _pack(exp_10f),
+                "rolling_300d_10f": _pack(rol_10f),
+                "rolling_300d_extreme": _pack(rol_ext),
+                "big_move_volatility": vol_alert,
             }
         results[sym] = sym_out
     return {
