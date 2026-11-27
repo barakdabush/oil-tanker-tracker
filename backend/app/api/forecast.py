@@ -57,6 +57,24 @@ async def get_data_quality_audit(
     return await run_data_quality_audit(db)
 
 
+@router.get("/spike-forensics")
+async def get_spike_forensics(
+    symbol: str = Query("BZ=F", pattern="^(BZ=F|CL=F)$"),
+    top_n: int = Query(3, ge=1, le=10),
+    horizon_days: int = Query(5, ge=1, le=14),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find top N distinct historical oil price spikes and return all 7-day pre-spike news, physical ship, macro, and storage precursors."""
+    from app.services.data_quality_audit import build_spike_forensics_report
+
+    return await build_spike_forensics_report(
+        db,
+        symbol=symbol,
+        top_n=top_n,
+        horizon_days=horizon_days,
+    )
+
+
 @router.post("/backfill-macro")
 async def backfill_macro_features(
     days: int = Query(1825, ge=30, le=3650, description="Days of macro, CFTC/EIA fundamentals, and IMF PortWatch data to backfill."),

@@ -502,3 +502,132 @@ async def run_data_quality_audit(db: AsyncSession) -> dict[str, Any]:
         },
         "feature_matrix": feature_audits,
     }
+
+
+async def build_spike_forensics_report(
+    db: AsyncSession,
+    symbol: str = "BZ=F",
+    top_n: int = 3,
+    horizon_days: int = 5,
+    min_separation_days: int = 45,
+) -> dict[str, Any]:
+    """Find the top N distinct historical upward price spikes and inspect all 7-day pre-spike precursors.
+
+    For each spike starting at trading day ``t`` (measured by forward ``horizon_days`` return),
+    extracts strictly backward-looking pre-spike state at ``t`` (macro, crack spread, curve,
+    PortWatch physical tankers, CFTC, EIA storage, and top pre-spike news headlines from
+    ``t - 7d .. t``) plus z-scores relative to the 5-year distribution.
+    """
+    from app.services.oil_price_predictor import _load_5y_daily_rows
+
+    price_key = "brent_close_usd" if symbol == "BZ=F" else "wti_close_usd"
+    daily_rows, _ = await _load_5y_daily_rows(db, symbol=symbol)
+    memory = await build_news_analog_memory(db, symbol=symbol)
+
+    priced = [r for r in daily_rows if r.get(price_key) is not None and float(r[price_key]) > 0]
+    n = len(priced)
+    if n < horizon_days + 30:
+        return {"symbol": symbol, "spikes": []}
+
+    # Build full 47-feature matrix for standardized precursor z-scores
+    X, prices, dates = build_gbt_feature_matrix(
+        priced,
+        price_key=price_key,
+        include_all_candidates=True,
+    )
+    col_meds = np.nanmedian(X, axis=0)
+    col_iqrs = np.nanpercentile(X, 75, axis=0) - np.nanpercentile(X, 25, axis=0)
+    col_iqrs = np.where(np.isfinite(col_iqrs) & (col_iqrs > 1e-9), col_iqrs, 1.0)
+
+    # Candidate forward H-day returns (skip first 40 warmup days)
+    candidates: list[tuple[float, int]] = []
+    for i in range(40, n - horizon_days):
+        ret_pct = ((prices[i + horizon_days] / prices[i]) - 1.0) * 100.0
+        candidates.append((ret_pct, i))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    # Greedily select top_n distinct spikes separated by at least min_separation_days
+    chosen: list[tuple[float, int]] = []
+    for ret_pct, idx in candidates:
+        d = dates[idx]
+        if all(abs((d - dates[prev_idx]).days) >= min_separation_days for _, prev_idx in chosen):
+            chosen.append((ret_pct, idx))
+            if len(chosen) >= top_n:
+                break
+
+    spikes_out: list[dict[str, Any]] = []
+    for rank, (ret_pct, idx) in enumerate(chosen, 1):
+        start_d = dates[idx]
+        end_d = dates[idx + horizon_days]
+        row = priced[idx]
+        prev_5_row = priced[max(0, idx - 5)]
+
+        # Pre-spike 7-day window news headlines (strictly <= start_d, zero leakage)
+        win_start = start_d - timedelta(days=7)
+        pre_news = [
+            r for r in memory.records
+            if win_start <= r.market_aligned_at.date() <= start_d
+        ]
+        pre_news.sort(key=lambda r: r.prior_rank_score, reverse=True)
+
+        # Robust z-scores of all 47 features right before the spike (day idx)
+        precursors: list[dict[str, Any]] = []
+        for j, fname in enumerate(ALL_CANDIDATE_FEATURE_NAMES):
+            val = X[idx, j]
+            if not math.isfinite(val) or not math.isfinite(col_meds[j]):
+                continue
+            rz = round(float((val - col_meds[j]) / col_iqrs[j]), 2)
+            label, group = FEATURE_METADATA.get(fname, (fname, "Other"))
+            precursors.append({
+                "feature": fname,
+                "label": label,
+                "group": group,
+                "value": round(float(val), 4),
+                "median": round(float(col_meds[j]), 4),
+                "robust_z": rz,
+            })
+        precursors.sort(key=lambda x: abs(x["robust_z"]), reverse=True)
+
+        spikes_out.append({
+            "rank": rank,
+            "spike_start_date": start_d.isoformat(),
+            "spike_end_date": end_d.isoformat(),
+            "price_before_usd": round(float(prices[idx]), 2),
+            "price_after_usd": round(float(prices[idx + horizon_days]), 2),
+            "forward_return_pct": round(ret_pct, 2),
+            "pre_spike_snapshot": {
+                "crack_spread_321_usd": row.get("crack_spread_321_usd"),
+                "crack_5d_chg": (
+                    round(row["crack_spread_321_usd"] - prev_5_row["crack_spread_321_usd"], 2)
+                    if (row.get("crack_spread_321_usd") is not None and prev_5_row.get("crack_spread_321_usd") is not None)
+                    else None
+                ),
+                "brent_wti_spread_usd": row.get("brent_wti_spread_usd"),
+                "vix_close": row.get("vix_close"),
+                "dxy_close": row.get("dxy_close"),
+                "tanker_etf_close": row.get("tanker_etf_close"),
+                "cftc_mm_net_pct_oi": row.get("cftc_mm_net_pct_oi"),
+                "eia_crude_stocks_chg_kbbl": row.get("eia_crude_stocks_chg_kbbl"),
+                "pw_hormuz_tankers": row.get("pw_hormuz_tankers"),
+                "pw_global_tankers": row.get("pw_global_tankers"),
+            },
+            "top_anomalous_precursors": precursors[:10],
+            "pre_spike_news_count_7d": len(pre_news),
+            "pre_spike_news_top8": [
+                {
+                    "date": r.market_aligned_at.date().isoformat(),
+                    "event_type": r.event_type,
+                    "direction": round(r.effective_direction, 2),
+                    "rank_score": round(r.prior_rank_score, 1),
+                    "headline": r.headline[:160],
+                }
+                for r in pre_news[:8]
+            ],
+        })
+
+    return {
+        "symbol": symbol,
+        "horizon_days": horizon_days,
+        "spikes": spikes_out,
+    }
+
