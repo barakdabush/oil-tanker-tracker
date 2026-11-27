@@ -343,12 +343,42 @@ async def get_agent_intel_context(
         impact_matrix_brent=compact_matrix,
     )
 
+    # ── 4. Verified ML Risk Signals & 4-Pillar Forecast for AI Analyst ───────
+    forecast_ml_ctx: dict = {}
+    try:
+        from app.services.oil_price_predictor import build_bottom_line_forecast
+
+        bl = await build_bottom_line_forecast(db, symbol="BZ=F")
+        forecast_ml_ctx = {
+            "symbol": bl.symbol,
+            "current_price_usd": bl.current_price_usd,
+            "composite_score": bl.composite_score,
+            "directional_verdict": bl.verdict,
+            "headline_summary": bl.headline_summary,
+            "pillars": [
+                {"label": p.label, "score": p.score, "direction": p.direction, "summary": p.summary}
+                for p in bl.pillars
+            ],
+            "horizons": {
+                hk: {
+                    "predicted_return_pct": hv.predicted_return_pct,
+                    "price_range_usd": [hv.price_low_usd, hv.price_high_usd],
+                    "har_ovx_volatility": hv.volatility_alert.model_dump() if hv.volatility_alert else None,
+                    "supply_shock_spike": hv.spike_radar.model_dump() if hv.spike_radar else None,
+                }
+                for hk, hv in bl.horizons.items()
+            },
+        }
+    except Exception:
+        forecast_ml_ctx = {}
+
     return AgentIntelContextResponse(
         generated_at=now,
         window_days=days,
         analytics=analytics_ctx,
         market_intel=market_ctx,
         news_intel=news_ctx,
+        forecast_ml=forecast_ml_ctx,
     )
 
 

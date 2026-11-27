@@ -64,13 +64,14 @@ class AgentNewsIntelContext(BaseModel):
 
 
 class AgentIntelContextResponse(BaseModel):
-    """Unified, token-efficient analytics + market intel + news intel payload for AI agents."""
+    """Unified, token-efficient analytics + market intel + news intel + ML forecast payload for AI agents."""
 
     generated_at: datetime
     window_days: int
     analytics: AgentAnalyticsContext
     market_intel: AgentMarketIntelContext
     news_intel: AgentNewsIntelContext
+    forecast_ml: dict[str, Any] = Field(default_factory=dict)
 
 
 class BriefingCreateRequest(BaseModel):

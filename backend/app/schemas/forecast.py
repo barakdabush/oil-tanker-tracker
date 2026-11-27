@@ -26,8 +26,36 @@ class ForecastDriver(BaseModel):
     detail: str
 
 
+class VolatilityAlertSignal(BaseModel):
+    threshold_pct: Optional[float] = None
+    live_prob_pct: Optional[float] = None
+    alert_state: str = "Moderate"  # "High Volatility Alert" | "Moderate" | "Calm Regime"
+    indep_accuracy_pct: Optional[float] = None
+    indep_samples: int = 0
+    hc_accuracy_pct: Optional[float] = None
+    hc_samples: int = 0
+    tier1_accuracy_pct: Optional[float] = None
+    tier1_samples: int = 0
+    tier1_p_value: Optional[float] = None
+    roc_auc: Optional[float] = None
+    explanation: str = ""
+
+
+class SupplyShockSpikeSignal(BaseModel):
+    threshold_pct: Optional[float] = None
+    live_spike_prob_pct: Optional[float] = None
+    alert_state: str = "Normal"  # "Spike Risk Elevated" | "Normal"
+    base_rate_pct: Optional[float] = None
+    alert_precision_pct: Optional[float] = None
+    alert_samples: int = 0
+    lift_x: Optional[float] = None
+    indep_p_value: Optional[float] = None
+    roc_auc: Optional[float] = None
+    explanation: str = ""
+
+
 class HorizonForecast(BaseModel):
-    horizon: str  # "24h" | "3d" | "7d"
+    horizon: str  # "3d" | "5d" | "7d"
     verdict: str  # "Strong Bullish" | "Bullish" | "Neutral" | "Bearish" | "Strong Bearish"
     direction: str  # "bullish" | "bearish" | "neutral"
     predicted_return_pct: float
@@ -50,7 +78,9 @@ class HorizonForecast(BaseModel):
     down_wave_prob_pct: Optional[float] = None
     range_prob_pct: Optional[float] = None
     wave_state: str = "Range-Bound"  # "Bullish Wave" | "Bearish Wave" | "Range-Bound"
-    model_name: str = "5y Wave GBT + 4-Pillar"
+    model_name: str = "4-Pillar + HAR-OVX-ML"
+    volatility_alert: Optional[VolatilityAlertSignal] = None
+    spike_radar: Optional[SupplyShockSpikeSignal] = None
 
 
 class BottomLineForecastResponse(BaseModel):

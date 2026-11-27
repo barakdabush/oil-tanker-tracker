@@ -399,6 +399,34 @@ export interface ForecastDriver {
   detail: string;
 }
 
+export interface VolatilityAlertSignal {
+  threshold_pct: number | null;
+  live_prob_pct: number | null;
+  alert_state: "High Volatility Alert" | "Moderate" | "Calm Regime" | string;
+  indep_accuracy_pct: number | null;
+  indep_samples: number;
+  hc_accuracy_pct: number | null;
+  hc_samples: number;
+  tier1_accuracy_pct: number | null;
+  tier1_samples: number;
+  tier1_p_value: number | null;
+  roc_auc: number | null;
+  explanation: string;
+}
+
+export interface SupplyShockSpikeSignal {
+  threshold_pct: number | null;
+  live_spike_prob_pct: number | null;
+  alert_state: "Spike Risk Elevated" | "Normal" | string;
+  base_rate_pct: number | null;
+  alert_precision_pct: number | null;
+  alert_samples: number;
+  lift_x: number | null;
+  indep_p_value: number | null;
+  roc_auc: number | null;
+  explanation: string;
+}
+
 export interface HorizonForecast {
   horizon: string;
   verdict: string;
@@ -424,6 +452,8 @@ export interface HorizonForecast {
   range_prob_pct?: number | null;
   wave_state?: string;
   model_name?: string;
+  volatility_alert?: VolatilityAlertSignal | null;
+  spike_radar?: SupplyShockSpikeSignal | null;
 }
 
 export interface BottomLineForecastResponse {
