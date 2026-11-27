@@ -1169,6 +1169,214 @@ def run_walkforward_spike_detector(
     }
 
 
+def run_har_volatility_ensemble(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int = 5,
+    min_train_rows: int = 240,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> dict[str, Any]:
+    """Institutional HAR-ML Volatility / Big-Move Regime Ensemble (Corsi 2009 HAR-RV + Leverage + Physical Stress).
+
+    Features (strictly backward-looking, log-transformed for Gaussianity):
+    - Log-HAR cascade: ``log(|ret_1d|+eps)``, ``log(vol_5d)``, ``log(vol_20d)``, ``log(vol_60d)``
+    - Asymmetric GJR-GARCH leverage: ``max(0, -ret_5d)`` (downside selloffs amplify volatility)
+    - Macro & Physical stress: ``log(vix)``, ``vix_chg_5d``, ``|dist_ma50|``, ``|pw_hormuz_7d_vs_30d|``,
+      ``|crack_321_chg_5d|``, ``disruption_news_7d``
+
+    Blends ``0.5 * Robust LogisticRegression`` + ``0.5 * Shallow HistGradientBoostingClassifier(max_depth=2)``
+    and reports both overall non-overlapping accuracy + ROC-AUC AND high-conviction (``p >= 65%`` or ``<= 35%``) accuracy.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    base_feats = (
+        "ret_1d",
+        "ret_5d",
+        "vol_5d",
+        "vol_20d",
+        "vix_level",
+        "vix_chg_5d",
+        "dist_ma50",
+        "pw_hormuz_7d_vs_30d",
+        "crack_321_chg_5d",
+    )
+    X_base, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        feature_names=base_feats,
+    )
+    priced = [r for r in daily_rows if r.get(price_key) is not None and float(r[price_key]) > 0]
+    n = len(prices)
+    if n < min_train_rows + horizon_days + 25:
+        return {
+            "threshold_pct": None,
+            "live_prob_pct": None,
+            "alert_state": "Normal",
+            "indep_accuracy_pct": None,
+            "indep_samples": 0,
+            "indep_p_value": None,
+            "hc_accuracy_pct": None,
+            "hc_samples": 0,
+            "hc_p_value": None,
+            "roc_auc": None,
+        }
+
+    # Compute 60-day realized volatility for the HAR monthly component
+    daily_rets = np.full(n, np.nan, dtype=np.float64)
+    for i in range(1, n):
+        if prices[i] > 0 and prices[i - 1] > 0:
+            daily_rets[i] = math.log(prices[i] / prices[i - 1])
+    vol_60d = np.full(n, np.nan, dtype=np.float64)
+    for i in range(25, n):
+        sl = daily_rets[max(1, i - 59) : i + 1]
+        v = sl[np.isfinite(sl)]
+        if len(v) >= 20:
+            vol_60d[i] = float(np.std(v, ddof=1))
+
+    disr_raw = np.array(
+        [float(r["disruption_news_1d"]) if r.get("disruption_news_1d") is not None else np.nan for r in priced],
+        dtype=np.float64,
+    )
+    disr_7d = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        sl = disr_raw[max(0, i - 6) : i + 1]
+        v = sl[np.isfinite(sl)]
+        disr_7d[i] = float(np.mean(v)) if len(v) > 0 else 0.0
+
+    def _safe_log(arr: np.ndarray, floor: float = 1e-4) -> np.ndarray:
+        return np.where(np.isfinite(arr), np.log(np.maximum(arr, floor)), np.nan)
+
+    log_abs_r1 = _safe_log(np.abs(X_base[:, 0]), 1e-4)
+    neg_r5 = np.where(np.isfinite(X_base[:, 1]), np.maximum(0.0, -X_base[:, 1]), np.nan)
+    log_v5 = _safe_log(X_base[:, 2], 1e-4)
+    log_v20 = _safe_log(X_base[:, 3], 1e-4)
+    log_v60 = _safe_log(vol_60d, 1e-4)
+    log_vix = _safe_log(X_base[:, 4], 1.0)
+    vix_chg_5d = X_base[:, 5]
+    abs_ma50 = np.abs(X_base[:, 6])
+    abs_hormuz = np.abs(X_base[:, 7])
+    abs_crack_5d = np.abs(X_base[:, 8])
+
+    X = np.column_stack([
+        log_abs_r1,
+        log_v5,
+        log_v20,
+        log_v60,
+        neg_r5,
+        log_vix,
+        vix_chg_5d,
+        abs_ma50,
+        abs_hormuz,
+        abs_crack_5d,
+        disr_7d,
+    ])
+
+    move_th = 0.025 if horizon_days <= 3 else (0.032 if horizon_days <= 5 else 0.038)
+    y_bin = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        fwd = prices[i + 1 : i + 1 + horizon_days]
+        if prices[i] > 0 and len(fwd) == horizon_days and np.all(fwd > 0):
+            max_abs = float(np.max(np.abs(fwd / prices[i] - 1.0)))
+            y_bin[i] = 1 if max_abs >= move_th else 0
+
+    eval_end = n - horizon_days
+    eval_start = max(min_train_rows + horizon_days, eval_end - max_eval_days)
+
+    def _fit_pair(X_tr: np.ndarray, y_tr: np.ndarray):
+        lr = Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", RobustScaler()),
+            ("clip", FunctionTransformer(_clip_z)),
+            ("clf", LogisticRegression(C=0.20, max_iter=500, random_state=42)),
+        ])
+        lr.fit(X_tr, y_tr)
+        gbt = HistGradientBoostingClassifier(
+            max_iter=60,
+            max_depth=2,
+            learning_rate=0.05,
+            l2_regularization=5.0,
+            min_samples_leaf=25,
+            random_state=42,
+        )
+        gbt.fit(X_tr, y_tr)
+        return lr, gbt
+
+    lr_m: Any = None
+    gbt_m: Any = None
+    last_fit_t = -9999
+    next_indep_t = -1
+    indep_hits = 0
+    indep_total = 0
+    hc_hits = 0
+    hc_total = 0
+    y_true_indep: list[int] = []
+    y_prob_indep: list[float] = []
+
+    for t in range(eval_start, eval_end):
+        if y_bin[t] < 0:
+            continue
+        train_end = t - horizon_days + 1
+        if lr_m is None or (t - last_fit_t) >= refit_every:
+            y_tr = y_bin[:train_end]
+            m = y_tr >= 0
+            if int(m.sum()) < min_train_rows or len(set(y_tr[m].tolist())) < 2:
+                continue
+            lr_m, gbt_m = _fit_pair(X[:train_end][m], y_tr[m])
+            last_fit_t = t
+
+        if lr_m is None or gbt_m is None:
+            continue
+        p_lr = float(lr_m.predict_proba(X[t : t + 1])[0][1])
+        p_gbt = float(gbt_m.predict_proba(X[t : t + 1])[0][1])
+        prob = 0.5 * p_lr + 0.5 * p_gbt
+        pred = 1 if prob >= 0.50 else 0
+
+        if t >= next_indep_t:
+            indep_total += 1
+            is_hit = pred == int(y_bin[t])
+            if is_hit:
+                indep_hits += 1
+            if prob >= 0.65 or prob <= 0.35:
+                hc_total += 1
+                if is_hit:
+                    hc_hits += 1
+            y_true_indep.append(int(y_bin[t]))
+            y_prob_indep.append(prob)
+            next_indep_t = t + horizon_days
+
+    y_full = y_bin[:eval_end]
+    fm = y_full >= 0
+    live_prob: Optional[float] = None
+    if int(fm.sum()) >= min_train_rows and len(set(y_full[fm].tolist())) >= 2:
+        flr, fgbt = _fit_pair(X[:eval_end][fm], y_full[fm])
+        live_prob = round(
+            (0.5 * float(flr.predict_proba(X[n - 1 : n])[0][1]) + 0.5 * float(fgbt.predict_proba(X[n - 1 : n])[0][1]))
+            * 100.0,
+            1,
+        )
+
+    auc = round(float(roc_auc_score(y_true_indep, y_prob_indep)), 3) if len(set(y_true_indep)) >= 2 else None
+    state = (
+        "High Volatility Alert"
+        if (live_prob is not None and live_prob >= 65.0)
+        else ("Calm Regime" if (live_prob is not None and live_prob <= 35.0) else "Moderate")
+    )
+
+    return {
+        "threshold_pct": round(move_th * 100.0, 1),
+        "live_prob_pct": live_prob,
+        "alert_state": state,
+        "indep_accuracy_pct": round((indep_hits / indep_total) * 100.0, 1) if indep_total >= 5 else None,
+        "indep_samples": indep_total,
+        "indep_p_value": _binomial_p_value_gt_half(indep_hits, indep_total) if indep_total >= 5 else None,
+        "hc_accuracy_pct": round((hc_hits / hc_total) * 100.0, 1) if hc_total >= 8 else None,
+        "hc_samples": hc_total,
+        "hc_p_value": _binomial_p_value_gt_half(hc_hits, hc_total) if hc_total >= 8 else None,
+        "roc_auc": auc,
+    }
+
+
 def compute_oos_feature_importance(
     daily_rows: list[dict[str, Any]],
     price_key: str,

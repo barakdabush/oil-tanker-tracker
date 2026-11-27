@@ -330,6 +330,18 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert sres["indep_samples"] >= 5
     assert sres["alert_state"] in ("Spike Risk Elevated", "Normal")
 
+    from app.services.gbt_oil_model import run_har_volatility_ensemble
+
+    hres = run_har_volatility_ensemble(
+        daily_rows=spike_rows,
+        price_key="brent_close_usd",
+        horizon_days=5,
+        min_train_rows=180,
+    )
+    assert hres["threshold_pct"] == 3.2
+    assert hres["indep_samples"] >= 5
+    assert hres["alert_state"] in ("High Volatility Alert", "Calm Regime", "Moderate")
+
     imp = compute_oos_feature_importance(
         daily_rows=rows,
         price_key="brent_close_usd",

@@ -44,6 +44,7 @@ from app.schemas.forecast import (
 )
 from app.services.gbt_oil_model import (
     compute_oos_feature_importance,
+    run_har_volatility_ensemble,
     run_walkforward_regularized_wave,
     run_walkforward_spike_detector,
     run_walkforward_volatility_alert,
@@ -1196,6 +1197,9 @@ async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
             vol_alert = run_walkforward_volatility_alert(
                 daily_rows, price_key=price_key, horizon_days=h_days, train_window_days=300
             )
+            har_vol = run_har_volatility_ensemble(
+                daily_rows, price_key=price_key, horizon_days=h_days
+            )
             spike_det = run_walkforward_spike_detector(
                 daily_rows, price_key=price_key, horizon_days=h_days
             )
@@ -1204,8 +1208,16 @@ async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
                 "rolling_300d_10f": _pack(rol_10f),
                 "rolling_300d_extreme": _pack(rol_ext),
                 "big_move_volatility": vol_alert,
+                "har_volatility_ensemble": har_vol,
                 "upward_spike_detector": spike_det,
             }
+        # Test monthly fundamental horizons (20d & 30d) per Baumeister & Kilian literature
+        sym_out["20d_fundamental"] = _pack(
+            run_walkforward_regularized_wave(daily_rows, price_key=price_key, horizon_days=20)
+        )
+        sym_out["30d_fundamental"] = _pack(
+            run_walkforward_regularized_wave(daily_rows, price_key=price_key, horizon_days=30)
+        )
         results[sym] = sym_out
     return {
         "data_coverage": coverage,
