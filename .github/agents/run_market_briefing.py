@@ -297,7 +297,7 @@ def main() -> int:
 
     ctx_url = f"{base_url}/api/agent-intel/context?days={args.days}&top_events={args.top_events}"
     print(f"Fetching intelligence context from {ctx_url} ...")
-    ctx = http_json(ctx_url, method="GET", timeout=45)
+    ctx = http_json(ctx_url, method="GET", timeout=120)
 
     providers = resolve_llm_providers(args.provider)
     model_used = "deterministic-fallback"
