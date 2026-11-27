@@ -44,6 +44,7 @@ from app.schemas.forecast import (
 )
 from app.services.gbt_oil_model import (
     compute_oos_feature_importance,
+    run_economic_directional_meta,
     run_har_volatility_ensemble,
     run_walkforward_regularized_wave,
     run_walkforward_spike_detector,
@@ -1016,6 +1017,7 @@ def _assemble_gbt_daily_rows(
             ),
             "dxy_close": m.dxy_close if m else None,
             "vix_close": m.vix_close if m else None,
+            "ovx_close": m.ovx_close if m else None,
             "tanker_etf_close": m.tanker_etf_close if m else None,
             "energy_etf_close": m.energy_etf_close if m else None,
             "copper_close": m.copper_close if m else None,
@@ -1203,6 +1205,9 @@ async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
             spike_det = run_walkforward_spike_detector(
                 daily_rows, price_key=price_key, horizon_days=h_days
             )
+            econ_dir = run_economic_directional_meta(
+                daily_rows, price_key=price_key, horizon_days=h_days
+            )
             sym_out[h_label] = {
                 "expanding_10f": _pack(exp_10f),
                 "rolling_300d_10f": _pack(rol_10f),
@@ -1210,6 +1215,7 @@ async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
                 "big_move_volatility": vol_alert,
                 "har_volatility_ensemble": har_vol,
                 "upward_spike_detector": spike_det,
+                "economic_directional": econ_dir,
             }
         # Test monthly fundamental horizons (20d & 30d) per Baumeister & Kilian literature
         sym_out["20d_fundamental"] = _pack(

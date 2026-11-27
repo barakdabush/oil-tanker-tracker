@@ -99,6 +99,7 @@ class OilMacroDaily(Base):
     brent_wti_spread_usd = Column(Float)       # BZ=F - CL=F ($/bbl)
     dxy_close = Column(Float)                  # DX-Y.NYB (US Dollar Index)
     vix_close = Column(Float)                  # ^VIX (CBOE Volatility Index)
+    ovx_close = Column(Float)                  # ^OVX (CBOE Crude Oil Volatility Index — options-implied 30d oil vol)
     tanker_etf_close = Column(Float)           # FRO (Frontline VLCC crude tanker equity)
     energy_etf_close = Column(Float)           # XLE (Energy Select Sector SPDR)
     copper_close = Column(Float)               # HG=F (Copper industrial demand proxy)

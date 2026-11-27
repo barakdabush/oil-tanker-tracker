@@ -1244,6 +1244,15 @@ def run_har_volatility_ensemble(
         v = sl[np.isfinite(sl)]
         disr_7d[i] = float(np.mean(v)) if len(v) > 0 else 0.0
 
+    # Extract CBOE ^OVX (30d implied oil volatility) + 5d change + Volatility Risk Premium (OVX - RV20_ann)
+    ovx_arr = np.array(
+        [float(r["ovx_close"]) if r.get("ovx_close") is not None else np.nan for r in priced],
+        dtype=np.float64,
+    )
+    ovx_chg_5d = np.array([_safe_diff(ovx_arr, i, 5) for i in range(n)], dtype=np.float64)
+    rv20_ann = np.where(np.isfinite(X_base[:, 3]), X_base[:, 3] * math.sqrt(252.0) * 100.0, np.nan)
+    ovx_vrp = np.where(np.isfinite(ovx_arr) & np.isfinite(rv20_ann), ovx_arr - rv20_ann, np.nan)
+
     def _safe_log(arr: np.ndarray, floor: float = 1e-4) -> np.ndarray:
         return np.where(np.isfinite(arr), np.log(np.maximum(arr, floor)), np.nan)
 
@@ -1253,6 +1262,7 @@ def run_har_volatility_ensemble(
     log_v20 = _safe_log(X_base[:, 3], 1e-4)
     log_v60 = _safe_log(vol_60d, 1e-4)
     log_vix = _safe_log(X_base[:, 4], 1.0)
+    log_ovx = _safe_log(ovx_arr, 5.0)
     vix_chg_5d = X_base[:, 5]
     abs_ma50 = np.abs(X_base[:, 6])
     abs_hormuz = np.abs(X_base[:, 7])
@@ -1266,6 +1276,9 @@ def run_har_volatility_ensemble(
         neg_r5,
         log_vix,
         vix_chg_5d,
+        log_ovx,
+        ovx_chg_5d,
+        ovx_vrp,
         abs_ma50,
         abs_hormuz,
         abs_crack_5d,
@@ -1310,6 +1323,8 @@ def run_har_volatility_ensemble(
     indep_total = 0
     hc_hits = 0
     hc_total = 0
+    t1_hits = 0
+    t1_total = 0
     y_true_indep: list[int] = []
     y_prob_indep: list[float] = []
 
@@ -1341,6 +1356,10 @@ def run_har_volatility_ensemble(
                 hc_total += 1
                 if is_hit:
                     hc_hits += 1
+            if prob >= 0.75 or prob <= 0.25:
+                t1_total += 1
+                if is_hit:
+                    t1_hits += 1
             y_true_indep.append(int(y_bin[t]))
             y_prob_indep.append(prob)
             next_indep_t = t + horizon_days
@@ -1373,6 +1392,159 @@ def run_har_volatility_ensemble(
         "hc_accuracy_pct": round((hc_hits / hc_total) * 100.0, 1) if hc_total >= 8 else None,
         "hc_samples": hc_total,
         "hc_p_value": _binomial_p_value_gt_half(hc_hits, hc_total) if hc_total >= 8 else None,
+        "tier1_accuracy_pct": round((t1_hits / t1_total) * 100.0, 1) if t1_total >= 8 else None,
+        "tier1_samples": t1_total,
+        "tier1_p_value": _binomial_p_value_gt_half(t1_hits, t1_total) if t1_total >= 8 else None,
+        "roc_auc": auc,
+    }
+
+
+def run_economic_directional_meta(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int = 7,
+    min_train_rows: int = 240,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> dict[str, Any]:
+    """Economic-Regime Selective Directional Model (Kaldor Carry + Baumeister-Kilian Crack + Kang-Rouwenhorst Crowding + OVX VRP).
+
+    Applies Marcos Lopez de Prado selective abstention: abstains on the ~75-85% efficient-market
+    noise days and fires an Up/Down directional call ONLY when predicted probability is in the
+    extreme conviction tail (``prob >= 0.62`` Bullish or ``prob <= 0.38`` Bearish).
+    Strictly expanding walk-forward with ``horizon_days`` embargo gap and non-overlapping evaluation.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    base_feats = (
+        "curve_chg_20d",
+        "crack_321_chg_20d",
+        "cftc_mm_net_z52",
+        "dist_ma20",
+        "vol_20d",
+        "pw_hormuz_7d_vs_30d",
+    )
+    X_base, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        feature_names=base_feats,
+    )
+    priced = [r for r in daily_rows if r.get(price_key) is not None and float(r[price_key]) > 0]
+    n = len(prices)
+    if n < min_train_rows + horizon_days + 25:
+        return {
+            "live_up_prob_pct": None,
+            "live_call": "Abstain",
+            "all_accuracy_pct": None,
+            "all_samples": 0,
+            "selective_hit_rate_pct": None,
+            "selective_samples": 0,
+            "selective_coverage_pct": 0.0,
+            "selective_p_value": None,
+            "roc_auc": None,
+        }
+
+    ovx_arr = np.array(
+        [float(r["ovx_close"]) if r.get("ovx_close") is not None else np.nan for r in priced],
+        dtype=np.float64,
+    )
+    rv20_ann = np.where(np.isfinite(X_base[:, 4]), X_base[:, 4] * math.sqrt(252.0) * 100.0, np.nan)
+    ovx_vrp = np.where(np.isfinite(ovx_arr) & np.isfinite(rv20_ann), ovx_arr - rv20_ann, np.nan)
+    oversold_z = np.where(
+        np.isfinite(X_base[:, 3]) & np.isfinite(X_base[:, 4]) & (X_base[:, 4] > 1e-4),
+        -X_base[:, 3] / X_base[:, 4],
+        np.nan,
+    )
+
+    X = np.column_stack([
+        X_base[:, 0],  # curve_chg_20d (Kaldor Carry)
+        X_base[:, 1],  # crack_321_chg_20d (Baumeister-Kilian Refining)
+        X_base[:, 2],  # cftc_mm_net_z52 (Kang-Rouwenhorst Crowding)
+        oversold_z,    # vol-normalized mean-reversion stretch
+        ovx_vrp,       # Oil Volatility Risk Premium (OVX - RV20)
+        X_base[:, 5],  # pw_hormuz_7d_vs_30d (Physical Chokepoint)
+    ])
+
+    y_bin = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        if prices[i] > 0 and prices[i + horizon_days] > 0:
+            y_bin[i] = 1 if prices[i + horizon_days] > prices[i] else 0
+
+    eval_end = n - horizon_days
+    eval_start = max(min_train_rows + horizon_days, eval_end - max_eval_days)
+
+    def _make_clf() -> Pipeline:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", RobustScaler()),
+            ("clip", FunctionTransformer(_clip_z)),
+            ("clf", LogisticRegression(C=0.15, max_iter=500, random_state=42)),
+        ])
+
+    clf: Any = None
+    last_fit_t = -9999
+    next_indep_t = -1
+    all_hits = 0
+    all_total = 0
+    sel_hits = 0
+    sel_total = 0
+    y_true_indep: list[int] = []
+    y_prob_indep: list[float] = []
+
+    for t in range(eval_start, eval_end):
+        if y_bin[t] < 0:
+            continue
+        train_end = t - horizon_days + 1
+        if clf is None or (t - last_fit_t) >= refit_every:
+            y_tr = y_bin[:train_end]
+            m = y_tr >= 0
+            if int(m.sum()) < min_train_rows or len(set(y_tr[m].tolist())) < 2:
+                continue
+            clf = _make_clf()
+            clf.fit(X[:train_end][m], y_tr[m])
+            last_fit_t = t
+
+        if clf is None:
+            continue
+        prob_up = float(clf.predict_proba(X[t : t + 1])[0][1])
+
+        if t >= next_indep_t:
+            all_total += 1
+            pred_up = 1 if prob_up >= 0.50 else 0
+            if pred_up == int(y_bin[t]):
+                all_hits += 1
+            if prob_up >= 0.62 or prob_up <= 0.38:
+                sel_total += 1
+                if pred_up == int(y_bin[t]):
+                    sel_hits += 1
+            y_true_indep.append(int(y_bin[t]))
+            y_prob_indep.append(prob_up)
+            next_indep_t = t + horizon_days
+
+    y_full = y_bin[:eval_end]
+    fm = y_full >= 0
+    live_up: Optional[float] = None
+    if int(fm.sum()) >= min_train_rows and len(set(y_full[fm].tolist())) >= 2:
+        final_clf = _make_clf()
+        final_clf.fit(X[:eval_end][fm], y_full[fm])
+        live_up = round(float(final_clf.predict_proba(X[n - 1 : n])[0][1]) * 100.0, 1)
+
+    live_call = (
+        "Bullish (High-Conv)"
+        if (live_up is not None and live_up >= 62.0)
+        else ("Bearish (High-Conv)" if (live_up is not None and live_up <= 38.0) else "Abstain")
+    )
+    auc = round(float(roc_auc_score(y_true_indep, y_prob_indep)), 3) if len(set(y_true_indep)) >= 2 else None
+
+    return {
+        "live_up_prob_pct": live_up,
+        "live_call": live_call,
+        "all_accuracy_pct": round((all_hits / all_total) * 100.0, 1) if all_total >= 5 else None,
+        "all_samples": all_total,
+        "selective_hit_rate_pct": round((sel_hits / sel_total) * 100.0, 1) if sel_total >= 5 else None,
+        "selective_samples": sel_total,
+        "selective_coverage_pct": round((sel_total / all_total) * 100.0, 1) if all_total > 0 else 0.0,
+        "selective_p_value": _binomial_p_value_gt_half(sel_hits, sel_total) if sel_total >= 5 else None,
         "roc_auc": auc,
     }
 

@@ -342,6 +342,17 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert hres["indep_samples"] >= 5
     assert hres["alert_state"] in ("High Volatility Alert", "Calm Regime", "Moderate")
 
+    from app.services.gbt_oil_model import run_economic_directional_meta
+
+    eres = run_economic_directional_meta(
+        daily_rows=spike_rows,
+        price_key="brent_close_usd",
+        horizon_days=5,
+        min_train_rows=180,
+    )
+    assert eres["all_samples"] >= 5
+    assert eres["live_call"] in ("Bullish (High-Conv)", "Bearish (High-Conv)", "Abstain")
+
     imp = compute_oos_feature_importance(
         daily_rows=rows,
         price_key="brent_close_usd",
