@@ -982,6 +982,193 @@ def run_walkforward_volatility_alert(
     }
 
 
+def _binomial_p_value_vs_rate(hits: int, n: int, base_p: float) -> Optional[float]:
+    """Exact one-sided binomial p-value for H0: true precision <= base_p."""
+    if n <= 0 or not (0.0 < base_p < 1.0):
+        return None
+    hits = max(0, min(n, hits))
+    q = 1.0 - base_p
+    prob = sum(math.comb(n, k) * (base_p ** k) * (q ** (n - k)) for k in range(hits, n + 1))
+    return round(min(1.0, max(0.0, prob)), 4)
+
+
+def run_walkforward_spike_detector(
+    daily_rows: list[dict[str, Any]],
+    price_key: str,
+    horizon_days: int = 5,
+    min_train_rows: int = 240,
+    refit_every: int = 25,
+    max_eval_days: int = 1000,
+) -> dict[str, Any]:
+    """Non-linear Supply-Shock & Oversold-Bounce Upward Spike Detector.
+
+    Engineered directly from historical spike forensics:
+    1. ``abs_hormuz_anomaly``: ``|pw_hormuz_7d_vs_30d|`` (catches BOTH pre-war front-loading surges AND blockade collapses)
+    2. ``abs_hormuz_cap_anomaly``: ``|pw_hormuz_cap_7d_vs_30d|``
+    3. ``disruption_news_7d``: 7-day rolling share of chokepoint_attack_blockade + refinery_pipeline_outage headlines
+    4. ``crack_321_chg_5d`` & ``crack_321_chg_20d``: exploding refining margins
+    5. ``fro_ret_20d`` & ``stng_ret_5d``: tanker freight equity surges
+    6. ``oversold_high_vol``: ``max(0, -ret_3d) * vol_20d`` (war-regime rubber-band rebound)
+    7. ``curve_chg_5d``: backwardation tightening
+    """
+    from sklearn.metrics import roc_auc_score
+
+    base_feats = (
+        "pw_hormuz_7d_vs_30d",
+        "pw_hormuz_cap_7d_vs_30d",
+        "crack_321_chg_5d",
+        "crack_321_chg_20d",
+        "fro_ret_20d",
+        "stng_ret_5d",
+        "ret_3d",
+        "vol_20d",
+        "curve_chg_5d",
+    )
+    X_base, prices, _ = build_gbt_feature_matrix(
+        daily_rows,
+        price_key=price_key,
+        feature_names=base_feats,
+    )
+    priced = [r for r in daily_rows if r.get(price_key) is not None and float(r[price_key]) > 0]
+    n = len(prices)
+    if n < min_train_rows + horizon_days + 25:
+        return {
+            "threshold_pct": None,
+            "live_spike_prob_pct": None,
+            "alert_state": "Normal",
+            "base_rate_pct": None,
+            "alert_precision_pct": None,
+            "alert_samples": 0,
+            "lift_x": None,
+            "indep_samples": 0,
+            "indep_p_value": None,
+            "roc_auc": None,
+        }
+
+    # Build 7d rolling disruption-news share (volume-invariant ratio in [0, 1])
+    disr_raw = np.array(
+        [float(r["disruption_news_1d"]) if r.get("disruption_news_1d") is not None else np.nan for r in priced],
+        dtype=np.float64,
+    )
+    disr_7d = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        sl = disr_raw[max(0, i - 6) : i + 1]
+        v = sl[np.isfinite(sl)]
+        disr_7d[i] = float(np.mean(v)) if len(v) > 0 else 0.0
+
+    # Assemble non-linear forensic feature matrix (9 features)
+    abs_hormuz = np.abs(X_base[:, 0])
+    abs_hormuz_cap = np.abs(X_base[:, 1])
+    crack_5d = X_base[:, 2]
+    crack_20d = X_base[:, 3]
+    fro_20d = X_base[:, 4]
+    stng_5d = X_base[:, 5]
+    ret_3d = X_base[:, 6]
+    vol_20d = X_base[:, 7]
+    curve_5d = X_base[:, 8]
+    oversold_hv = np.where(
+        np.isfinite(ret_3d) & np.isfinite(vol_20d),
+        np.maximum(0.0, -ret_3d) * vol_20d,
+        np.nan,
+    )
+    X = np.column_stack([
+        abs_hormuz,
+        abs_hormuz_cap,
+        disr_7d,
+        crack_5d,
+        crack_20d,
+        fro_20d,
+        stng_5d,
+        oversold_hv,
+        curve_5d,
+    ])
+
+    spike_th = 0.030 if horizon_days <= 3 else (0.040 if horizon_days <= 5 else 0.050)
+    y_bin = np.full(n, -1, dtype=np.int64)
+    for i in range(n - horizon_days):
+        fwd = prices[i + 1 : i + 1 + horizon_days]
+        if prices[i] > 0 and len(fwd) == horizon_days and np.all(fwd > 0):
+            max_up = float(np.max(fwd / prices[i] - 1.0))
+            y_bin[i] = 1 if max_up >= spike_th else 0
+
+    eval_end = n - horizon_days
+    eval_start = max(min_train_rows + horizon_days, eval_end - max_eval_days)
+
+    def _make_spike_clf() -> Pipeline:
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", RobustScaler()),
+            ("clip", FunctionTransformer(_clip_z)),
+            ("clf", LogisticRegression(C=0.20, class_weight="balanced", max_iter=500, random_state=42)),
+        ])
+
+    clf: Any = None
+    last_fit_t = -9999
+    next_indep_t = -1
+    y_true_indep: list[int] = []
+    y_prob_indep: list[float] = []
+    alert_hits = 0
+    alert_total = 0
+
+    for t in range(eval_start, eval_end):
+        if y_bin[t] < 0:
+            continue
+        train_end = t - horizon_days + 1
+        if clf is None or (t - last_fit_t) >= refit_every:
+            y_tr = y_bin[:train_end]
+            m = y_tr >= 0
+            if int(m.sum()) < min_train_rows or len(set(y_tr[m].tolist())) < 2:
+                continue
+            clf = _make_spike_clf()
+            clf.fit(X[:train_end][m], y_tr[m])
+            last_fit_t = t
+
+        if clf is None:
+            continue
+        prob_sp = float(clf.predict_proba(X[t : t + 1])[0][1])
+
+        if t >= next_indep_t:
+            y_true_indep.append(int(y_bin[t]))
+            y_prob_indep.append(prob_sp)
+            if prob_sp >= 0.58:
+                alert_total += 1
+                if int(y_bin[t]) == 1:
+                    alert_hits += 1
+            next_indep_t = t + horizon_days
+
+    y_full = y_bin[:eval_end]
+    fm = y_full >= 0
+    live_prob: Optional[float] = None
+    if int(fm.sum()) >= min_train_rows and len(set(y_full[fm].tolist())) >= 2:
+        final_clf = _make_spike_clf()
+        final_clf.fit(X[:eval_end][fm], y_full[fm])
+        live_prob = round(float(final_clf.predict_proba(X[n - 1 : n])[0][1]) * 100.0, 1)
+
+    indep_n = len(y_true_indep)
+    base_rate = (sum(y_true_indep) / indep_n) if indep_n > 0 else None
+    alert_prec = (alert_hits / alert_total) if alert_total >= 5 else None
+    lift = round(alert_prec / base_rate, 2) if (alert_prec is not None and base_rate and base_rate > 0) else None
+    pval = (
+        _binomial_p_value_vs_rate(alert_hits, alert_total, base_rate)
+        if (alert_total >= 5 and base_rate is not None and 0.0 < base_rate < 1.0)
+        else None
+    )
+    auc = round(float(roc_auc_score(y_true_indep, y_prob_indep)), 3) if len(set(y_true_indep)) >= 2 else None
+
+    return {
+        "threshold_pct": round(spike_th * 100.0, 1),
+        "live_spike_prob_pct": live_prob,
+        "alert_state": "Spike Risk Elevated" if (live_prob is not None and live_prob >= 58.0) else "Normal",
+        "base_rate_pct": round(base_rate * 100.0, 1) if base_rate is not None else None,
+        "alert_precision_pct": round(alert_prec * 100.0, 1) if alert_prec is not None else None,
+        "alert_samples": alert_total,
+        "lift_x": lift,
+        "indep_samples": indep_n,
+        "indep_p_value": pval,
+        "roc_auc": auc,
+    }
+
+
 def compute_oos_feature_importance(
     daily_rows: list[dict[str, Any]],
     price_key: str,

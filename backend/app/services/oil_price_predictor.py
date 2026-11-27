@@ -45,6 +45,7 @@ from app.schemas.forecast import (
 from app.services.gbt_oil_model import (
     compute_oos_feature_importance,
     run_walkforward_regularized_wave,
+    run_walkforward_spike_detector,
     run_walkforward_volatility_alert,
     run_walkforward_wave_classifier,
 )
@@ -937,17 +938,27 @@ def _assemble_gbt_daily_rows(
     news_dir_num: dict = {}
     news_dir_den: dict = {}
     news_shocks_by_date: dict = {}
+    news_total_by_date: dict = {}
+    news_disrupt_by_date: dict = {}
     for rec in news_records:
         d = rec.market_aligned_at.date()
         w = max(0.2, rec.prior_rank_score / 100.0)
         news_dir_num[d] = news_dir_num.get(d, 0.0) + rec.effective_direction * w
         news_dir_den[d] = news_dir_den.get(d, 0.0) + w
+        news_total_by_date[d] = news_total_by_date.get(d, 0) + 1
+        if rec.event_type in ("chokepoint_attack_blockade", "refinery_pipeline_outage"):
+            news_disrupt_by_date[d] = news_disrupt_by_date.get(d, 0) + 1
         if rec.prior_rank_score >= 55.0:
             news_shocks_by_date[d] = news_shocks_by_date.get(d, 0) + 1
     news_dir_by_date = {
         d: round(max(-1.0, min(1.0, news_dir_num[d] / news_dir_den[d])), 4)
         for d in news_dir_num
         if news_dir_den.get(d, 0.0) > 0
+    }
+    disruption_share_by_date = {
+        d: round(news_disrupt_by_date.get(d, 0) / news_total_by_date[d], 4)
+        for d in news_total_by_date
+        if news_total_by_date[d] > 0
     }
 
     cftc_series = [
@@ -1017,6 +1028,7 @@ def _assemble_gbt_daily_rows(
             "eia_refinery_util_pct": cur_eia_util,
             # None on zero-news days so 3d/7d averages ignore silent days (eliminates 2022 vs 2026 volume drift)
             "news_dir_1d": news_dir_by_date.get(p.price_date),
+            "disruption_news_1d": disruption_share_by_date.get(p.price_date),
             "news_shock_count_1d": news_shocks_by_date.get(p.price_date, 0),
             "pw_hormuz_tankers": pw.get("pw_hormuz_tankers"),
             "pw_hormuz_capacity": pw.get("pw_hormuz_capacity"),
@@ -1184,11 +1196,15 @@ async def build_model_benchmark_report(db: AsyncSession) -> dict[str, Any]:
             vol_alert = run_walkforward_volatility_alert(
                 daily_rows, price_key=price_key, horizon_days=h_days, train_window_days=300
             )
+            spike_det = run_walkforward_spike_detector(
+                daily_rows, price_key=price_key, horizon_days=h_days
+            )
             sym_out[h_label] = {
                 "expanding_10f": _pack(exp_10f),
                 "rolling_300d_10f": _pack(rol_10f),
                 "rolling_300d_extreme": _pack(rol_ext),
                 "big_move_volatility": vol_alert,
+                "upward_spike_detector": spike_det,
             }
         results[sym] = sym_out
     return {

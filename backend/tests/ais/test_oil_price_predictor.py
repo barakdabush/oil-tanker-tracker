@@ -307,6 +307,29 @@ def test_crack_spread_and_walkforward_gbt_model():
     assert vres["indep_samples"] >= 5
     assert vres["alert_state"] in ("High Volatility Alert", "Normal")
 
+    from app.services.gbt_oil_model import run_walkforward_spike_detector
+
+    spike_rows = []
+    sp_price = 75.0
+    for i in range(320):
+        w = math.sin(i / 6.0)
+        spike_rows.append({
+            **rows[i],
+            "brent_close_usd": round(sp_price, 2),
+            "disruption_news_1d": 0.6 if w > 0.4 else 0.0,
+        })
+        sp_price *= math.exp(0.015 * w)
+
+    sres = run_walkforward_spike_detector(
+        daily_rows=spike_rows,
+        price_key="brent_close_usd",
+        horizon_days=5,
+        min_train_rows=180,
+    )
+    assert sres["threshold_pct"] == 4.0
+    assert sres["indep_samples"] >= 5
+    assert sres["alert_state"] in ("Spike Risk Elevated", "Normal")
+
     imp = compute_oos_feature_importance(
         daily_rows=rows,
         price_key="brent_close_usd",
